@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   compareTemporal,
+  daysInMonth,
   detectTemporalFormat,
+  equalsTemporal,
   InvalidDateFormatError,
   isLeapYear,
   isValidCalendarDate,
@@ -295,5 +297,34 @@ describe('compareTemporal', () => {
     // Both are numbers, but they measure different things. The only correct
     // answer is "not comparable" -- never a confident ordering.
     expect(time && date && compareTemporal(time, date)).toBeNull();
+  });
+});
+
+describe('equalsTemporal', () => {
+  it('is true for the same instant written two ways', () => {
+    const utc = resolveTemporal('2020-06-01T12:00:00Z');
+    const offset = resolveTemporal('2020-06-01T14:00:00+02:00');
+
+    expect(utc && offset && equalsTemporal(utc, offset)).toBe(true);
+  });
+
+  it('is false across domains rather than throwing', () => {
+    const time = resolveTemporal('14:30');
+    const date = resolveTemporal('2020-06-01');
+
+    expect(time && date && equalsTemporal(time, date)).toBe(false);
+  });
+});
+
+describe('calendar guards', () => {
+  it('rejects an out-of-range month', () => {
+    expect(daysInMonth(2020, 0)).toBeNull();
+    expect(daysInMonth(2020, 13)).toBeNull();
+    expect(daysInMonth(2020, 1.5)).toBeNull();
+  });
+
+  it('rejects non-integer year or day', () => {
+    expect(isValidCalendarDate(2020.5, 1, 1)).toBe(false);
+    expect(isValidCalendarDate(2020, 1, 1.5)).toBe(false);
   });
 });

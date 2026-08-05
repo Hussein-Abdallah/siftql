@@ -1,0 +1,786 @@
+import { SiftQLSyntaxError } from '../errors.js';
+import type {
+  BooleanOperator,
+  ComparisonOperator,
+  Expression,
+  Field,
+  FieldGroupBody,
+  FieldSegment,
+  LiteralExpression,
+  MatchTagExpression,
+  NonEmptyArray,
+  RangeBoundary,
+  RangeExpression,
+  RegexExpression,
+  RegexFlag,
+  SiftQLAst,
+  SourceLocation,
+  Tag,
+  TextLiteral,
+  WildcardExpression,
+} from '../types.js';
+import { RECOVERY_REASONS } from '../types.js';
+import { decodeEscapes, scanPattern } from './pattern.js';
+import { Tokenizer, type TokenizerOptions } from './tokenizer.js';
+import type { Token } from './tokens.js';
+
+/**
+ * Recursive-descent parser with Pratt-style precedence. Hand-written; no parser
+ * generator is involved anywhere in this package.
+ *
+ * Precedence, loosest to tightest:
+ *
+ *   OR  <  AND (explicit and implicit are the SAME level)  <  NOT / -  <  primary
+ *
+ * All binary operators are left-associative, so `a OR b OR c` is `(a OR b) OR c`
+ * and the tree shape is stable under re-parsing — which is what the round-trip
+ * law depends on.
+ *
+ * Two structural rules are worth stating because they are the reason several
+ * whole classes of bug cannot occur here:
+ *
+ * - A BARE TERM IS NOT A TAG. `foo` parses to a naked literal, so `Tag.field`
+ *   is never fabricated and never nullable.
+ * - A FIELD GROUP IS NOT DESUGARED. `name:(a OR b)` keeps its group instead of
+ *   becoming `(name:a OR name:b)`, so locations stay honest for highlight() and
+ *   error carets, and nesting does not multiply subtrees.
+ */
+
+export interface ParseOptions extends TokenizerOptions {
+  /**
+   * Best-effort parsing for incomplete input. Instead of throwing, holes become
+   * `MissingExpression` nodes stamped with `recovered`, which `compile()` then
+   * prunes or refuses. For search-as-you-type.
+   */
+  readonly tolerant?: boolean | undefined;
+}
+
+const REGEX_FLAGS = new Set<string>(['d', 'g', 'i', 'm', 's', 'u', 'v', 'y']);
+
+/** Tokens that can begin a primary expression, hence an implicit conjunction. */
+const STARTS_PRIMARY = new Set<Token['type']>([
+  'field',
+  'literal',
+  'lparen',
+  'not',
+  'prohibit',
+  'rangeOpen',
+  'regex',
+  'require',
+]);
+
+const span = (start: number, end: number): SourceLocation => ({ end, start });
+
+class Parser {
+  private readonly source: string;
+
+  private readonly tokens: readonly Token[];
+
+  private readonly tolerant: boolean;
+
+  private index = 0;
+
+  /**
+   * Depth of enclosing FIELD groups. Non-zero means a `field:` clause here would
+   * produce a Tag inside a FieldGroupBody, which the contract makes
+   * unconstructible, so it is refused at parse time instead.
+   */
+  private fieldGroupDepth = 0;
+
+  public constructor(
+    source: string,
+    tokens: readonly Token[],
+    tolerant: boolean,
+  ) {
+    this.source = source;
+    this.tokens = tokens;
+    this.tolerant = tolerant;
+  }
+
+  public parse(): SiftQLAst {
+    if (this.peek().type === 'eof') {
+      const { end, start } = this.peek();
+
+      return { location: span(start, end), type: 'EmptyExpression' };
+    }
+
+    const expression = this.parseOr();
+    const trailing = this.peek();
+
+    if (trailing.type !== 'eof') {
+      this.fail(`Unexpected ${this.describe(trailing)}`, trailing, [
+        'an operator',
+        'end of query',
+      ]);
+    }
+
+    return expression;
+  }
+
+  /* ----------------------------------------------------------------------- *
+   * Token helpers
+   * ----------------------------------------------------------------------- */
+
+  private peek(offset = 0): Token {
+    const token = this.tokens[this.index + offset];
+
+    // The stream always ends with eof, so this only fires past the end.
+    return (
+      token ?? {
+        end: this.source.length,
+        start: this.source.length,
+        type: 'eof',
+      }
+    );
+  }
+
+  private advance(): Token {
+    const token = this.peek();
+
+    if (token.type !== 'eof') {
+      this.index += 1;
+    }
+
+    return token;
+  }
+
+  private describe(token: Token): string {
+    switch (token.type) {
+      case 'and':
+      case 'or':
+      case 'not':
+        return `"${token.type.toUpperCase()}"`;
+      case 'comparison':
+        return `operator "${token.operator}"`;
+      case 'eof':
+        return 'end of query';
+      case 'field':
+        return `field "${token.name}"`;
+      case 'literal':
+        return `value "${token.value}"`;
+      case 'lparen':
+        return '"("';
+      case 'rangeClose':
+        return `"${token.delimiter}"`;
+      case 'rangeOpen':
+        return `"${token.delimiter}"`;
+      case 'regex':
+        return 'a regular expression';
+      case 'rparen':
+        return '")"';
+      case 'to':
+        return '"TO"';
+      default:
+        return `"${this.source.slice(token.start, token.end)}"`;
+    }
+  }
+
+  private fail(
+    message: string,
+    token: Token,
+    expected: readonly string[] = [],
+  ): never {
+    throw new SiftQLSyntaxError(
+      message,
+      span(token.start, token.end),
+      this.source,
+      { expected },
+    );
+  }
+
+  /** A hole for tolerant mode; always carries `recovered`, per the contract. */
+  private missing(at: number, reason: string): Expression {
+    return {
+      location: span(at, at),
+      recovered: { reason, synthetic: true },
+      type: 'MissingExpression',
+    };
+  }
+
+  /* ----------------------------------------------------------------------- *
+   * Precedence climb
+   * ----------------------------------------------------------------------- */
+
+  private parseOr(): Expression {
+    let left = this.parseAnd();
+
+    while (this.peek().type === 'or') {
+      const keyword = this.advance();
+      const operator: BooleanOperator = {
+        location: span(keyword.start, keyword.end),
+        notation: 'explicit',
+        operator: 'OR',
+        type: 'BooleanOperator',
+      };
+      const right = this.parseAnd();
+
+      left = {
+        left,
+        location: span(left.location.start, right.location.end),
+        operator,
+        right,
+        type: 'LogicalExpression',
+      };
+    }
+
+    return left;
+  }
+
+  private parseAnd(): Expression {
+    let left = this.parseUnary();
+
+    for (;;) {
+      const next = this.peek();
+      let operator: BooleanOperator;
+
+      if (next.type === 'and') {
+        this.advance();
+        operator = {
+          location: span(next.start, next.end),
+          notation: 'explicit',
+          operator: 'AND',
+          type: 'BooleanOperator',
+        };
+      } else if (STARTS_PRIMARY.has(next.type)) {
+        // Juxtaposition. The operator node is zero-width at the start of the
+        // right operand, because there is no text to point at.
+        operator = {
+          location: span(next.start, next.start),
+          notation: 'implicit',
+          operator: 'AND',
+          type: 'BooleanOperator',
+        };
+      } else {
+        return left;
+      }
+
+      const right = this.parseUnary();
+
+      left = {
+        left,
+        location: span(left.location.start, right.location.end),
+        operator,
+        right,
+        type: 'LogicalExpression',
+      };
+    }
+  }
+
+  private parseUnary(): Expression {
+    const next = this.peek();
+
+    if (next.type === 'not' || next.type === 'prohibit') {
+      this.advance();
+
+      const operand = this.parseUnary();
+
+      return {
+        location: span(next.start, operand.location.end),
+        operand,
+        operator: next.type === 'not' ? 'NOT' : '-',
+        type: 'UnaryOperator',
+      };
+    }
+
+    if (next.type === 'require') {
+      // Reserved for v0.2. Refused rather than silently ignored, because
+      // dropping it would make `+a b` and `a b` the same query.
+      throw new SiftQLSyntaxError(
+        'The required marker "+" is reserved and not supported in this version',
+        span(next.start, next.end),
+        this.source,
+        { code: 'UNSUPPORTED_SYNTAX' },
+      );
+    }
+
+    return this.parsePrimary();
+  }
+
+  private parsePrimary(): Expression {
+    const next = this.peek();
+
+    switch (next.type) {
+      case 'field':
+        return this.parseTag();
+      case 'literal':
+        return this.parseLiteralOrWildcard(
+          this.advance() as Extract<Token, { type: 'literal' }>,
+        );
+      case 'lparen':
+        return this.parseGroup();
+      case 'rangeOpen':
+        return this.parseRange();
+      case 'regex':
+        return this.parseRegex(
+          this.advance() as Extract<Token, { type: 'regex' }>,
+        );
+      default:
+        if (this.tolerant) {
+          return this.missing(next.start, RECOVERY_REASONS.missingOperand);
+        }
+
+        return this.fail(
+          `Expected a search term but found ${this.describe(next)}`,
+          next,
+          ['a value', 'a field', '"("'],
+        );
+    }
+  }
+
+  private parseGroup(): Expression {
+    const open = this.advance();
+    const inner = this.parseOr();
+    const close = this.peek();
+
+    if (close.type !== 'rparen') {
+      if (!this.tolerant) {
+        this.fail('Unclosed group: expected ")"', close, ['")"']);
+      }
+
+      return {
+        expression: inner,
+        location: span(open.start, inner.location.end),
+        recovered: { reason: RECOVERY_REASONS.unclosedGroup, synthetic: false },
+        type: 'ParenthesizedExpression',
+      };
+    }
+
+    this.advance();
+
+    return {
+      expression: inner,
+      location: span(open.start, close.end),
+      type: 'ParenthesizedExpression',
+    };
+  }
+
+  /* ----------------------------------------------------------------------- *
+   * Tags
+   * ----------------------------------------------------------------------- */
+
+  private parseTag(): Tag {
+    const fieldToken = this.advance() as Extract<Token, { type: 'field' }>;
+
+    if (this.fieldGroupDepth > 0) {
+      this.fail(
+        `A field group may not contain another field: "${fieldToken.name}:" is not allowed inside ( )`,
+        fieldToken,
+        ['a value'],
+      );
+    }
+
+    const operatorToken = this.peek();
+
+    if (operatorToken.type !== 'comparison') {
+      return this.fail('Expected a comparison operator', operatorToken, [':']);
+    }
+
+    this.advance();
+
+    const field = this.buildField(fieldToken);
+    const operator: ComparisonOperator = {
+      location: span(operatorToken.start, operatorToken.end),
+      operator: operatorToken.operator,
+      type: 'ComparisonOperator',
+    };
+
+    if (operatorToken.operator === ':') {
+      const expression = this.parseMatchValue(operatorToken);
+
+      return {
+        caseSensitive: operatorToken.caseSensitive,
+        expression,
+        field,
+        kind: 'match',
+        location: span(fieldToken.start, expression.location.end),
+        operator: operator as Extract<ComparisonOperator, { operator: ':' }>,
+        type: 'Tag',
+      };
+    }
+
+    const expression = this.parseRelationalValue(operatorToken);
+
+    return {
+      caseSensitive: operatorToken.caseSensitive,
+      expression,
+      field,
+      kind: 'relational',
+      location: span(fieldToken.start, expression.location.end),
+      operator: operator as Exclude<ComparisonOperator, { operator: ':' }>,
+      type: 'Tag',
+    };
+  }
+
+  private buildField(token: Extract<Token, { type: 'field' }>): Field {
+    const quoted = token.quote !== 'none';
+    // The tokenizer already split an unquoted name on its dots; a quoted name is
+    // one segment, so a literal key containing a dot stays addressable.
+    const names = token.path;
+    let cursor = quoted ? token.start + 1 : token.start;
+
+    const segments = names.map((name): FieldSegment => {
+      const start = cursor;
+      const end = start + name.length;
+
+      // +1 steps over the dot separating unquoted segments.
+      cursor = end + 1;
+
+      return {
+        location: span(start, end),
+        name: decodeEscapes(name),
+        quoted,
+        type: 'FieldSegment',
+      };
+    }) as unknown as NonEmptyArray<FieldSegment>;
+
+    return {
+      location: span(token.start, token.end),
+      segments,
+      type: 'Field',
+    };
+  }
+
+  private parseMatchValue(operator: Token): MatchTagExpression {
+    const next = this.peek();
+
+    switch (next.type) {
+      case 'literal':
+        return this.parseLiteralOrWildcard(
+          this.advance() as Extract<Token, { type: 'literal' }>,
+        );
+      case 'lparen':
+        return this.parseFieldGroup();
+      case 'rangeOpen':
+        return this.parseRange();
+      case 'regex':
+        return this.parseRegex(
+          this.advance() as Extract<Token, { type: 'regex' }>,
+        );
+      default:
+        if (this.tolerant) {
+          return this.missing(
+            operator.end,
+            RECOVERY_REASONS.missingValue,
+          ) as MatchTagExpression;
+        }
+
+        return this.fail(
+          `Expected a value after "${'operator' in operator ? operator.operator : ':'}"`,
+          next,
+          ['a value', 'a range', 'a regular expression', '"("'],
+        );
+    }
+  }
+
+  private parseRelationalValue(
+    operator: Extract<Token, { type: 'comparison' }>,
+  ): TextLiteral | Extract<Expression, { type: 'MissingExpression' }> {
+    const next = this.peek();
+
+    if (next.type !== 'literal') {
+      if (this.tolerant) {
+        return this.missing(
+          operator.end,
+          RECOVERY_REASONS.missingValue,
+        ) as Extract<Expression, { type: 'MissingExpression' }>;
+      }
+
+      return this.fail(
+        `"${operator.operator}" compares against a single value, but found ${this.describe(next)}`,
+        next,
+        ['a value'],
+      );
+    }
+
+    const parsed = this.parseLiteralOrWildcard(
+      this.advance() as Extract<Token, { type: 'literal' }>,
+    );
+
+    if (parsed.type !== 'LiteralExpression' || parsed.literal !== 'text') {
+      // height:>true, height:>=null, name:>foo*bar -- none of these order.
+      return this.fail(
+        `"${operator.operator}" compares against a single text or numeric value`,
+        next,
+        ['a value'],
+      );
+    }
+
+    return parsed;
+  }
+
+  /**
+   * `name:(a OR b)`. The body may not contain a Tag, which the contract enforces
+   * in the type system; the depth counter is what upholds it at parse time.
+   */
+  private parseFieldGroup(): MatchTagExpression {
+    const open = this.advance();
+
+    this.fieldGroupDepth += 1;
+
+    let inner: Expression;
+
+    try {
+      inner = this.parseOr();
+    } finally {
+      this.fieldGroupDepth -= 1;
+    }
+
+    const close = this.peek();
+
+    if (close.type !== 'rparen') {
+      if (!this.tolerant) {
+        this.fail('Unclosed field group: expected ")"', close, ['")"']);
+      }
+
+      return {
+        // Sound: parseTag refuses a field inside a group, so no Tag can occur.
+        expression: inner as FieldGroupBody,
+        location: span(open.start, inner.location.end),
+        recovered: { reason: RECOVERY_REASONS.unclosedGroup, synthetic: false },
+        type: 'ParenthesizedExpression',
+      };
+    }
+
+    this.advance();
+
+    return {
+      expression: inner as FieldGroupBody,
+      location: span(open.start, close.end),
+      type: 'ParenthesizedExpression',
+    };
+  }
+
+  /* ----------------------------------------------------------------------- *
+   * Leaves
+   * ----------------------------------------------------------------------- */
+
+  private parseLiteralOrWildcard(
+    token: Extract<Token, { type: 'literal' }>,
+  ): LiteralExpression | WildcardExpression {
+    const quoted = token.quote !== 'none';
+    const location = span(token.start, token.end);
+    // token.value is raw source text, so the content begins one character in
+    // when quoted. That keeps every wildcard segment's location exact.
+    const contentStart = quoted ? token.start + 1 : token.start;
+
+    if (!quoted) {
+      switch (token.value) {
+        case 'true':
+          return {
+            literal: 'boolean',
+            location,
+            quoted: false,
+            type: 'LiteralExpression',
+            value: true,
+          };
+        case 'false':
+          return {
+            literal: 'boolean',
+            location,
+            quoted: false,
+            type: 'LiteralExpression',
+            value: false,
+          };
+        case 'null':
+          return {
+            literal: 'null',
+            location,
+            quoted: false,
+            type: 'LiteralExpression',
+            value: null,
+          };
+        default:
+          break;
+      }
+    }
+
+    const scanned = scanPattern(token.value, contentStart);
+
+    if (scanned.kind === 'wildcard') {
+      return {
+        location,
+        pattern: scanned.segments,
+        quoted,
+        type: 'WildcardExpression',
+      };
+    }
+
+    return quoted
+      ? {
+          literal: 'text',
+          location,
+          quoted: true,
+          type: 'LiteralExpression',
+          value: scanned.value,
+        }
+      : {
+          literal: 'text',
+          location,
+          quoted: false,
+          type: 'LiteralExpression',
+          value: scanned.value,
+        };
+  }
+
+  private parseRegex(
+    token: Extract<Token, { type: 'regex' }>,
+  ): RegexExpression {
+    const seen = new Set<string>();
+    const flags: RegexFlag[] = [];
+
+    for (const flag of token.flags) {
+      if (!REGEX_FLAGS.has(flag)) {
+        this.fail(`Unknown regular expression flag "${flag}"`, token, [
+          'a valid flag',
+        ]);
+      }
+
+      if (seen.has(flag)) {
+        this.fail(`Duplicate regular expression flag "${flag}"`, token);
+      }
+
+      seen.add(flag);
+      flags.push(flag as RegexFlag);
+    }
+
+    return {
+      flags,
+      location: span(token.start, token.end),
+      // Preserved exactly as written: RegExp#source is lossy.
+      pattern: token.pattern,
+      type: 'RegexExpression',
+    };
+  }
+
+  /* ----------------------------------------------------------------------- *
+   * Ranges
+   * ----------------------------------------------------------------------- */
+
+  private parseRange(): RangeExpression {
+    const open = this.advance() as Extract<Token, { type: 'rangeOpen' }>;
+    const lowerInclusive = open.delimiter === '[';
+
+    const lower = this.parseRangeBoundary(lowerInclusive, 'lower');
+    const to = this.peek();
+
+    if (to.type !== 'to') {
+      this.fail('Expected "TO" between the range boundaries', to, ['"TO"']);
+    }
+
+    this.advance();
+
+    const close = this.tokens[this.findRangeClose()];
+    const upperInclusive =
+      close?.type === 'rangeClose' ? close.delimiter === ']' : true;
+    const upper = this.parseRangeBoundary(upperInclusive, 'upper');
+    const closing = this.peek();
+
+    if (closing.type !== 'rangeClose') {
+      if (!this.tolerant) {
+        this.fail('Unclosed range: expected "]" or "}"', closing, [
+          '"]"',
+          '"}"',
+        ]);
+      }
+
+      return {
+        location: span(open.start, upper.location.end),
+        lower,
+        recovered: { reason: RECOVERY_REASONS.unclosedRange, synthetic: false },
+        type: 'RangeExpression',
+        upper,
+      };
+    }
+
+    this.advance();
+
+    return {
+      location: span(open.start, closing.end),
+      lower,
+      type: 'RangeExpression',
+      upper,
+    };
+  }
+
+  /** Look ahead for the closing bracket so the upper bound knows its inclusivity. */
+  private findRangeClose(): number {
+    for (let at = this.index; at < this.tokens.length; at += 1) {
+      if (this.tokens[at]?.type === 'rangeClose') {
+        return at;
+      }
+    }
+
+    return -1;
+  }
+
+  private parseRangeBoundary(
+    inclusive: boolean,
+    side: 'lower' | 'upper',
+  ): RangeBoundary {
+    const token = this.peek();
+
+    if (token.type !== 'literal') {
+      return this.fail(`Expected the ${side} range boundary`, token, [
+        'a value',
+        '"*"',
+      ]);
+    }
+
+    this.advance();
+
+    const location = span(token.start, token.end);
+
+    // A bare `*` is the unbounded marker. Quoted "*" is the one-character string,
+    // which is why the quote check is not optional here.
+    if (token.quote === 'none' && token.value === '*') {
+      return { bounded: false, location, type: 'RangeBoundary' };
+    }
+
+    const quoted = token.quote !== 'none';
+    const contentStart = quoted ? token.start + 1 : token.start;
+    const scanned = scanPattern(token.value, contentStart);
+
+    if (scanned.kind === 'wildcard') {
+      return this.fail('A range boundary cannot contain wildcards', token, [
+        'a value',
+        '"*"',
+      ]);
+    }
+
+    return {
+      bounded: true,
+      inclusive,
+      location,
+      type: 'RangeBoundary',
+      value: quoted
+        ? {
+            literal: 'text',
+            location,
+            quoted: true,
+            type: 'LiteralExpression',
+            value: scanned.value,
+          }
+        : {
+            literal: 'text',
+            location,
+            quoted: false,
+            type: 'LiteralExpression',
+            value: scanned.value,
+          },
+    };
+  }
+}
+
+/**
+ * Parse a query string into an AST.
+ *
+ * Throws {@link SiftQLSyntaxError} on malformed input, carrying the offending
+ * span and a caret excerpt — unless `tolerant` is set, in which case holes
+ * become `MissingExpression` nodes and the result is always usable.
+ */
+export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
+  const tolerant = options.tolerant ?? false;
+  const tokens = new Tokenizer(query, { tolerant }).tokenize();
+
+  return new Parser(query, tokens, tolerant).parse();
+};

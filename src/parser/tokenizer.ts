@@ -501,14 +501,13 @@ export class Tokenizer {
       const character = this.peek();
 
       if (character === '\\') {
-        const escaped = this.peek(1);
-
-        // Only the quote and the backslash are escapes; everything else keeps
-        // its backslash so that patterns survive round-tripping unchanged.
-        value +=
-          escaped === quoteCharacter || escaped === '\\'
-            ? escaped
-            : `\\${escaped}`;
+        // Escapes are preserved VERBATIM, backslash included, for the same
+        // reason bare words preserve them: only the parser can tell an escaped
+        // `\*` from a wildcard `*`. Decoding `\\` to a single backslash here
+        // would make `"a\\*b"` ambiguous between "literal backslash then
+        // wildcard" and "literal asterisk". The escape is still consumed as a
+        // unit so an escaped quote does not end the string.
+        value += character + this.peek(1);
         this.index += 2;
         continue;
       }

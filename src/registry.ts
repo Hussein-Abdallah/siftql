@@ -43,7 +43,6 @@ import type {
   NonEmptyArray,
   NullLiteral,
   OrderingOperatorSymbol,
-  QuoteChar,
   RangeSide,
   RegexExpression,
   RegexFlag,
@@ -68,8 +67,14 @@ export type OperandToken =
   | {
       readonly kind: 'text';
       readonly text: string;
-      /** `null` ⇒ bare ⇒ case-insensitive. Load-bearing: `"true"` is a string. */
-      readonly quote: QuoteChar | null;
+      /**
+       * Whether the term was written inside quotes. Load-bearing, but NOT for
+       * case — case comes from the clause, see {@link OperandContext}. What this
+       * decides is keyword-versus-string: bare `true` is the boolean literal,
+       * quoted `"true"` is a four-character string, so a type that claims by
+       * token kind never swallows the quoted form.
+       */
+      readonly quoted: boolean;
       readonly node: TextLiteral;
     }
   | {
@@ -280,6 +285,13 @@ export const dispositionFor = (
 export interface OperandContext {
   readonly site: OperandSite;
   readonly options: ResolvedEngineOptions;
+  /**
+   * Whether the enclosing clause was written with a doubled colon. Supplied
+   * HERE, at operand-parse time, so a type can fold its operand once and keep
+   * the hot path allocation-free — which is why `equals` takes no context.
+   * Always false at a `scan` site: an unfielded term has no operator to double.
+   */
+  readonly caseSensitive: boolean;
   /** Delegate to a peer type by name, e.g. `currency` reusing `number`. */
   readonly lookup: (typeName: string) => AnyValueType | undefined;
 }
@@ -287,6 +299,8 @@ export interface OperandContext {
 export interface ValueContext {
   readonly site: OperandSite;
   readonly options: ResolvedEngineOptions;
+  /** The enclosing clause's collation; see {@link OperandContext.caseSensitive}. */
+  readonly caseSensitive: boolean;
   /** Where this value lives in the record: `['name','first']`, `['tags',3]`. */
   readonly path: readonly (string | number)[];
   /** True when the candidate is an object KEY rather than a value (`matchKeys`). */

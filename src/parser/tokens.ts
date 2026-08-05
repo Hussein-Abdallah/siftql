@@ -68,9 +68,3 @@ export type Token = SourceLocation &
     | { readonly type: 'rparen' }
     | { readonly type: 'to' }
   );
-
-/** Narrowing helper for the parser. */
-export const isTokenType = <TType extends Token['type']>(
-  token: Token,
-  type: TType,
-): token is Extract<Token, { type: TType }> => token.type === type;

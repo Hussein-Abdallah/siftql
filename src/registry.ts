@@ -46,8 +46,6 @@ import type {
   RangeSide,
   RegexExpression,
   RegexFlag,
-  SiftQLAst,
-  SourceLocation,
   TextLiteral,
   WildcardExpression,
   WildcardSegment,
@@ -625,121 +623,29 @@ export interface ResolvedEngineOptions {
 
 /* ========================================================================= *
  * 10. ENGINE
+ *
+ * The Engine interface lives in `./engine/create.ts`, next to its
+ * implementation, and `Highlight` above is the one engine-facing type the
+ * registry needs.
+ *
+ * NOTE FOR v0.2: this section previously declared `CompiledQuery`,
+ * `CompileResult`, `Queryable`, `ParseResult`, `Diagnostic`, `CreateEngine`
+ * and a second `Engine` describing `compile()`, `tryCompile()` and
+ * `parseWithDiagnostics()`. All were designed and then cut for the same reason
+ * as the backend-lowering hooks: declaration-only API is still API, every
+ * exported name is something this package is then obliged to support, and
+ * nothing in v0.1 could exercise any of it. Adding them later is additive.
  * ========================================================================= */
 
-export interface Diagnostic {
-  readonly severity: 'error' | 'warning';
-  readonly code: string;
-  readonly message: string;
-  readonly location: SourceLocation;
-}
-
-export interface ParseResult {
-  readonly ast: SiftQLAst;
-  readonly source: string;
-  /** Non-empty only under `tolerant: true`. */
-  readonly diagnostics: readonly Diagnostic[];
-}
-
+/** One field that made a record match, and what to light up inside it. */
 export interface Highlight {
   /** Dotted path for display: `name.first`, `tags.3`. Lossy if a key has a dot. */
   readonly path: string;
   /** Unambiguous form of `path`; prefer it for programmatic lookup. */
   readonly segments: readonly (string | number)[];
-  /** Absent when the whole value matched (ranges, comparisons, booleans). */
+  /**
+   * Absent when the whole value is the match and there is no substring to
+   * underline — a range, a comparison, a boolean.
+   */
   readonly query?: RegExp;
 }
-
-/**
- * A query with every operand already resolved against THIS engine's registry.
- * This is where type threading stops being cosmetic:
- *
- *  - `compile()` walks the AST once, calls `parseOperand` for each operand in
- *    registry order, and stores the winning type with its parsed representation;
- *  - every `SiftQLOperandError` therefore surfaces ONCE, before a single record
- *    is inspected — not on row 4,317;
- *  - `filter()` over 100k items runs `parseOperand` exactly as many times as
- *    there are operands.
- *
- * The bound representation is deliberately NOT published: a second exported IR
- * would double the semver-protected surface, and every backend switching on it
- * would have to be kept in step with the evaluator by hand.
- */
-export interface CompiledQuery {
-  readonly ast: SiftQLAst;
-  readonly engine: Engine;
-  /** Value type names this query resolved to, in AST order. Introspectable. */
-  readonly usedTypes: readonly string[];
-  test(item: unknown): boolean;
-  filter<T>(items: readonly T[]): T[];
-  highlight(item: unknown): readonly Highlight[];
-}
-
-/**
- * Non-throwing `compile()`.
- *
- * Operand failures ALWAYS throw from `compile()`; that policy is not negotiable
- * and not configurable. But a search box that compiles on every keystroke must
- * survive intermediate states such as `date:>=2020-0`, so the capture lives in a
- * sibling entry point rather than in a flag that would water the policy down.
- */
-export type CompileResult =
-  | { readonly ok: true; readonly query: CompiledQuery }
-  | { readonly ok: false; readonly error: Error };
-
-/** Anything accepted where a query is expected; a CompiledQuery skips re-binding. */
-export type Queryable = string | SiftQLAst | CompiledQuery;
-
-export interface Engine {
-  readonly id: string;
-  readonly registry: ValueTypeRegistry;
-  readonly options: ResolvedEngineOptions;
-
-  /**
-   * Registry-INDEPENDENT, on purpose. Tokenisation is fixed by the grammar and
-   * by the tokenizer's default/value/range modes, so the same string parses to
-   * the same tree in every engine and an AST is portable across engines,
-   * serializers and editors.
-   *
-   * This is why {@link ValueType} has no lexical hook. The one place a value
-   * type might seem to need one — the colons inside `2020-06-01T00:00:00Z` — is
-   * already solved by mode switching: after a comparison operator the tokenizer
-   * is in value mode, where a colon is an ordinary character. Letting a
-   * registered type arbitrate token boundaries would make "what does this string
-   * parse to" a function of configuration rather than a versioned statement, and
-   * would leave a spec-level grammar guarantee living inside a removable type.
-   */
-  parse(query: string, options?: ParseOptions): SiftQLAst;
-  parseWithDiagnostics(query: string, options?: ParseOptions): ParseResult;
-  serialize(ast: SiftQLAst): string;
-
-  compile(query: string | SiftQLAst, options?: EvaluateOptions): CompiledQuery;
-  tryCompile(
-    query: string | SiftQLAst,
-    options?: EvaluateOptions,
-  ): CompileResult;
-
-  test(query: Queryable, item: unknown, options?: EvaluateOptions): boolean;
-  filter<T>(
-    query: Queryable,
-    items: readonly T[],
-    options?: EvaluateOptions,
-  ): T[];
-  /**
-   * Highlights are collected only from branches that actually satisfied the
-   * query: the evaluator returns `{ matched, highlights }` pairs and DISCARDS
-   * the highlight set of any branch whose result was not used — the non-taken
-   * side of an OR, and everything under a satisfied NOT.
-   */
-  highlight(
-    query: Queryable,
-    item: unknown,
-    options?: EvaluateOptions,
-  ): readonly Highlight[];
-
-  /** Derive a new engine. Never mutates the receiver. */
-  extend(options: EngineOptions): Engine;
-}
-
-/** THE PRIMARY API: per-instance registry, no global state. */
-export type CreateEngine = (options?: EngineOptions) => Engine;

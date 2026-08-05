@@ -48,25 +48,13 @@ export {
   type TemporalOptions,
 } from './temporal/index.js';
 
-export {
-  BUILTIN_TYPE_ORDER,
-  claimed,
-  DECLINED,
-  defineValueType,
-  malformedOperand,
-  malformedValue,
-  MISS,
-  resolved,
-  type AnyValueType,
-  type EngineOptions,
-  type EvaluateOptions,
-  type Highlight,
-  type OperandContext,
-  type OperandToken,
-  type ValueContext,
-  type ValueType,
-  type ValueTypeInput,
-  type ValueTypeRegistry,
-} from './registry.js';
+/**
+ * The whole registry surface. A consumer writing a custom value type has to be
+ * able to name the types their own signature mentions -- OperandContext,
+ * ResolvedEngineOptions, ValueResult and the rest -- so these are exported
+ * wholesale rather than hand-picked, which is how several of them came to be
+ * unreachable in the first place.
+ */
+export * from './registry.js';
 
 export * from './types.js';

@@ -21,9 +21,32 @@ import { escapeRegExp } from './scalars.js';
  */
 
 export interface CompiledPattern {
+  /**
+   * Answers "does this value match". NEVER carries `g` or `y`.
+   *
+   * Those flags make `RegExp.prototype.test` STATEFUL — it advances
+   * `lastIndex` between calls — and this matcher is compiled once and reused
+   * for every record. With `g` left on, four identical rows return three
+   * matches: a silently wrong result, which is the one outcome this package
+   * exists to prevent.
+   */
   readonly matcher: RegExp;
+  /**
+   * Answers "which part of the value to underline", or `null` when there is
+   * nothing meaningful to point at. Unanchored and global, because a UI wants
+   * every occurrence of the term, not the whole field.
+   */
+  readonly highlighter: RegExp | null;
   readonly caseSensitive: boolean;
 }
+
+/** `g`/`y` make `test()` stateful; nothing else about a flag set matters here. */
+const forMatching = (flags: string): string =>
+  [...new Set(flags)].filter((flag) => flag !== 'g' && flag !== 'y').join('');
+
+/** A highlight wants every occurrence, so it always gets `g`. */
+const forHighlighting = (flags: string): string =>
+  [...new Set(`${forMatching(flags)}g`)].join('');
 
 /**
  * Translate pre-segmented wildcard segments into an anchored RegExp.
@@ -57,6 +80,39 @@ export const compileWildcard = (
   return new RegExp(`^${source}$`, caseSensitive ? 'u' : 'iu');
 };
 
+/**
+ * A pattern that finds the parts the user actually typed.
+ *
+ * The whole-value matcher is the wrong thing to underline: `*smith*` against
+ * "Smithers" would light up the entire cell, telling the reader nothing about
+ * WHY it matched. The literal segments are what they searched for, so those are
+ * what gets highlighted.
+ *
+ * Returns `null` for a pattern with no literal segments at all (`*`, `??`):
+ * everything matched, so there is no particular part to point at.
+ */
+export const compileWildcardHighlighter = (
+  pattern: NonEmptyArray<WildcardSegment>,
+  caseSensitive: boolean,
+): RegExp | null => {
+  const literals = pattern
+    .filter((segment) => segment.type === 'WildcardLiteral')
+    .map((segment) => segment.value)
+    .filter((value) => value.length > 0);
+
+  if (literals.length === 0) {
+    return null;
+  }
+
+  // Longest first, so `ab|a` cannot match the short alternative and stop early.
+  const alternatives = [...literals]
+    .sort((left, right) => right.length - left.length)
+    .map((value) => escapeRegExp(value))
+    .join('|');
+
+  return new RegExp(`(?:${alternatives})`, caseSensitive ? 'gu' : 'giu');
+};
+
 export const wildcardType: ValueType<CompiledPattern, string> = defineValueType<
   CompiledPattern,
   string
@@ -65,7 +121,7 @@ export const wildcardType: ValueType<CompiledPattern, string> = defineValueType<
 
   equals: (value, operand) => operand.matcher.test(value),
 
-  highlight: (_value, operand) => operand.matcher,
+  highlight: (_value, operand) => operand.highlighter,
 
   name: 'wildcard',
 
@@ -76,6 +132,10 @@ export const wildcardType: ValueType<CompiledPattern, string> = defineValueType<
 
     return claimed({
       caseSensitive: ctx.caseSensitive,
+      highlighter: compileWildcardHighlighter(
+        operand.pattern,
+        ctx.caseSensitive,
+      ),
       matcher: compileWildcard(operand.pattern, ctx.caseSensitive),
     });
   },
@@ -102,7 +162,7 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
   // regex engine. Anchoring is the author's job with ^ and $.
   equals: (value, operand) => operand.matcher.test(value),
 
-  highlight: (_value, operand) => operand.matcher,
+  highlight: (_value, operand) => operand.highlighter,
 
   name: 'regex',
 
@@ -125,10 +185,14 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
     // that is left strictly alone: neither `:` nor `::` adds or removes it.
     // Inferring `i` from the clause would make `name:/^A/` match "ada", which
     // is not what anyone who reached for a regex asked for.
+    const flags = operand.flags.join('');
+
     try {
       return claimed({
         caseSensitive: !operand.flags.includes('i'),
-        matcher: new RegExp(operand.source, operand.flags.join('')),
+        // The user's own pattern is already the thing to underline.
+        highlighter: new RegExp(operand.source, forHighlighting(flags)),
+        matcher: new RegExp(operand.source, forMatching(flags)),
       });
     } catch (error) {
       // A pattern the engine cannot compile is a broken QUERY, so it stops

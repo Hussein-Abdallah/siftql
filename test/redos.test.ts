@@ -143,3 +143,41 @@ describe('policy is configurable', () => {
     ).toThrow(SiftQLOperandError);
   });
 });
+
+describe('a global flag must not make matching stateful', () => {
+  // RegExp.prototype.test advances lastIndex when the pattern carries `g`, and
+  // the matcher is compiled once and reused for every record. Left unhandled,
+  // four identical rows return three matches -- a silently wrong result.
+  const identical = [
+    { id: 1, v: 'aa' },
+    { id: 2, v: 'aa' },
+    { id: 3, v: 'aa' },
+    { id: 4, v: 'aa' },
+  ];
+
+  it('matches every row regardless of the g flag', () => {
+    expect(filter('v:/a/', identical).map((row) => row.id)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(filter('v:/a/g', identical).map((row) => row.id)).toEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+
+  it('is unaffected by the sticky flag either', () => {
+    expect(filter('v:/a/y', identical).map((row) => row.id)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(filter('v:/a/gy', identical).map((row) => row.id)).toEqual([
+      1, 2, 3, 4,
+    ]);
+  });
+
+  it('keeps flags that genuinely change matching', () => {
+    const mixed = [{ v: 'AA' }, { v: 'aa' }];
+
+    expect(filter('v:/a/', mixed)).toHaveLength(1);
+    expect(filter('v:/a/i', mixed)).toHaveLength(2);
+    expect(filter('v:/a/gi', mixed)).toHaveLength(2);
+  });
+});

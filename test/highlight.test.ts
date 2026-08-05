@@ -161,3 +161,53 @@ describe('a value type supplies the pattern, never the survival decision', () =>
     expect(highlight('NOT priority:[10 TO 20]', ROW)).toEqual([]);
   });
 });
+
+describe('a highlight points at what was searched for, not the whole value', () => {
+  const person = { notes: 'seen at smith street', surname: 'Smithers' };
+
+  const underlined = (query: string, field: 'notes' | 'surname'): string[] => {
+    const entry = highlight(query, person).find((h) => h.path === field);
+
+    if (!entry?.query) {
+      return [];
+    }
+
+    return [...person[field].matchAll(entry.query)].map((match) => match[0]);
+  };
+
+  it('underlines only the literal part of a wildcard pattern', () => {
+    // The whole-value matcher would light up the entire cell, telling a reader
+    // nothing about WHY the row matched.
+    expect(underlined('surname:*smith*', 'surname')).toEqual(['Smith']);
+    expect(underlined('surname:smith*', 'surname')).toEqual(['Smith']);
+    expect(underlined('notes:*smith*', 'notes')).toEqual(['smith']);
+  });
+
+  it('underlines every occurrence, not just the first', () => {
+    expect(underlined('notes:*s*', 'notes')).toEqual(['s', 's', 's']);
+  });
+
+  it('underlines each literal of a multi-part pattern', () => {
+    expect(underlined('notes:*seen*street*', 'notes')).toEqual([
+      'seen',
+      'street',
+    ]);
+  });
+
+  it('underlines the whole value for an exact match, which IS the match', () => {
+    expect(underlined('surname:Smithers', 'surname')).toEqual(['Smithers']);
+  });
+
+  it('offers nothing to underline when the pattern has no literal at all', () => {
+    // `*` matched everything; no particular part is the reason.
+    const [entry] = highlight('surname:*', person);
+
+    expect(entry?.path).toBe('surname');
+    expect(entry?.query).toBeUndefined();
+  });
+
+  it('respects case sensitivity in the pattern it hands back', () => {
+    expect(underlined('surname::*Smith*', 'surname')).toEqual(['Smith']);
+    expect(highlight('surname::*smith*', person)).toEqual([]);
+  });
+});

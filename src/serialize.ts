@@ -9,8 +9,20 @@ import type {
 import {
   OPERATOR_PRECEDENCE,
   RESERVED_CHARACTERS,
+  RESERVED_WORDS,
   rangeBracket,
 } from './types.js';
+
+/**
+ * Bare words the parser turns into typed literals rather than text. A
+ * TextLiteral carrying one of these must be escaped or it changes type on the
+ * way back in.
+ */
+const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
+  'true',
+  'false',
+  'null',
+]);
 
 /**
  * AST → query string.
@@ -38,6 +50,8 @@ import {
  * with no parenthesis nodes at all, still serializes to something that re-parses
  * to the same shape.
  */
+
+type LogicalNode = Extract<Expression, { type: 'LogicalExpression' }>;
 
 /** Leaves and non-operator nodes bind tighter than any operator. */
 const ATOM_PRECEDENCE = Number.POSITIVE_INFINITY;
@@ -75,13 +89,37 @@ type TermPosition = 'term' | 'value';
 // grapheme cluster or surrogate pair for the spread to split.
 // eslint-disable-next-line @typescript-eslint/no-misused-spread
 const ALWAYS_ESCAPED = new Set([...' \t\n\r\f\v()]}"\'\\^~*?']);
-const TERM_ONLY_ESCAPED = new Set([':', '[', '{', '<', '>', '=', '/']);
-const LEADING_ONLY = { term: new Set(['-', '+', '/']), value: new Set(['/']) };
+
+/** Structural only at the operator level, ordinary once inside a value. */
+const TERM_ONLY_ESCAPED = new Set([':', '[', '{', '<', '>', '=']);
+
+/**
+ * Structural only in FIRST position, and the set differs by context.
+ *
+ * In value position the tokenizer decides what a term IS from its first
+ * character: `/` opens a regex, `[`/`{` open a range, and `:`/`=`/`<`/`>`
+ * would have been consumed as part of the operator. Leaving any of them
+ * unescaped turns a match clause into a different clause entirely, or into
+ * something that no longer parses.
+ */
+const LEADING_ONLY = {
+  term: new Set(['-', '+', '/']),
+  value: new Set(['/', '[', '{', ':', '=', '<', '>']),
+};
 
 const escapeBareTerm = (
   value: string,
   position: TermPosition = 'value',
 ): string => {
+  // A term whose whole text is a grammar keyword or a typed literal cannot be
+  // written bare: `AND` would restructure the query, `true` would come back as
+  // the boolean rather than the four-character string. Escaping the first
+  // character is enough to make the tokenizer read it as an ordinary word,
+  // and it survives the round trip because the parser strips the backslash.
+  if (RESERVED_WORDS.has(value) || KEYWORD_LITERALS.has(value)) {
+    return `\\${value}`;
+  }
+
   let escaped = '';
 
   for (let index = 0; index < value.length; index += 1) {
@@ -233,15 +271,56 @@ const serializeNode = (
         : String(node.value);
 
     case 'LogicalExpression': {
-      const precedence = precedenceOf(node);
-      // Left-associative, so an equal-precedence RIGHT operand needs brackets
-      // to keep its shape while an equal-precedence left operand does not.
-      const left = wrap(node.left, precedenceOf(node.left) < precedence);
-      const right = wrap(node.right, precedenceOf(node.right) <= precedence);
+      // Operators are left-associative, so `a AND b AND c ...` is a LEFT SPINE
+      // one node deep per term. parse() builds it with a loop and accepts
+      // 50,000 terms; recursing to print it costs one frame per term and
+      // overflowed the stack at around 5,000 — a query the parser had just
+      // accepted could not be serialized. The spine is walked iteratively so
+      // the two agree on what is representable.
+      const spine: LogicalNode[] = [];
 
-      return node.operator.notation === 'implicit'
-        ? `${left} ${right}`
-        : `${left} ${node.operator.operator} ${right}`;
+      let deepest = node;
+
+      while (
+        deepest.left.type === 'LogicalExpression' &&
+        precedenceOf(deepest.left) >= precedenceOf(deepest)
+      ) {
+        spine.push(deepest);
+        deepest = deepest.left;
+      }
+
+      // Only the innermost left operand needs the general treatment; every
+      // node above it has a left that is already printed.
+      let text = wrap(
+        deepest.left,
+        precedenceOf(deepest.left) < precedenceOf(deepest),
+      );
+
+      const appendRight = (frame: LogicalNode): void => {
+        // An equal-precedence RIGHT operand needs brackets to keep its shape;
+        // an equal-precedence left operand does not.
+        const right = wrap(
+          frame.right,
+          precedenceOf(frame.right) <= precedenceOf(frame),
+        );
+
+        text =
+          frame.operator.notation === 'implicit'
+            ? `${text} ${right}`
+            : `${text} ${frame.operator.operator} ${right}`;
+      };
+
+      appendRight(deepest);
+
+      for (let index = spine.length - 1; index >= 0; index -= 1) {
+        const frame = spine[index];
+
+        if (frame) {
+          appendRight(frame);
+        }
+      }
+
+      return text;
     }
 
     case 'MissingExpression':

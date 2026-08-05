@@ -644,8 +644,20 @@ export interface Highlight {
   /** Unambiguous form of `path`; prefer it for programmatic lookup. */
   readonly segments: readonly (string | number)[];
   /**
-   * Absent when the whole value is the match and there is no substring to
-   * underline — a range, a comparison, a boolean.
+   * Where inside the value to underline. Absent when the whole value is the
+   * match and there is no substring to point at — a range, a comparison, a
+   * boolean.
+   *
+   * CARRIES THE `g` FLAG, and is therefore STATEFUL: `.test()` and `.exec()`
+   * advance `lastIndex`, so calling either twice on the same instance gives
+   * different answers. That is deliberate — the common consumers
+   * (`String.prototype.matchAll`, and highlighter components that loop on
+   * `while (match = regex.exec(text))`) REQUIRE a global regex, and a
+   * non-global one makes that loop spin forever.
+   *
+   * Each Highlight gets its OWN instance, so iterating the returned array is
+   * safe. If you keep one and reuse it, reset `lastIndex` between calls or
+   * clone it: `new RegExp(query.source, query.flags)`.
    */
   readonly query?: RegExp;
 }

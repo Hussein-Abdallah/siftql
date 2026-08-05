@@ -55,19 +55,24 @@ class Registry implements ValueTypeRegistry {
 
   private readonly options: ResolvedEngineOptions;
 
-  private readonly builtinNames: ReadonlySet<string>;
+  /**
+   * The built-in type OBJECTS, not their names. A user type registered with
+   * `typeStrategy: 'replace'` may legitimately be called `number`, and matching
+   * on the name would then label it a built-in when no built-in is present.
+   */
+  private readonly builtins: ReadonlySet<AnyValueType>;
 
   public constructor(
     types: readonly AnyValueType[],
     options: ResolvedEngineOptions,
-    builtinNames: ReadonlySet<string>,
+    builtins: ReadonlySet<AnyValueType>,
   ) {
     assertUniqueNames(types);
 
     this.types = Object.freeze([...types]);
     this.byName = new Map(types.map((type) => [type.name, type]));
     this.options = options;
-    this.builtinNames = builtinNames;
+    this.builtins = builtins;
   }
 
   public get(name: string): AnyValueType | undefined {
@@ -76,7 +81,7 @@ class Registry implements ValueTypeRegistry {
 
   public describe(): readonly TypeDescriptor[] {
     return this.types.map((type) => ({
-      builtin: this.builtinNames.has(type.name),
+      builtin: this.builtins.has(type),
       name: type.name,
       // A type is ordered if and only if it has an `ordering` object. That
       // absence is the single fact behind `name:>="m"` throwing.
@@ -88,7 +93,12 @@ class Registry implements ValueTypeRegistry {
     inputs: readonly ValueTypeInput[],
     strategy: TypeStrategy = 'prepend',
   ): ValueTypeRegistry {
-    const environment = makeEnvironment(this.options, () => next);
+    // A box rather than a closure over `const next`: factories run BEFORE the
+    // new registry exists, and one calling env.lookup() eagerly would escape a
+    // raw TDZ ReferenceError out of a documented public method. The contract
+    // says lookup may return undefined; it must not explode.
+    const box: { registry?: ValueTypeRegistry } = {};
+    const environment = makeEnvironment(this.options, () => box.registry);
     const added = inputs.map((input) => resolveInput(input, environment));
 
     const combined =
@@ -100,13 +110,9 @@ class Registry implements ValueTypeRegistry {
             // before `number` ever sees it.
             [...added, ...this.types];
 
-    const next: ValueTypeRegistry = new Registry(
-      combined,
-      this.options,
-      this.builtinNames,
-    );
+    box.registry = new Registry(combined, this.options, this.builtins);
 
-    return next;
+    return box.registry;
   }
 }
 
@@ -141,7 +147,7 @@ export const createRegistry = (
   const builtins = builtinValueTypes().map((input) =>
     resolveInput(input, environment),
   );
-  const builtinNames = new Set(builtins.map((type) => type.name));
+  const builtinSet = new Set(builtins);
 
   const added = inputs.map((input) => resolveInput(input, environment));
 
@@ -152,7 +158,7 @@ export const createRegistry = (
         ? [...builtins, ...added]
         : [...added, ...builtins];
 
-  box.registry = new Registry(combined, options, builtinNames);
+  box.registry = new Registry(combined, options, builtinSet);
 
   return box.registry;
 };

@@ -89,8 +89,26 @@ export const resolveTemporal = (
     }
   }
 
-  if (typeof value === 'string' && options.dateFormat !== undefined) {
-    const formatted = parseWithFormats(value, options.dateFormat);
+  if (
+    options.dateFormat !== undefined &&
+    (typeof value === 'string' || typeof value === 'number')
+  ) {
+    /*
+     * A declared layout applies to BOTH sides of the comparison.
+     *
+     * Numbers are stringified first, because a layout such as `YYYYMMDD`
+     * describes digits and a field holding `20200601` as a NUMBER means the
+     * same day as one holding it as a string. Reading the operand through the
+     * layout while reading the value as epoch milliseconds put the two sides
+     * fifty years apart and reported them as comparable.
+     *
+     * A genuine epoch-millisecond value is unaffected: 1593000000000 does not
+     * match an 8-character layout, so it falls through to the branch below.
+     */
+    const formatted = parseWithFormats(
+      typeof value === 'number' ? String(value) : value,
+      options.dateFormat,
+    );
 
     if (formatted) {
       return formatted;

@@ -183,10 +183,10 @@ const readValue = (
   location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
 ): { ok: true; value: unknown } | { ok: false } => {
-  const [path, raw] = candidate;
+  const [path, raw, candidateIsKey = false] = candidate;
   const result = bound.type.coerceValue(
     raw,
-    valueContext(site, caseSensitive, path, isKey, context),
+    valueContext(site, caseSensitive, path, isKey || candidateIsKey, context),
   );
 
   if (result.ok) {
@@ -276,6 +276,13 @@ export const compileExpression = (
   node: SiftQLAst,
   context: EvaluationContext,
   defaultField: Field | null = null,
+  /**
+   * The enclosing clause's collation. A field group is ONE clause, so
+   * `name::(Ada)` must apply `::` to every term inside it exactly as
+   * `name::Ada` does -- the flag has to travel with the pushed field or it is
+   * silently discarded at the group boundary.
+   */
+  defaultCaseSensitive = false,
 ): Predicate => {
   switch (node.type) {
     case 'EmptyExpression':
@@ -283,8 +290,18 @@ export const compileExpression = (
       return () => true;
 
     case 'LogicalExpression': {
-      const left = compileExpression(node.left, context, defaultField);
-      const right = compileExpression(node.right, context, defaultField);
+      const left = compileExpression(
+        node.left,
+        context,
+        defaultField,
+        defaultCaseSensitive,
+      );
+      const right = compileExpression(
+        node.right,
+        context,
+        defaultField,
+        defaultCaseSensitive,
+      );
 
       if (node.operator.operator === 'AND') {
         return (item, sink) => {
@@ -334,10 +351,20 @@ export const compileExpression = (
       return () => false;
 
     case 'ParenthesizedExpression':
-      return compileExpression(node.expression, context, defaultField);
+      return compileExpression(
+        node.expression,
+        context,
+        defaultField,
+        defaultCaseSensitive,
+      );
 
     case 'UnaryOperator': {
-      const operand = compileExpression(node.operand, context, defaultField);
+      const operand = compileExpression(
+        node.operand,
+        context,
+        defaultField,
+        defaultCaseSensitive,
+      );
 
       return (item, sink) => {
         const checkpoint = sink?.mark() ?? 0;
@@ -363,16 +390,24 @@ export const compileExpression = (
           node.expression.expression,
           context,
           node.field,
+          node.caseSensitive,
         );
       }
 
-      return compileClause(node, context, node.field);
+      return compileClause(node, context, node.field, node.caseSensitive);
     }
 
     default:
-      return compileClause(node, context, defaultField);
+      return compileClause(node, context, defaultField, defaultCaseSensitive);
   }
 };
+
+/**
+ * Under a throwing policy every candidate must be inspected, or whether an
+ * error fires depends on the order of an array.
+ */
+const exhaustiveScan = (context: EvaluationContext): boolean =>
+  context.options.onValueError === 'throw';
 
 /**
  * Test every candidate.
@@ -384,6 +419,17 @@ export const compileExpression = (
 const anyCandidateMatches = (
   candidates: readonly Candidate[],
   sink: HighlightSink | null,
+  /**
+   * Whether every candidate must be visited even after one matches.
+   *
+   * Short-circuiting is correct for a boolean answer, but it makes
+   * `onValueError: 'throw'` depend on ARRAY ORDER: a dirty element sitting
+   * after a matching one is never coerced, so the same multiset of values
+   * throws or does not depending on how it happens to be sorted. It also made
+   * filter() and highlight() disagree, since highlight never short-circuits.
+   * Under a throwing policy every candidate is inspected.
+   */
+  exhaustive: boolean,
   hit: (candidate: Candidate) => boolean,
 ): boolean => {
   let matched = false;
@@ -392,7 +438,7 @@ const anyCandidateMatches = (
     if (hit(candidate)) {
       matched = true;
 
-      if (sink === null) {
+      if (sink === null && !exhaustive) {
         return true;
       }
     }
@@ -411,16 +457,36 @@ const emit = (
   caseSensitive: boolean,
   context: EvaluationContext,
 ): void => {
-  const [segments] = candidate;
+  const [segments, , isKey = false] = candidate;
+
+  // A key hit matched the field's NAME, not its contents. Reporting a pattern
+  // would hand the caller one that provably cannot match the value stored at
+  // the path, so the path is reported bare -- the same shape used when the
+  // whole value is the match.
+  if (isKey) {
+    sink.add({ path: formatPath(segments), segments });
+
+    return;
+  }
+
   const query = bound.type.highlight?.(
     value,
     bound.operand,
-    valueContext(site, caseSensitive, segments, false, context),
+    valueContext(site, caseSensitive, segments, isKey, context),
   );
 
   sink.add(
     query
-      ? { path: formatPath(segments), query, segments }
+      ? {
+          path: formatPath(segments),
+          // A FRESH instance per hit. The type compiles its highlighter once
+          // and hands back the same object every time, and a `g` pattern
+          // carries lastIndex -- so a caller iterating the returned highlights
+          // with .test()/.exec() would get alternating answers from what looks
+          // like an independent regex.
+          query: new RegExp(query.source, query.flags),
+          segments,
+        }
       : // A range or a boolean has no textual footprint, so the whole value is
         // the match and there is no pattern to report.
         { path: formatPath(segments), segments },
@@ -431,6 +497,7 @@ const compileClause = (
   node: Expression,
   context: EvaluationContext,
   field: Field | null,
+  clauseCaseSensitive: boolean,
 ): Predicate => {
   const path = field ? fieldPath(field) : null;
 
@@ -473,72 +540,83 @@ const compileClause = (
       const operator = node.operator.operator;
 
       return (item, sink) =>
-        anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
-          const read = readValue(
-            bound,
-            candidate,
-            site,
-            caseSensitive,
-            false,
-            node.expression.location,
-            context,
-          );
+        anyCandidateMatches(
+          candidatesFor(item),
+          sink,
+          exhaustiveScan(context),
+          (candidate) => {
+            const read = readValue(
+              bound,
+              candidate,
+              site,
+              caseSensitive,
+              false,
+              node.expression.location,
+              context,
+            );
 
-          if (!read.ok) {
-            return false;
-          }
-
-          const record = (matched: boolean): boolean => {
-            if (matched && sink) {
-              emit(
-                sink,
-                bound,
-                read.value,
-                candidate,
-                site,
-                caseSensitive,
-                context,
-              );
+            if (!read.ok) {
+              return false;
             }
 
-            return matched;
-          };
+            const record = (matched: boolean): boolean => {
+              if (matched && sink) {
+                emit(
+                  sink,
+                  bound,
+                  read.value,
+                  candidate,
+                  site,
+                  caseSensitive,
+                  context,
+                );
+              }
 
-          if (isEquality) {
-            return record(bound.type.equals(read.value, bound.operand));
-          }
+              return matched;
+            };
 
-          const ordering = compareOne(bound, read.value);
+            if (isEquality) {
+              return record(bound.type.equals(read.value, bound.operand));
+            }
 
-          if (ordering === null) {
-            return signalValueFailure({
-              kind: 'incomparable',
-              location: node.expression.location,
-              onValueError: context.options.onValueError,
-              path: candidate[0],
-              reason: null,
-              site: 'ordered',
-              typeName: bound.type.name,
-              value: candidate[1],
-            });
-          }
+            const ordering = compareOne(bound, read.value);
 
-          switch (operator) {
-            case ':>':
-              return record(ordering > 0);
-            case ':>=':
-              return record(ordering >= 0);
-            case ':<':
-              return record(ordering < 0);
-            default:
-              return record(ordering <= 0);
-          }
-        });
+            if (ordering === null) {
+              return signalValueFailure({
+                kind: 'incomparable',
+                location: node.expression.location,
+                onValueError: context.options.onValueError,
+                path: candidate[0],
+                reason: null,
+                site: 'ordered',
+                typeName: bound.type.name,
+                value: candidate[1],
+              });
+            }
+
+            switch (operator) {
+              case ':>':
+                return record(ordering > 0);
+              case ':>=':
+                return record(ordering >= 0);
+              case ':<':
+                return record(ordering < 0);
+              default:
+                return record(ordering <= 0);
+            }
+          },
+        );
     }
 
     // Match tag: a range, or a single operand.
     if (node.expression.type === 'RangeExpression') {
-      return compileRange(node, context, candidatesFor);
+      return compileRange(
+        node.expression,
+        node.field,
+        caseSensitive,
+        context,
+        candidatesFor,
+      );
     }
 
     const site: OperandSite = { field: node.field, kind: 'match' };
@@ -558,14 +636,99 @@ const compileClause = (
     );
 
     return (item, sink) =>
-      anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
+      anyCandidateMatches(
+        candidatesFor(item),
+        sink,
+        exhaustiveScan(context),
+        (candidate) => {
+          const read = readValue(
+            bound,
+            candidate,
+            site,
+            caseSensitive,
+            false,
+            node.expression.location,
+            context,
+          );
+
+          const matched =
+            read.ok &&
+            matchOne(
+              bound,
+              read.value,
+              site,
+              caseSensitive,
+              candidate[0],
+              false,
+              context,
+            );
+
+          if (matched && sink) {
+            emit(
+              sink,
+              bound,
+              read.value,
+              candidate,
+              site,
+              caseSensitive,
+              context,
+            );
+          }
+
+          return matched;
+        },
+      );
+  }
+
+  // ---- A bare term, or a term inside a field group --------------------------
+  //
+  // Both reach here. Inside a group `field` is the pushed default and
+  // `clauseCaseSensitive` is the enclosing clause's collation; unfielded, the
+  // field is null and a scan is always case-insensitive because there is no
+  // operator to double.
+  const caseSensitive = field ? clauseCaseSensitive : false;
+
+  // A range is a legal member of a field group (`n:(1 OR [2 TO 3])`), and it
+  // has no operand token -- so it must be routed before the token path, or it
+  // compiles to constant false and quietly drops its rows.
+  if (node.type === 'RangeExpression') {
+    if (field === null) {
+      // An unfielded range has nothing to range over.
+      return () => false;
+    }
+
+    return compileRange(node, field, caseSensitive, context, candidatesFor);
+  }
+
+  const site: OperandSite = field ? { field, kind: 'match' } : { kind: 'scan' };
+  const token = toOperandToken(node);
+
+  if (token === null) {
+    return () => false;
+  }
+
+  const bound = resolveOperand(
+    token,
+    site,
+    caseSensitive,
+    context,
+    node.location,
+    sourceOf(node),
+  );
+
+  return (item, sink) =>
+    anyCandidateMatches(
+      candidatesFor(item),
+      sink,
+      exhaustiveScan(context),
+      (candidate) => {
         const read = readValue(
           bound,
           candidate,
           site,
           caseSensitive,
           false,
-          node.expression.location,
+          node.location,
           context,
         );
 
@@ -577,7 +740,7 @@ const compileClause = (
             site,
             caseSensitive,
             candidate[0],
-            false,
+            candidate[2] ?? false,
             context,
           );
 
@@ -594,62 +757,24 @@ const compileClause = (
         }
 
         return matched;
-      });
-  }
-
-  // ---- Unfielded term: sweep every leaf -------------------------------------
-  const site: OperandSite = field ? { field, kind: 'match' } : { kind: 'scan' };
-  const token = toOperandToken(node);
-
-  if (token === null) {
-    return () => false;
-  }
-
-  const bound = resolveOperand(
-    token,
-    site,
-    false,
-    context,
-    node.location,
-    sourceOf(node),
-  );
-
-  return (item, sink) =>
-    anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
-      const read = readValue(
-        bound,
-        candidate,
-        site,
-        false,
-        false,
-        node.location,
-        context,
-      );
-
-      const matched =
-        read.ok &&
-        matchOne(bound, read.value, site, false, candidate[0], false, context);
-
-      if (matched && sink) {
-        emit(sink, bound, read.value, candidate, site, false, context);
-      }
-
-      return matched;
-    });
+      },
+    );
 };
 
+/**
+ * Compile a range against a field.
+ *
+ * Takes the range and its field separately rather than a Tag, because a range
+ * is equally legal inside a field group (`n:(1 OR [2 TO 3])`) where there is no
+ * Tag wrapping it.
+ */
 const compileRange = (
-  node: Extract<Expression, { type: 'Tag' }>,
+  range: Extract<Expression, { type: 'RangeExpression' }>,
+  field: Field,
+  caseSensitive: boolean,
   context: EvaluationContext,
   candidatesFor: (item: unknown) => Candidate[],
 ): Predicate => {
-  if (node.expression.type !== 'RangeExpression') {
-    return () => false;
-  }
-
-  const range = node.expression;
-  const caseSensitive = node.caseSensitive;
-
   const bindBoundary = (
     boundary: RangeBoundary,
     side: 'lower' | 'upper',
@@ -669,7 +794,7 @@ const compileRange = (
     return resolveOperand(
       token,
       {
-        field: node.field,
+        field,
         inclusive: boundary.bounded ? boundary.inclusive : true,
         kind: 'range',
         side,
@@ -686,8 +811,26 @@ const compileRange = (
   const reference = lower ?? upper;
 
   if (reference === null) {
-    // [* TO *] -- every value its type can read is in range.
-    return () => true;
+    // `[* TO *]` -- unbounded at both ends. It is NOT "match everything": the
+    // field still has to exist and hold a value, or a record with no such key
+    // at all would match a range over it. With no boundary to name a type,
+    // "has a readable value here" is the strongest claim available.
+    return (item, sink) =>
+      anyCandidateMatches(
+        candidatesFor(item),
+        sink,
+        exhaustiveScan(context),
+        (candidate) => {
+          const [segments, raw] = candidate;
+          const present = raw !== undefined && raw !== null;
+
+          if (present && sink) {
+            sink.add({ path: formatPath(segments), segments });
+          }
+
+          return present;
+        },
+      );
   }
 
   if (lower && upper && lower.type.name !== upper.type.name) {
@@ -697,73 +840,73 @@ const compileRange = (
         code: 'MIXED_RANGE_TYPES',
         location: range.location,
         raw: '',
-        site: {
-          field: node.field,
-          inclusive: true,
-          kind: 'range',
-          side: 'upper',
-        },
+        site: { field, inclusive: true, kind: 'range', side: 'upper' },
       },
     );
   }
 
   const site: OperandSite = {
-    field: node.field,
+    field,
     inclusive: true,
     kind: 'range',
     side: 'lower',
   };
 
   return (item, sink) =>
-    anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
-      const read = readValue(
-        reference,
-        candidate,
-        site,
-        caseSensitive,
-        false,
-        range.location,
-        context,
-      );
-
-      if (!read.ok) {
-        return false;
-      }
-
-      const low = withinBoundary(lower, range.lower, read.value, 'lower');
-      const high = withinBoundary(upper, range.upper, read.value, 'upper');
-
-      if (low === null || high === null) {
-        return signalValueFailure({
-          kind: 'incomparable',
-          location: range.location,
-          onValueError: context.options.onValueError,
-          path: candidate[0],
-          reason: null,
-          site: 'range',
-          typeName: reference.type.name,
-          value: candidate[1],
-        });
-      }
-
-      const matched = low && high;
-
-      if (matched && sink) {
-        // A range has no textual footprint, so `emit` records the path with no
-        // pattern -- the whole value is the match.
-        emit(
-          sink,
+    anyCandidateMatches(
+      candidatesFor(item),
+      sink,
+      exhaustiveScan(context),
+      (candidate) => {
+        const read = readValue(
           reference,
-          read.value,
           candidate,
           site,
           caseSensitive,
+          false,
+          range.location,
           context,
         );
-      }
 
-      return matched;
-    });
+        if (!read.ok) {
+          return false;
+        }
+
+        const low = withinBoundary(lower, range.lower, read.value, 'lower');
+        const high = withinBoundary(upper, range.upper, read.value, 'upper');
+
+        if (low === null || high === null) {
+          return signalValueFailure({
+            kind: 'incomparable',
+            location: range.location,
+            onValueError: context.options.onValueError,
+            path: candidate[0],
+            reason: null,
+            site: 'range',
+            typeName: reference.type.name,
+            value: candidate[1],
+          });
+        }
+
+        const matched = low && high;
+
+        if (matched && sink) {
+          // A range has no textual footprint, so `emit` records the path with no
+          // pattern -- the whole value is the match.
+          emit(
+            sink,
+            reference,
+            read.value,
+            candidate,
+            site,
+            caseSensitive,
+            context,
+          );
+        }
+
+        return matched;
+      },
+    );
 };
 
 const sourceOf = (node: Expression): string => {

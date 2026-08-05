@@ -18,14 +18,20 @@ const DAY = String.raw`(?<day>0[1-9]|[12]\d|3[01])`;
 
 const HOUR = String.raw`(?<hour>[01]\d|2[0-3])`;
 const MINUTE = String.raw`(?<minute>[0-5]\d)`;
-const SECOND = String.raw`(?::(?<second>[0-5]\d))?`;
-
 /**
- * Fractional seconds. Any number of digits is accepted; resolution truncates to
- * millisecond precision, which is all a JS time value can represent. A comma is
- * accepted as the decimal mark because ISO 8601 permits it.
+ * Seconds, and the fractional part that may follow THEM.
+ *
+ * The fraction is nested inside the seconds group on purpose. In ISO 8601 a
+ * fraction attaches to the lowest-order component present, so `12:30.5` means
+ * thirty and a half MINUTES — 12:30:30 — not 12:30:00.500. Accepting it at the
+ * minute position and reading it as milliseconds is a silent 29.5-second error,
+ * so the shape is simply not recognised: a fraction requires seconds.
+ *
+ * Any number of digits is accepted; resolution truncates to millisecond
+ * precision, which is all a JS time value can represent. A comma is accepted as
+ * the decimal mark because ISO 8601 permits it.
  */
-const FRACTION = String.raw`(?:[.,](?<fraction>\d+))?`;
+const SECOND = String.raw`(?::(?<second>[0-5]\d)(?:[.,](?<fraction>\d+))?)?`;
 
 /**
  * `Z`/`z`, or a numeric offset as `+HH:mm`, `+HHmm`, or `+HH`.
@@ -51,12 +57,9 @@ export const ISO_DATE = new RegExp(
  * splits on whitespace.
  */
 export const ISO_DATE_TIME = new RegExp(
-  `^${YEAR}(?<sep>[-/])${MONTH}\\k<sep>${DAY}[Tt ]${HOUR}:${MINUTE}${SECOND}${FRACTION}${OFFSET}$`,
+  `^${YEAR}(?<sep>[-/])${MONTH}\\k<sep>${DAY}[Tt ]${HOUR}:${MINUTE}${SECOND}${OFFSET}$`,
   'u',
 );
 
 /** 24-hour wall-clock time, `HH:mm[:ss][.sss]`, with no date and no offset. */
-export const ISO_TIME = new RegExp(
-  `^${HOUR}:${MINUTE}${SECOND}${FRACTION}$`,
-  'u',
-);
+export const ISO_TIME = new RegExp(`^${HOUR}:${MINUTE}${SECOND}$`, 'u');

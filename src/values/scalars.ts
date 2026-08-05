@@ -118,7 +118,27 @@ const parseNumeric = (text: string): number | null => {
 
   const parsed = Number(text);
 
-  return Number.isFinite(parsed) ? parsed : null;
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  /*
+   * Refuse anything a double cannot hold exactly.
+   *
+   * `Number('1234567890123456789')` and `Number('1234567890123456780')` are the
+   * SAME double, so an id search would return two visibly different records and
+   * report both as equal. Snowflake ids, database bigints and account numbers
+   * all live here and all arrive as JSON strings.
+   *
+   * Declining rather than erroring is what makes this safe: the token falls
+   * through to `string`, which compares the digits exactly and gets the right
+   * answer. Only ordering is lost, and a wrong order is worse than none.
+   */
+  if (!Number.isSafeInteger(parsed) && /^[+-]?\d+$/u.test(text)) {
+    return null;
+  }
+
+  return parsed;
 };
 
 export const numberType: ValueType<number, number> = defineValueType<

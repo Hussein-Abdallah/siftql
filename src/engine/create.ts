@@ -8,6 +8,7 @@ import type {
 } from '../registry.js';
 import type { SiftQLAst } from '../types.js';
 import { compileExpression, type EvaluationContext } from './evaluate.js';
+import { applyRecoveryPolicy } from './prune.js';
 import { HighlightSink } from './highlight.js';
 import { createRegistry } from './registry.js';
 
@@ -90,10 +91,21 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     registry,
   });
 
-  const toAst = (query: SiftQLAst | string): SiftQLAst =>
-    typeof query === 'string'
-      ? parse(query, { tolerant: resolved.tolerant })
-      : query;
+  /**
+   * Parse if needed, then apply the recovery policy. Tolerant-mode holes are
+   * pruned (or the query refused) BEFORE compilation, so the evaluator never
+   * has to invent a meaning for a clause the user is still typing.
+   */
+  const toAst = (
+    query: SiftQLAst | string,
+    overrides: EvaluateOptions = {},
+  ): SiftQLAst =>
+    applyRecoveryPolicy(
+      typeof query === 'string'
+        ? parse(query, { tolerant: resolved.tolerant })
+        : query,
+      overrides.onRecovered ?? resolved.onRecovered,
+    );
 
   return {
     extend: (extra) => createEngine({ ...options, ...extra }),
@@ -106,7 +118,10 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       // Compiled ONCE, not per item: a filter over 10,000 rows resolves the
       // operand a single time, and a bad query throws immediately rather than
       // on whichever row first reaches it.
-      const predicate = compileExpression(toAst(query), contextFor(overrides));
+      const predicate = compileExpression(
+        toAst(query, overrides),
+        contextFor(overrides),
+      );
 
       return items.filter((item) => predicate(item, null));
     },
@@ -127,7 +142,10 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       parse(query, { tolerant: resolved.tolerant, ...parseOptions }),
 
     test: (query, item, overrides = {}) =>
-      compileExpression(toAst(query), contextFor(overrides))(item, null),
+      compileExpression(toAst(query, overrides), contextFor(overrides))(
+        item,
+        null,
+      ),
 
     types: registry,
   };

@@ -68,6 +68,45 @@ const VALUE_TERMINATORS = new Set(['(', ')', ']', '}', '"', "'", '^', '~']);
 
 const isWhitespace = (character: string): boolean => WHITESPACE.has(character);
 
+/**
+ * Split an unquoted field name on its dots, honouring backslash escapes.
+ *
+ * A plain `name.split('.')` would tear `a\.b` into `['a\\', 'b']`, turning one
+ * field whose key literally contains a dot into a nested path — and since
+ * serialize() emits exactly that escape for such a key, the round trip would
+ * not survive it. Escapes are left in place here; the parser decodes them.
+ */
+const splitFieldPath = (name: string): string[] => {
+  const segments: string[] = [];
+
+  let current = '';
+  let index = 0;
+
+  while (index < name.length) {
+    const character = name.charAt(index);
+
+    if (character === '\\' && index + 1 < name.length) {
+      current += character + name.charAt(index + 1);
+      index += 2;
+      continue;
+    }
+
+    if (character === '.') {
+      segments.push(current);
+      current = '';
+      index += 1;
+      continue;
+    }
+
+    current += character;
+    index += 1;
+  }
+
+  segments.push(current);
+
+  return segments;
+};
+
 export class Tokenizer {
   private readonly source: string;
 
@@ -377,7 +416,7 @@ export class Tokenizer {
 
     // A quoted name is never split, so a literal key containing a dot stays
     // addressable as 'user.name' while user.name walks into a nested object.
-    const path = quote === 'none' ? name.split('.') : [name];
+    const path = quote === 'none' ? splitFieldPath(name) : [name];
 
     this.pending.push({
       caseSensitive,

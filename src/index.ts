@@ -9,6 +9,7 @@
 export const VERSION = '0.1.0';
 
 export { parse, type ParseOptions } from './parser/parser.js';
+export { serialize } from './serialize.js';
 
 export {
   isSiftQLError,

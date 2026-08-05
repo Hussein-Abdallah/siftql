@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+*.log
+.DS_Store
+.eslintcache
+.vitest-cache/
+*.tsbuildinfo
+.idea/
+.vscode/
+
+# Local, per-machine agent settings (shared .claude/settings.json is tracked)
+.claude/settings.local.json

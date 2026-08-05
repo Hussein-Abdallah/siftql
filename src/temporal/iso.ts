@@ -86,7 +86,15 @@ const parseIsoDateTime = (value: string): ResolvedTemporal | null => {
     return null;
   }
 
-  const local = utcTimestamp(year, month, day, hour, minute, second, millisecond);
+  const local = utcTimestamp(
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    millisecond,
+  );
   const offsetMinutes = offsetToMinutes(groups.offset);
 
   return {

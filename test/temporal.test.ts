@@ -179,7 +179,9 @@ describe('dateFormat', () => {
   });
 
   it('still validates the calendar under a declared layout', () => {
-    expect(resolveTemporal('29-02-2021', { dateFormat: 'DD-MM-YYYY' })).toBeNull();
+    expect(
+      resolveTemporal('29-02-2021', { dateFormat: 'DD-MM-YYYY' }),
+    ).toBeNull();
   });
 
   it('rejects a malformed layout immediately', () => {

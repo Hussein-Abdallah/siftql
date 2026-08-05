@@ -100,5 +100,4 @@ export const millisecondsSinceMidnight = (
   minute: number,
   second: number,
   millisecond: number,
-): number =>
-  hour * 3_600_000 + minute * 60_000 + second * 1_000 + millisecond;
+): number => hour * 3_600_000 + minute * 60_000 + second * 1_000 + millisecond;

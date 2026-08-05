@@ -36,7 +36,7 @@ export type ResolvedTemporal = {
    * (`timeOfDay`). Always a finite integer.
    */
   readonly value: number;
-}
+};
 
 /**
  * User-supplied parser hook.
@@ -61,4 +61,4 @@ export type TemporalOptions = {
    * meaning of a `null` return.
    */
   readonly parseDate?: ParseDateHook | undefined;
-}
+};

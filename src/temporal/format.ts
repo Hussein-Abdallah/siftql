@@ -35,13 +35,7 @@ import type { ResolvedTemporal } from './types.js';
  */
 
 type TokenName =
-  | 'day'
-  | 'fraction'
-  | 'hour'
-  | 'minute'
-  | 'month'
-  | 'second'
-  | 'year';
+  'day' | 'fraction' | 'hour' | 'minute' | 'month' | 'second' | 'year';
 
 /** Ordered longest-first so that `YYYY` is never mistaken for two `YY`s. */
 const TOKENS: readonly (readonly [string, TokenName, string])[] = [
@@ -62,7 +56,7 @@ const escapeLiteral = (character: string): string =>
 type CompiledFormat = {
   readonly kind: 'date' | 'datetime' | 'time';
   readonly regex: RegExp;
-}
+};
 
 /**
  * A malformed layout is a programming error in the host application, not bad

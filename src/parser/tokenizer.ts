@@ -160,7 +160,12 @@ export class Tokenizer {
         this.index += 1;
         this.mode = 'range';
 
-        return { delimiter: character, end: this.index, start, type: 'rangeOpen' };
+        return {
+          delimiter: character,
+          end: this.index,
+          start,
+          type: 'rangeOpen',
+        };
       case ']':
       case '}':
         this.index += 1;
@@ -207,7 +212,12 @@ export class Tokenizer {
         this.index += 1;
         this.mode = 'range';
 
-        return { delimiter: character, end: this.index, start, type: 'rangeOpen' };
+        return {
+          delimiter: character,
+          end: this.index,
+          start,
+          type: 'rangeOpen',
+        };
       case '/':
         this.mode = 'default';
 
@@ -427,7 +437,10 @@ export class Tokenizer {
 
         // Only the quote and the backslash are escapes; everything else keeps
         // its backslash so that patterns survive round-tripping unchanged.
-        value += escaped === quoteCharacter || escaped === '\\' ? escaped : `\\${escaped}`;
+        value +=
+          escaped === quoteCharacter || escaped === '\\'
+            ? escaped
+            : `\\${escaped}`;
         this.index += 2;
         continue;
       }

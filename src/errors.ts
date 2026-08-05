@@ -52,7 +52,9 @@ export class SiftQLSyntaxError extends SiftQLError {
     location: SourceLocation,
     source: string,
   ) {
-    super(`${message} (at ${String(location.start)})${renderExcerpt(source, location)}`);
+    super(
+      `${message} (at ${String(location.start)})${renderExcerpt(source, location)}`,
+    );
     this.name = 'SiftQLSyntaxError';
     this.location = location;
     this.source = source;

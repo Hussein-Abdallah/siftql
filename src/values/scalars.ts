@@ -41,8 +41,19 @@ export interface StringOperand {
  * the operators, and the engine reports that structurally.
  *
  * `matches` is omitted too, so `:` and `:=` agree. That is the whole-value
- * equality decision expressed in one place: containment is spelled with
- * wildcards (`name:*foo*`), never implied by `:`.
+ * equality decision expressed in one place for FIELDED clauses: containment is
+ * spelled with wildcards (`name:*foo*`), never implied by `:`.
+ *
+ * An UNFIELDED term is the deliberate exception, and `matches` is where that
+ * lives. The two forms express different intents:
+ *
+ *   name:ada   you named a field, so you are being precise  -> exact
+ *   ada        you named nothing, so you are browsing       -> contains
+ *
+ * Without that split, a person typing one word into a search box gets an empty
+ * screen, because no stored value is ever exactly "ada". With it, `status:active`
+ * still refuses to match "inactive" -- looseness is confined to the case where
+ * the user gave no field to be precise about.
  */
 export const stringType: ValueType<StringOperand, string> = defineValueType<
   StringOperand,
@@ -50,14 +61,32 @@ export const stringType: ValueType<StringOperand, string> = defineValueType<
 >({
   coerceValue: (value) => (typeof value === 'string' ? resolved(value) : MISS),
 
+  // Always exact. Reached by `:=`, by range boundaries, and by `:` on a fielded
+  // clause. An unfielded term cannot ask for exact equality -- the grammar has
+  // no unfielded relational operator -- so a regex is the escape hatch there.
   equals: (value, operand) =>
     (operand.caseSensitive ? value : value.toLowerCase()) === operand.needle,
 
-  highlight: (_value, operand) =>
+  highlight: (_value, operand, ctx) =>
     new RegExp(
-      `^${escapeRegExp(operand.needle)}$`,
-      operand.caseSensitive ? 'u' : 'iu',
+      ctx.site.kind === 'scan'
+        ? escapeRegExp(operand.needle)
+        : `^${escapeRegExp(operand.needle)}$`,
+      operand.caseSensitive ? 'gu' : 'giu',
     ),
+
+  /**
+   * `:` — exact when a field was named, containment when one was not.
+   * A scan is always case-insensitive, since an unfielded term has no operator
+   * to double.
+   */
+  matches: (value, operand, ctx) => {
+    const folded = operand.caseSensitive ? value : value.toLowerCase();
+
+    return ctx.site.kind === 'scan'
+      ? folded.includes(operand.needle)
+      : folded === operand.needle;
+  },
 
   name: 'string',
 

@@ -85,10 +85,51 @@ describe('whole-value equality', () => {
     expect(ids('status:*active*')).toEqual([3, 4]);
   });
 
-  it('applies to unfielded terms too', () => {
-    expect(ids('ada')).toEqual([]);
-    expect(ids('*ada*')).toEqual([1, 4]);
-    expect(ids('"Ada Lovelace"')).toEqual([1]);
+  it('keeps FIELDED clauses exact', () => {
+    expect(ids('name:ada')).toEqual([]);
+    expect(ids('name:"Ada Lovelace"')).toEqual([1]);
+    expect(ids('name:*ada*')).toEqual([1, 4]);
+  });
+});
+
+describe('unfielded terms are loose, fielded terms are exact', () => {
+  it('treats a bare word as containment, because the user named no field', () => {
+    // A person typing one word into a search box is browsing, not asserting
+    // equality -- and would otherwise get an empty screen, since no stored
+    // value is ever exactly "ada".
+    expect(ids('ada')).toEqual([1, 4]);
+    expect(ids('progress')).toEqual([1]);
+    expect(ids('"in progress"')).toEqual([1]);
+  });
+
+  it('is case-insensitive, since an unfielded term has no operator to double', () => {
+    expect(ids('ADA')).toEqual([1, 4]);
+    expect(ids('LOVELACE')).toEqual([1]);
+  });
+
+  it('ANDs several bare words', () => {
+    expect(ids('is just')).toEqual([1, 3]);
+    expect(ids('ada lovelace')).toEqual([1]);
+  });
+
+  it('does NOT loosen a fielded clause, so status:active still refuses "inactive"', () => {
+    // The whole point of the split: looseness is confined to the case where
+    // the user gave no field to be precise about.
+    expect(ids('status:active')).toEqual([4]);
+    expect(ids('name:ada')).toEqual([]);
+  });
+
+  it('leaves typed operands alone when unfielded', () => {
+    // Only free TEXT is loosened; keywords and numbers keep their meaning.
+    expect(ids('true')).toEqual([1, 3]);
+    expect(ids('null')).toEqual([4]);
+    expect(ids('170')).toEqual([1]);
+  });
+
+  it('still never errors on a scan, whatever onValueError says', () => {
+    expect(() =>
+      filter('anything', ROWS, { onValueError: 'throw' }),
+    ).not.toThrow();
   });
 });
 

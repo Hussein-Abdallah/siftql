@@ -51,10 +51,19 @@ const fromHookResult = (
  * timestamps in seconds can reinterpret them — treating every bare number as
  * milliseconds with no way to intervene would be a silent factor-of-1000 error.
  *
- * There is deliberately no `new Date(string)` fallback anywhere in this chain.
- * Native parsing is engine- and locale-dependent and rolls invalid input over
- * instead of rejecting it (`new Date("2020-13-45")` yields a date in 2021).
- * Callers who want that leniency can opt into it explicitly through `parseDate`.
+ * There is deliberately no `new Date(string)` fallback anywhere in this chain,
+ * for three separate reasons:
+ *
+ * - It rolls impossible dates over instead of rejecting them:
+ *   `new Date("2021-02-29")` is 1 March 2021.
+ * - It is inconsistent about zones within a single API: `new Date("2020-06-01")`
+ *   is midnight *UTC*, while `new Date("2020-06-01T00:00:00")` is midnight
+ *   *local*. One character changes the answer by the host's UTC offset.
+ * - Anything it cannot read as ISO 8601 falls back to implementation-defined
+ *   parsing, so results vary by engine and locale.
+ *
+ * Callers who want that leniency can opt into it explicitly through `parseDate`,
+ * which makes the risk their deliberate choice rather than a blessed default.
  */
 export const resolveTemporal = (
   value: unknown,

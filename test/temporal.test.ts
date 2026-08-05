@@ -105,9 +105,18 @@ describe('parseIso', () => {
   });
 
   it('does not roll invalid components over into the next month', () => {
-    // new Date("2020-13-45") would silently become a date in 2021.
-    expect(resolvedValue('2020-13-45')).toBeNull();
+    // new Date("2021-02-29") silently yields 1 March 2021; we return null.
     expect(resolvedValue('2021-02-29')).toBeNull();
+    expect(resolvedValue('2020-02-30')).toBeNull();
+    expect(resolvedValue('2020-13-45')).toBeNull();
+  });
+
+  it('is not sensitive to the host timezone', () => {
+    // new Date("2020-06-01") is midnight UTC but new Date("2020-06-01T00:00:00")
+    // is midnight *local* -- a difference of the host offset for one character.
+    // Both resolve identically here, on any machine.
+    expect(resolvedValue('2020-06-01')).toBe(JUNE_1_2020);
+    expect(resolvedValue('2020-06-01T00:00:00')).toBe(JUNE_1_2020);
   });
 
   it('handles years below 100 without the 1900 offset bug', () => {

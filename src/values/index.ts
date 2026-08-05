@@ -39,9 +39,11 @@ export const builtinValueTypes = (): readonly ValueTypeInput[] =>
 export { createDatetimeType } from './datetime.js';
 export {
   compileWildcard,
+  matchGlob,
   regexType,
   wildcardType,
   type CompiledPattern,
+  type CompiledWildcard,
 } from './patterns.js';
 export {
   booleanType,

@@ -9,7 +9,7 @@ import {
   type ValueType,
 } from '../registry.js';
 import type { NonEmptyArray, WildcardSegment } from '../types.js';
-import { escapeRegExp } from './scalars.js';
+import { escapeRegExp, fold } from './scalars.js';
 
 /**
  * The two pattern types. Both are token-gated — they claim only their own AST
@@ -19,6 +19,13 @@ import { escapeRegExp } from './scalars.js';
  * values, which is exactly why `ValueType` needs two type parameters rather
  * than one.
  */
+
+export interface CompiledWildcard {
+  /** Linear-time glob; see {@link matchGlob}. */
+  readonly glob: Glob;
+  readonly highlighter: RegExp | null;
+  readonly caseSensitive: boolean;
+}
 
 export interface CompiledPattern {
   /**
@@ -48,36 +55,100 @@ const forMatching = (flags: string): string =>
 const forHighlighting = (flags: string): string =>
   [...new Set(`${forMatching(flags)}g`)].join('');
 
+/** A wildcard pattern flattened to one token per position. */
+type Glob = readonly ('*' | '?' | { readonly ch: string })[];
+
 /**
- * Translate pre-segmented wildcard segments into an anchored RegExp.
+ * Flatten segments into a token list, folding literals when case-insensitive.
  *
- * Anchored because a wildcard pattern describes the WHOLE value: `name:foo*`
- * means "starts with foo", not "contains foo followed by something". Getting
- * this wrong is how `foo*` ends up matching `xx foo xx`.
- *
- * Literal segments arrive with escapes already resolved, so an escaped `\*` is
- * an ordinary character here and is regex-escaped like any other. The generated
- * source contains only `.*`, `.` and escaped literals — no nested quantifiers —
- * so it cannot backtrack catastrophically no matter what the user typed.
+ * Split by code point, not by UTF-16 unit, so `?` matches one CHARACTER and an
+ * astral-plane character is never cut in half.
  */
 export const compileWildcard = (
   pattern: NonEmptyArray<WildcardSegment>,
   caseSensitive: boolean,
-): RegExp => {
-  const source = pattern
-    .map((segment) => {
-      switch (segment.type) {
-        case 'WildcardAny':
-          return '[\\s\\S]*';
-        case 'WildcardSingle':
-          return '[\\s\\S]';
-        default:
-          return escapeRegExp(segment.value);
-      }
-    })
-    .join('');
+): Glob => {
+  const tokens: ('*' | '?' | { ch: string })[] = [];
 
-  return new RegExp(`^${source}$`, caseSensitive ? 'u' : 'iu');
+  for (const segment of pattern) {
+    if (segment.type === 'WildcardAny') {
+      // Collapse runs: `**` matches exactly what `*` matches, and one star is
+      // strictly cheaper to evaluate.
+      if (tokens.at(-1) !== '*') {
+        tokens.push('*');
+      }
+    } else if (segment.type === 'WildcardSingle') {
+      tokens.push('?');
+    } else {
+      const literal = caseSensitive ? segment.value : fold(segment.value);
+
+      for (const ch of Array.from(literal)) {
+        tokens.push({ ch });
+      }
+    }
+  }
+
+  return tokens;
+};
+
+/**
+ * Match a value against a glob in LINEAR time.
+ *
+ * Deliberately NOT a regular expression. Compiling `*a*a*a*b` to
+ * `^[\s\S]*a[\s\S]*a[\s\S]*a[\s\S]*b$` contains no nested quantifier and
+ * still backtracks catastrophically: when the match FAILS, every star must try
+ * every split before the engine can conclude there is none. Measured at ~6x per
+ * added star, and it did not return within five minutes on an ordinary
+ * multi-star query against a 200-character value — a denial-of-service surface
+ * reachable from any search box.
+ *
+ * This is the classic two-pointer glob algorithm instead: on a mismatch it
+ * rewinds to the LAST star and advances that star by one, which is O(n*m) worst
+ * case and O(n) in practice, with no exponential path at all.
+ */
+export const matchGlob = (value: string, glob: Glob): boolean => {
+  const chars = Array.from(value);
+
+  let s = 0;
+  let p = 0;
+  let starAt = -1;
+  let sAtStar = 0;
+
+  while (s < chars.length) {
+    const token = glob[p];
+
+    if (
+      token !== undefined &&
+      (token === '?' || (token !== '*' && token.ch === chars[s]))
+    ) {
+      s += 1;
+      p += 1;
+      continue;
+    }
+
+    if (token === '*') {
+      starAt = p;
+      sAtStar = s;
+      p += 1;
+      continue;
+    }
+
+    if (starAt >= 0) {
+      // Rewind: let the last star swallow one more character.
+      p = starAt + 1;
+      sAtStar += 1;
+      s = sAtStar;
+      continue;
+    }
+
+    return false;
+  }
+
+  while (glob[p] === '*') {
+    p += 1;
+  }
+
+  return p === glob.length;
 };
 
 /**
@@ -113,33 +184,33 @@ export const compileWildcardHighlighter = (
   return new RegExp(`(?:${alternatives})`, caseSensitive ? 'gu' : 'giu');
 };
 
-export const wildcardType: ValueType<CompiledPattern, string> = defineValueType<
-  CompiledPattern,
-  string
->({
-  coerceValue: (value) => (typeof value === 'string' ? resolved(value) : MISS),
+export const wildcardType: ValueType<CompiledWildcard, string> =
+  defineValueType<CompiledWildcard, string>({
+    coerceValue: (value) =>
+      typeof value === 'string' ? resolved(value) : MISS,
 
-  equals: (value, operand) => operand.matcher.test(value),
+    equals: (value, operand) =>
+      matchGlob(operand.caseSensitive ? value : fold(value), operand.glob),
 
-  highlight: (_value, operand) => operand.highlighter,
+    highlight: (_value, operand) => operand.highlighter,
 
-  name: 'wildcard',
+    name: 'wildcard',
 
-  parseOperand: (operand, ctx) => {
-    if (operand.kind !== 'wildcard') {
-      return DECLINED;
-    }
+    parseOperand: (operand, ctx) => {
+      if (operand.kind !== 'wildcard') {
+        return DECLINED;
+      }
 
-    return claimed({
-      caseSensitive: ctx.caseSensitive,
-      highlighter: compileWildcardHighlighter(
-        operand.pattern,
-        ctx.caseSensitive,
-      ),
-      matcher: compileWildcard(operand.pattern, ctx.caseSensitive),
-    });
-  },
-});
+      return claimed({
+        caseSensitive: ctx.caseSensitive,
+        glob: compileWildcard(operand.pattern, ctx.caseSensitive),
+        highlighter: compileWildcardHighlighter(
+          operand.pattern,
+          ctx.caseSensitive,
+        ),
+      });
+    },
+  });
 
 /**
  * User-supplied regular expressions.

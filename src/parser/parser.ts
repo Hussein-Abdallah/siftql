@@ -71,6 +71,24 @@ const STARTS_PRIMARY = new Set<Token['type']>([
 
 const span = (start: number, end: number): SourceLocation => ({ end, start });
 
+/**
+ * How many clauses one query may contain.
+ *
+ * The parser builds a left spine with a loop and would happily accept 50,000
+ * terms, but `prune()` and `compileExpression()` walk that spine recursively
+ * and a `serialize()` of a long unary chain does too — so a query the parser
+ * accepted could blow the stack later with a raw RangeError escaping the
+ * documented error contract. The stages now agree on what is representable,
+ * and exceeding it is a located SiftQLSyntaxError rather than a crash.
+ *
+ * 2,000 is far beyond any human-written query while leaving a wide margin
+ * under the ~5,000 where the first stage actually fails.
+ */
+const MAX_CLAUSES = 2000;
+
+/** Guards against a deeply NESTED query exhausting the descent itself. */
+const MAX_DEPTH = 200;
+
 class Parser {
   private readonly source: string;
 
@@ -86,6 +104,12 @@ class Parser {
    * unconstructible, so it is refused at parse time instead.
    */
   private fieldGroupDepth = 0;
+
+  /** Counts every clause produced, so a generated query cannot crash later. */
+  private clauses = 0;
+
+  /** Current recursive-descent depth. */
+  private depth = 0;
 
   public constructor(
     source: string,
@@ -202,6 +226,24 @@ class Parser {
    * ----------------------------------------------------------------------- */
 
   private parseOr(): Expression {
+    this.depth += 1;
+
+    if (this.depth > MAX_DEPTH) {
+      this.fail(
+        `Query is nested too deeply: more than ${String(MAX_DEPTH)} levels`,
+        this.peek(),
+        ['a flatter query'],
+      );
+    }
+
+    try {
+      return this.parseOrInner();
+    } finally {
+      this.depth -= 1;
+    }
+  }
+
+  private parseOrInner(): Expression {
     let left = this.parseAnd();
 
     while (this.peek().type === 'or') {
@@ -272,7 +314,19 @@ class Parser {
     if (next.type === 'not' || next.type === 'prohibit') {
       this.advance();
 
+      this.depth += 1;
+
+      if (this.depth > MAX_DEPTH) {
+        this.fail(
+          `Query is nested too deeply: more than ${String(MAX_DEPTH)} levels`,
+          next,
+          ['a flatter query'],
+        );
+      }
+
       const operand = this.parseUnary();
+
+      this.depth -= 1;
 
       return {
         location: span(next.start, operand.location.end),
@@ -298,6 +352,16 @@ class Parser {
 
   private parsePrimary(): Expression {
     const next = this.peek();
+
+    this.clauses += 1;
+
+    if (this.clauses > MAX_CLAUSES) {
+      this.fail(
+        `Query is too large: more than ${String(MAX_CLAUSES)} clauses`,
+        next,
+        ['a shorter query'],
+      );
+    }
 
     switch (next.type) {
       case 'field':

@@ -66,21 +66,38 @@ export type SiftQLErrorCode =
  * bundle containing two copies of the package breaks `instanceof` while leaving
  * `code` correct — which is why {@link isSiftQLError} checks structurally.
  */
+/**
+ * Brand identifying an error as siftql's.
+ *
+ * `Symbol.for` is registry-global, so two copies of the package in one bundle
+ * produce the SAME symbol and the check still works — which is the property
+ * `instanceof` loses. A structural `typeof err.code === 'string'` check has the
+ * opposite problem: every Node system error carries a `code`, so `ENOENT` and
+ * `ECONNREFUSED` were being reported as siftql errors and a caller's catch
+ * block misclassified genuine infrastructure failures.
+ */
+const SIFTQL_ERROR = Symbol.for('siftql.error');
+
 export class SiftQLError extends Error {
   public readonly code: SiftQLErrorCode;
 
+  /** @internal */
+  public readonly [SIFTQL_ERROR] = true;
+
   public constructor(message: string, code: SiftQLErrorCode = 'CONFIG') {
     super(message);
-    this.name = new.target.name;
+    // NOT `new.target.name`: a minifier renames the class, so a production
+    // bundle reported `err.name === 'x'`. Each subclass sets its own literal.
+    this.name = 'SiftQLError';
     this.code = code;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
-/** Structural check that survives duplicate copies of the package in a bundle. */
+/** Survives duplicate copies of the package in a bundle; rejects foreign errors. */
 export const isSiftQLError = (value: unknown): value is SiftQLError =>
   value instanceof Error &&
-  typeof (value as { readonly code?: unknown }).code === 'string';
+  (value as { readonly [SIFTQL_ERROR]?: unknown })[SIFTQL_ERROR] === true;
 
 /**
  * Render a one-line excerpt with a caret under the offending span, e.g.
@@ -128,6 +145,7 @@ export class SiftQLSyntaxError extends SiftQLError {
       `${message} (at ${String(location.start)})${renderExcerpt(source, location)}`,
       details.code ?? 'SYNTAX',
     );
+    this.name = 'SiftQLSyntaxError';
     this.location = location;
     this.source = source;
     this.expected = details.expected ?? [];
@@ -168,6 +186,7 @@ export class SiftQLOperandError extends SiftQLError {
 
   public constructor(message: string, details: OperandErrorDetails) {
     super(message, details.code ?? 'OPERAND');
+    this.name = 'SiftQLOperandError';
     this.location = details.location;
     this.site = details.site;
     this.raw = details.raw;
@@ -208,6 +227,7 @@ export class SiftQLValueError extends SiftQLError {
 
   public constructor(message: string, details: ValueErrorDetails) {
     super(message, 'VALUE');
+    this.name = 'SiftQLValueError';
     this.typeName = details.typeName;
     this.path = details.path;
     this.value = details.value;
@@ -228,6 +248,7 @@ export class SiftQLRecoveredQueryError extends SiftQLError {
     details: { readonly location: SourceLocation; readonly reason: string },
   ) {
     super(message, 'RECOVERED');
+    this.name = 'SiftQLRecoveredQueryError';
     this.location = details.location;
     this.reason = details.reason;
   }
@@ -237,6 +258,7 @@ export class SiftQLRecoveredQueryError extends SiftQLError {
 export class SiftQLConfigError extends SiftQLError {
   public constructor(message: string) {
     super(message, 'CONFIG');
+    this.name = 'SiftQLConfigError';
   }
 }
 

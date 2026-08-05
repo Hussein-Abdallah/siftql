@@ -14,6 +14,7 @@ import {
   serialize,
   SiftQLOperandError,
   SiftQLRecoveredQueryError,
+  SiftQLSyntaxError,
   SiftQLValueError,
   test as matches,
 } from '../src/index.js';
@@ -235,15 +236,32 @@ describe('serialize round-trips everything the parser accepts', () => {
     }
   });
 
-  it('prints a query as long as the parser will read', () => {
+  it('prints any query the parser accepts', () => {
     // parse() builds the left spine with a loop; serialize() recursed, so a
-    // query the parser had just accepted could not be printed.
-    const query = Array.from(
-      { length: 20_000 },
-      (_, i) => `a${String(i)}`,
-    ).join(' AND ');
+    // query the parser had just accepted could not be printed. Both stages now
+    // agree, and the agreement is enforced by a clause limit rather than by
+    // hoping the stack holds.
+    const query = Array.from({ length: 1500 }, (_, i) => `a${String(i)}`).join(
+      ' AND ',
+    );
 
     expect(() => serialize(parse(query))).not.toThrow();
+    expect(() => filter(query, [{ a0: 'x' }])).not.toThrow();
+  });
+
+  it('refuses an oversized query at PARSE time, not with a stack overflow', () => {
+    // Every stage used to disagree about what was representable: parse took
+    // 50,000 terms, serialize died at 5,000 on unary chains, filter died at
+    // 10,000 — and the failure was a raw RangeError escaping the error
+    // contract. Now it is a located SiftQLSyntaxError from the first stage.
+    const wide = Array.from({ length: 5000 }, (_, i) => `a${String(i)}`).join(
+      ' AND ',
+    );
+    const deep = 'NOT '.repeat(5000) + 'a';
+
+    for (const query of [wide, deep]) {
+      expect(() => parse(query)).toThrow(SiftQLSyntaxError);
+    }
   });
 
   it('still leaves colons alone in value position', () => {

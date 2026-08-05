@@ -45,9 +45,15 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 const hasOwn = (holder: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(holder, key);
 
-/** An array index written as a path segment: `tags.0`, but not `tags.01`. */
+/**
+ * An array index written as a path segment: `tags.0`, but NOT `tags.01`.
+ *
+ * A leading zero is not a canonical index, and treating it as one shadows a
+ * real object key: `{ '01': … }` is an ordinary property and must stay
+ * reachable. The doc said so; the regex did not enforce it.
+ */
 const asIndex = (key: string): number | null => {
-  if (!/^\d+$/u.test(key)) {
+  if (!/^(?:0|[1-9]\d*)$/u.test(key)) {
     return null;
   }
 
@@ -141,26 +147,34 @@ export const allLeafValues = (
   matchKeys: boolean,
 ): Candidate[] => {
   const found: Candidate[] = [];
-  const seen = new Set<object>();
+
+  /*
+   * Cycle detection tracks the ANCESTOR CHAIN, not every object ever seen.
+   *
+   * A single global visited-set also skips ALIASES: a record holding two
+   * references to the same object, or an array containing the same element
+   * twice, is not cyclic at all, and silently dropping the second occurrence
+   * lost real, reachable leaves. Only an object that contains ITSELF is a
+   * cycle, and that is what an ancestor chain detects.
+   */
+  const ancestors = new Set<object>();
 
   const walk = (value: unknown, path: readonly (string | number)[]): void => {
-    if (Array.isArray(value) || isPlainObject(value)) {
-      if (seen.has(value)) {
+    const composite = Array.isArray(value) || isPlainObject(value);
+
+    if (composite) {
+      if (ancestors.has(value as object)) {
         return;
       }
 
-      seen.add(value);
+      ancestors.add(value as object);
     }
 
     if (Array.isArray(value)) {
       for (const [index, element] of value.entries()) {
         walk(element, [...path, index]);
       }
-
-      return;
-    }
-
-    if (isPlainObject(value)) {
+    } else if (isPlainObject(value)) {
       for (const [key, nested] of Object.entries(value)) {
         if (matchKeys) {
           found.push([[...path, key], key, true]);
@@ -168,11 +182,14 @@ export const allLeafValues = (
 
         walk(nested, [...path, key]);
       }
-
-      return;
+    } else {
+      found.push([path, value]);
     }
 
-    found.push([path, value]);
+    if (composite) {
+      // Leaving the subtree: a sibling may legitimately reference it again.
+      ancestors.delete(value as object);
+    }
   };
 
   walk(item, []);

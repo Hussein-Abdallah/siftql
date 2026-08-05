@@ -67,13 +67,30 @@ export const stringType: ValueType<StringOperand, string> = defineValueType<
   equals: (value, operand) =>
     (operand.caseSensitive ? value : value.toLowerCase()) === operand.needle,
 
-  highlight: (_value, operand, ctx) =>
-    new RegExp(
+  highlight: (value, operand, ctx) => {
+    /*
+     * Matching folds with toLowerCase; a highlight pattern is applied by the
+     * CALLER to the raw, unfolded value. Those only agree while folding
+     * preserves length -- and it does not always: `'İ'.toLowerCase()` is TWO
+     * code points (i + combining dot above), so `test()` matched while the
+     * emitted pattern matched nothing, and a caller got a highlight that
+     * highlighted nothing.
+     *
+     * When the fold changes length there is no span to point at that is both
+     * correct and expressible, so no pattern is offered. The path is still
+     * reported -- the field DID match -- exactly as for a range or a boolean.
+     */
+    if (!operand.caseSensitive && fold(value).length !== value.length) {
+      return null;
+    }
+
+    return new RegExp(
       ctx.site.kind === 'scan'
         ? escapeRegExp(operand.needle)
         : `^${escapeRegExp(operand.needle)}$`,
       operand.caseSensitive ? 'gu' : 'giu',
-    ),
+    );
+  },
 
   /**
    * `:` — exact when a field was named, containment when one was not.
@@ -111,8 +128,18 @@ export const stringType: ValueType<StringOperand, string> = defineValueType<
  * construction — that is what quoting is for — so `code:"007"` compares as text
  * and keeps its leading zeros.
  */
+/**
+ * Decimal forms only.
+ *
+ * `Number()` also accepts `0x10`, `0b10`, `0o10`, `Infinity` and `NaN`, so a
+ * FIELD holding the string `'0x10'` was being read as the number 16 and matched
+ * by the query `code:16`. Data is not JavaScript source; a stored string is
+ * digits, not a literal.
+ */
+const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/u;
+
 const parseNumeric = (text: string): number | null => {
-  if (text.trim() !== text || text.length === 0) {
+  if (text.trim() !== text || text.length === 0 || !DECIMAL.test(text)) {
     return null;
   }
 
@@ -123,18 +150,23 @@ const parseNumeric = (text: string): number | null => {
   }
 
   /*
-   * Refuse anything a double cannot hold exactly.
+   * Refuse only integers the double ACTUALLY collapses.
    *
    * `Number('1234567890123456789')` and `Number('1234567890123456780')` are the
-   * SAME double, so an id search would return two visibly different records and
-   * report both as equal. Snowflake ids, database bigints and account numbers
-   * all live here and all arrive as JSON strings.
+   * same double, so an id search would return two visibly different records and
+   * call them equal. Snowflake ids, database bigints and account numbers all
+   * live here and all arrive as JSON strings.
    *
-   * Declining rather than erroring is what makes this safe: the token falls
-   * through to `string`, which compares the digits exactly and gets the right
-   * answer. Only ordering is lost, and a wrong order is worse than none.
+   * The test is a round trip, not `Number.isSafeInteger`. Plenty of integers
+   * above 2^53 are still exactly representable -- 2^53 itself, and every power
+   * of two above it -- and refusing those made them unmatchable against a field
+   * genuinely holding that number, with no diagnostic at any setting.
+   *
+   * Declining rather than erroring is what makes the refusal safe: the token
+   * falls through to `string`, which compares the digits exactly. Only ordering
+   * is lost, and no order is better than a wrong one.
    */
-  if (!Number.isSafeInteger(parsed) && /^[+-]?\d+$/u.test(text)) {
+  if (/^[+-]?\d+$/u.test(text) && String(parsed) !== text.replace(/^\+/u, '')) {
     return null;
   }
 
@@ -222,3 +254,14 @@ export const nullType: ValueType<null, null> = defineValueType<null, null>({
 /** Shared by the pattern types below. */
 export const escapeRegExp = (value: string): string =>
   value.replace(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
+
+/**
+ * The ONE case-folding rule, used by every built-in.
+ *
+ * `toLowerCase()` and a RegExp `i` flag do not agree on every code point:
+ * `'İ'.toLowerCase()` is two code points (i + combining dot above) while `/i/iu`
+ * folds it to a single `i`. Exact matching used the former and pattern matching
+ * the latter, so `test()` and `highlight()` could disagree about the same text
+ * -- a highlight was emitted whose pattern then matched nothing.
+ */
+export const fold = (value: string): string => value.toLowerCase();

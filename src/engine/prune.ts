@@ -75,6 +75,36 @@ const prune = (node: Expression): Expression | null => {
         return null;
       }
 
+      // A FIELD GROUP is a tree, and a hole can be anywhere inside it. Failing
+      // to recurse here left the hole to compile as constant-false, which is
+      // wrong twice over: under AND it blanked the clause, and under NOT it
+      // negated to constant-TRUE and turned a restrictive fielded predicate
+      // fully permissive -- `a:(NOT` matched every record, including records
+      // with no `a` key at all. A false-positive leak, not just a blank list.
+      // Only a match tag can hold a group; a relational one compares against a
+      // single scalar, which the type system already guarantees.
+      if (
+        node.kind === 'match' &&
+        node.expression.type === 'ParenthesizedExpression'
+      ) {
+        const group = node.expression;
+        const body = prune(group.expression);
+
+        if (body === null) {
+          return null;
+        }
+
+        return body === group.expression
+          ? node
+          : {
+              ...node,
+              expression: {
+                ...group,
+                expression: body as typeof group.expression,
+              },
+            };
+      }
+
       return node;
     }
 

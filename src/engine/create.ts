@@ -128,10 +128,13 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
 
     highlight: (query, item, overrides = {}) => {
       const sink = new HighlightSink();
-      const matched = compileExpression(toAst(query), contextFor(overrides))(
-        item,
-        sink,
-      );
+      // `overrides` must reach toAst, not just contextFor: toAst is where the
+      // recovery policy is applied, so omitting it made highlight() ignore a
+      // per-call onRecovered that filter() and test() both honoured.
+      const matched = compileExpression(
+        toAst(query, overrides),
+        contextFor(overrides),
+      )(item, sink);
 
       return matched ? sink.drain() : [];
     },

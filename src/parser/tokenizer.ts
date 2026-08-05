@@ -1,5 +1,6 @@
 import { SiftQLSyntaxError } from '../errors.js';
 import { isSafeUnquotedExpression } from '../types.js';
+import { decodeEscapes } from './pattern.js';
 import type { ComparisonOperator, QuoteKind, Token } from './tokens.js';
 
 /**
@@ -66,6 +67,33 @@ const DEFAULT_TERMINATORS = new Set([
  */
 const VALUE_TERMINATORS = new Set(['(', ')', ']', '}', '"', "'", '^', '~']);
 
+/**
+ * Characters that end a bare word inside a FIELD GROUP body.
+ *
+ * Colon is absent, exactly as in a value: a group body is a list of values for
+ * the field already named, and the grammar has no `Tag` inside a group — so no
+ * colon in there can be starting a field name. Reading the body in default mode
+ * meant the first colon did start one, and `d:(14:30)` was refused as "a field
+ * group may not contain another field" while `d:14:30` and `d:[14:30 TO 15:00]`
+ * both worked. The tokenizer's whole reason for having modes is that a date-time
+ * needs no quoting, and this was the one position where that silently failed.
+ *
+ * `[` and `{` ARE terminators here, unlike in a plain value, so a range still
+ * works inside a group: `n:([1 TO 9] OR 20)`.
+ */
+const GROUP_TERMINATORS = new Set([
+  '(',
+  ')',
+  '[',
+  ']',
+  '{',
+  '}',
+  '"',
+  "'",
+  '^',
+  '~',
+]);
+
 const isWhitespace = (character: string): boolean => WHITESPACE.has(character);
 
 const RECOVERED_QUOTE = 'unterminated-quote';
@@ -118,6 +146,13 @@ export class Tokenizer {
   private index = 0;
 
   private mode: Mode = 'default';
+
+  /**
+   * Open parentheses that are inside a field group, the group's own paren
+   * included. Tracked here rather than in the parser because the decision it
+   * drives — whether a colon separates a field — is made while LEXING.
+   */
+  private groupDepth = 0;
 
   /**
    * Tokens produced ahead of time. Reading a field name necessarily consumes the
@@ -244,9 +279,19 @@ export class Tokenizer {
       case '(':
         this.index += 1;
 
+        // Only counted when already inside a field group, so the matching `)`
+        // brings the depth back down in step.
+        if (this.groupDepth > 0) {
+          this.groupDepth += 1;
+        }
+
         return { end: this.index, start, type: 'lparen' };
       case ')':
         this.index += 1;
+
+        if (this.groupDepth > 0) {
+          this.groupDepth -= 1;
+        }
 
         return { end: this.index, start, type: 'rparen' };
       case '[':
@@ -278,6 +323,9 @@ export class Tokenizer {
         this.index += 1;
 
         return { end: this.index, start, type: 'require' };
+      case '^':
+      case '~':
+        return this.readModifier(start, character);
       case '/':
         return this.readRegex(start);
       case '"':
@@ -299,6 +347,9 @@ export class Tokenizer {
       case '(':
         this.index += 1;
         this.mode = 'default';
+        // This paren OPENS a field group; everything until its match is a value
+        // list for the field just named.
+        this.groupDepth += 1;
 
         return { end: this.index, start, type: 'lparen' };
       case '[':
@@ -325,7 +376,9 @@ export class Tokenizer {
       default: {
         this.mode = 'default';
 
-        return this.readBareLiteral(start);
+        // `null` means "this is not a value at all"; re-dispatch in default mode,
+        // where the offending character is read as whatever it really is.
+        return this.readBareLiteral(start) ?? this.readDefaultToken(start);
       }
     }
   }
@@ -351,6 +404,13 @@ export class Tokenizer {
 
     const literal = this.readBareLiteral(start);
 
+    // Inside a RANGE, a position that cannot start a value is read in default
+    // mode, where `]` and `}` close the range and anything else is refused by the
+    // parser as a missing boundary.
+    if (literal === null) {
+      return this.readDefaultToken(start);
+    }
+
     // `TO` is only a keyword inside a range, and only when written bare and
     // uppercase, so a quoted value of "TO" remains a value.
     if (literal.value === 'TO') {
@@ -371,15 +431,38 @@ export class Tokenizer {
    * two segments. Without this the scan stopped at the quote and the whole thing
    * silently became two separate clauses.
    */
-  private readBareTerm(start: number): Token {
-    let word = this.readWord(DEFAULT_TERMINATORS);
+  private readBareTerm(start: number, prefix = ''): Token {
+    // Inside a field group a colon is an ordinary character; see
+    // GROUP_TERMINATORS.
+    const inGroup = this.groupDepth > 0;
+
+    let word =
+      prefix + this.readWord(inGroup ? GROUP_TERMINATORS : DEFAULT_TERMINATORS);
+    // A folded segment may itself have been recovered — an unclosed quote. The
+    // flag has to survive to the field token, or `onRecovered` cannot see that
+    // anything was invented and `name.'first:ada` silently becomes a full-text
+    // scan for the literal `name.first:ada`.
+    let recovered: string | undefined;
 
     while (word.endsWith('.') && (this.peek() === '"' || this.peek() === "'")) {
       const segment = this.readQuoted(this.index, this.peek());
 
-      // Escape the segment's own dots so it stays ONE path step.
-      word += segment.value.replace(/\./gu, String.raw`\.`);
-      word += this.readWord(DEFAULT_TERMINATORS);
+      recovered ??= segment.recovered === true ? RECOVERED_QUOTE : undefined;
+
+      /*
+       * DECODE, then re-escape. `segment.value` is raw source text with its
+       * escapes intact, so escaping only its dots ran over the top of them:
+       * `a.'b\.c'` became `a.b\\.c`, whose `\\` splitFieldPath consumed as an
+       * escaped backslash — leaving the `.` unprotected and yielding three
+       * segments, one of them a literal backslash. Decoding first means the
+       * segment is plain text, and escaping both metacharacters keeps it one
+       * path step whatever it contains.
+       */
+      word += decodeEscapes(segment.value).replace(
+        /[\\.]/gu,
+        (character) => `\\${character}`,
+      );
+      word += this.readWord(inGroup ? GROUP_TERMINATORS : DEFAULT_TERMINATORS);
     }
 
     if (word.length === 0) {
@@ -392,8 +475,9 @@ export class Tokenizer {
       );
     }
 
-    if (this.peek() === ':') {
-      return this.finishField(start, word, 'none');
+    // Never a field inside a group: the colon was already read as part of `word`.
+    if (!inGroup && this.peek() === ':') {
+      return this.finishField(start, word, 'none', recovered);
     }
 
     switch (word) {
@@ -410,6 +494,12 @@ export class Tokenizer {
           start,
           type: 'literal',
           value: word,
+          // A quote invented while folding a path segment. The colon that would
+          // have made this a FIELD was swallowed by the unterminated quote, so
+          // `name.'first:ada` arrives here as a bare term — and unmarked, it
+          // looked like a deliberate full-text search rather than a half-typed
+          // field, which `onRecovered: 'throw'` then accepted.
+          ...(recovered === undefined ? {} : { recovered }),
         };
     }
   }
@@ -420,6 +510,29 @@ export class Tokenizer {
 
     if (this.peek() === ':') {
       return this.finishField(start, value, quote);
+    }
+
+    /*
+     * A quoted FIRST segment of a dotted path: `'full name'.first:x`.
+     *
+     * `types.ts` documents this spelling, and it did not work — the scan stopped
+     * at the closing quote, so it became two clauses (`"full name"` AND
+     * `.first:x`) joined by an implicit AND, which matched nothing and reported
+     * nothing wrong. `a.'b c':x` worked, because the bare-term reader folds a
+     * quoted segment that FOLLOWS a dot; only a leading one was unreachable.
+     *
+     * The quoted text is escaped rather than passed through, so a key that
+     * contains a dot stays one segment — the same treatment `readBareTerm` gives a
+     * folded segment, for the same reason.
+     */
+    if (this.peek() === '.') {
+      // Hand the already-read segment to the bare-term reader as a PREFIX, so the
+      // rest of the path — including any further quoted segments — goes through
+      // exactly one implementation.
+      return this.readBareTerm(
+        start,
+        value.replace(/[\\.]/gu, (character) => `\\${character}`),
+      );
     }
 
     return recovered === true
@@ -434,7 +547,12 @@ export class Tokenizer {
       : { end: this.index, quote, start, type: 'literal', value };
   }
 
-  private finishField(start: number, name: string, quote: QuoteKind): Token {
+  private finishField(
+    start: number,
+    name: string,
+    quote: QuoteKind,
+    recovered?: string,
+  ): Token {
     const fieldEnd = this.index;
     const { caseSensitive, operator } = this.readComparisonOperator();
 
@@ -453,7 +571,15 @@ export class Tokenizer {
       type: 'comparison',
     });
 
-    return { end: fieldEnd, name, path, quote, start, type: 'field' };
+    return {
+      end: fieldEnd,
+      name,
+      path,
+      quote,
+      start,
+      type: 'field',
+      ...(recovered === undefined ? {} : { recovered }),
+    };
   }
 
   /**
@@ -492,10 +618,27 @@ export class Tokenizer {
     return { caseSensitive, operator: ':' };
   }
 
-  private readBareLiteral(start: number): Extract<Token, { type: 'literal' }> {
+  private readBareLiteral(
+    start: number,
+  ): Extract<Token, { type: 'literal' }> | null {
     const word = this.readWord(VALUE_TERMINATORS);
 
     if (word.length === 0) {
+      /*
+       * A value position holding something that cannot start a value: `a:)`,
+       * `a:^`, `(a:)`.
+       *
+       * Strict mode refuses. TOLERANT mode returns `null` WITHOUT consuming the
+       * character, so the caller re-reads it in default mode — the `)` becomes an
+       * rparen, the parser records a missing value, and the stray closer is
+       * ignored as trailing input. Consuming it and failing meant `(a:)`, which is
+       * one deleted character away from `(a:b)`, threw in the mode whose entire
+       * purpose is to survive half-typed input.
+       */
+      if (this.tolerant) {
+        return null;
+      }
+
       this.index += 1;
 
       return this.fail(
@@ -623,6 +766,27 @@ export class Tokenizer {
     return this.fail('Unterminated quoted string', start, this.index);
   }
 
+  /**
+   * `^2`, `~`, `~0.8` — the sigil plus any numeric argument, as one token.
+   *
+   * The argument is consumed even though nothing reads it, so tolerant mode can
+   * drop the whole modifier in one step instead of leaving `2` behind to be
+   * parsed as a separate term — which would silently turn `foo^2` into `foo AND
+   * 2`.
+   */
+  private readModifier(start: number, sigil: '^' | '~'): Token {
+    this.index += 1;
+
+    let raw = sigil;
+
+    while (this.index < this.source.length && /[\d.]/u.test(this.peek())) {
+      raw += this.peek();
+      this.index += 1;
+    }
+
+    return { end: this.index, raw, sigil, start, type: 'modifier' };
+  }
+
   private readRegex(start: number): Token {
     // Skip the opening slash.
     this.index += 1;
@@ -636,6 +800,18 @@ export class Tokenizer {
       if (character === '\\') {
         // A backslash escapes whatever follows, including a slash or a bracket,
         // and both characters are kept so the pattern is preserved verbatim.
+        //
+        // A TRAILING lone backslash has nothing to protect, and consuming two
+        // characters for it walked the index past the end: `/a\\` reported a span
+        // of four over a three-character source, so a caret excerpt printed four
+        // markers and any consumer slicing the source got a range that did not
+        // exist. `readQuoted` guards this the same way.
+        if (this.index + 1 >= this.source.length) {
+          pattern += character;
+          this.index += 1;
+          break;
+        }
+
         pattern += character + this.peek(1);
         this.index += 2;
         continue;

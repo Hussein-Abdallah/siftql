@@ -351,11 +351,22 @@ describe('errors', () => {
     expect(() => lex('name:/bar')).toThrow(SiftQLSyntaxError);
   });
 
-  it('reports a reserved character that is not yet meaningful', () => {
-    // ^ and ~ are reserved for boost and fuzzy, so they are errors rather than
-    // ordinary characters -- adding those operators later stays additive.
-    expect(() => lex('foo^2')).toThrow(SiftQLSyntaxError);
-    expect(() => lex('foo~2')).toThrow(SiftQLSyntaxError);
+  it('lexes a reserved modifier as a token, for the parser to refuse', () => {
+    /*
+     * ^ and ~ are reserved for boost and fuzzy, so they are errors rather than
+     * ordinary characters -- adding those operators later stays additive.
+     *
+     * They are TOKENS rather than a lexer error, which is what lets `parse()`
+     * report the documented `UNSUPPORTED_SYNTAX` code instead of a generic
+     * "unexpected character", and lets tolerant mode drop the modifier and mark
+     * the clause instead of throwing at a half-typed `foo^`.
+     */
+    expect(lex('foo^2').map((token) => token.type)).toEqual([
+      'literal',
+      'modifier',
+      'eof',
+    ]);
+    expect(lex('foo~0.8')[1]).toMatchObject({ raw: '~0.8', sigil: '~' });
   });
 
   it('is not a plain SyntaxError, so it cannot be caught by accident', () => {

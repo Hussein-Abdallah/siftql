@@ -131,14 +131,33 @@ class Parser {
     const expression = this.parseOr();
     const trailing = this.peek();
 
-    if (trailing.type !== 'eof') {
+    if (trailing.type === 'eof') {
+      return expression;
+    }
+
+    if (!this.tolerant) {
       this.fail(`Unexpected ${this.describe(trailing)}`, trailing, [
         'an operator',
         'end of query',
       ]);
     }
 
-    return expression;
+    /*
+     * Tolerant mode IGNORES trailing input, marked.
+     *
+     * A stray closer is what you have half way through an edit: `(a:b))` is one
+     * keystroke away from `(a:b)`, and `a:[1 TO 2]]` from a valid range. Throwing
+     * here contradicted the documented promise that a tolerant parse is always
+     * usable, and blanked a result list at exactly the moment the user was still
+     * typing.
+     */
+    return {
+      ...expression,
+      recovered: {
+        reason: RECOVERY_REASONS.trailingInput,
+        synthetic: false,
+      },
+    };
   }
 
   /* ----------------------------------------------------------------------- *
@@ -184,6 +203,8 @@ class Parser {
         return `value "${token.value}"`;
       case 'lparen':
         return '"("';
+      case 'modifier':
+        return `modifier "${token.raw}"`;
       case 'rangeClose':
         return `"${token.delimiter}"`;
       case 'rangeOpen':
@@ -228,7 +249,14 @@ class Parser {
   private parseOr(): Expression {
     this.depth += 1;
 
-    if (this.depth > MAX_DEPTH) {
+    /*
+     * `depth` counts parseOr FRAMES, and the outermost frame is the query itself
+     * rather than a level of nesting — so nesting depth is one less. Comparing the
+     * frame count directly made `MAX_DEPTH = 200` accept only 199 levels while the
+     * message said "more than 200", and the constant is exported, so the
+     * discrepancy was part of the published contract.
+     */
+    if (this.depth - 1 > MAX_DEPTH) {
       this.fail(
         `Query is nested too deeply: more than ${String(MAX_DEPTH)} levels`,
         this.peek(),
@@ -319,23 +347,37 @@ class Parser {
      * `n:(-3 OR -5)` therefore became `n:(NOT 3 OR NOT 5)` and matched a row
      * whose n was 7. Only an ADJACENT sign is folded — `n:(- 3)` keeps its
      * negation — and only inside a group, so top-level `-foo` is untouched.
+     *
+     * The sign is MERGED INTO THE TOKEN and the result goes through the ordinary
+     * literal path, rather than being assembled into a node here. Building it by
+     * hand meant skipping everything that path does, and three defects followed
+     * from that one shortcut:
+     *
+     *  - `scanPattern` never ran, so `n:(-3*)` produced the plain text `-3*`
+     *    while `n:-3*` produced a wildcard. Two spellings of one clause
+     *    disagreed, silently, and only the unparenthesised one matched `-3xyz`.
+     *  - escapes were never decoded, so `n:(-3\ 4)` kept its backslash and did
+     *    not match `-3 4`, which `n:-3\ 4` did.
+     *  - no clause was counted, so `n:(-1 OR -1 OR …)` sailed past MAX_CLAUSES
+     *    and emitted a tree deeper than the rest of the package accepts — the
+     *    parser and the serializer disagreed about what was representable.
      */
     if (
       this.fieldGroupDepth > 0 &&
       next.type === 'prohibit' &&
       this.isAdjacentNumber(next)
     ) {
-      this.advance();
-
+      const sign = this.advance();
       const digits = this.advance() as Extract<Token, { type: 'literal' }>;
 
-      return {
-        literal: 'text',
-        location: span(next.start, digits.end),
-        quoted: false,
-        type: 'LiteralExpression',
+      this.countClause(digits);
+
+      return this.parseLiteralOrWildcard({
+        ...digits,
+        start: sign.start,
+        // Raw source text, sign included: the literal path decodes it.
         value: `-${digits.value}`,
-      };
+      });
     }
 
     if (next.type === 'not' || next.type === 'prohibit') {
@@ -374,7 +416,49 @@ class Parser {
       );
     }
 
-    return this.parsePrimary();
+    return this.parseModifiers(this.parsePrimary());
+  }
+
+  /**
+   * `^boost`, `~fuzzy`, `~proximity` — reserved for v0.2.
+   *
+   * Refused rather than ignored, because dropping a boost silently would make
+   * `a^5 b` and `a b` the same query. `types.ts` and `errors.ts` both promise the
+   * code is `UNSUPPORTED_SYNTAX`, and only `+required` was delivering it: `^` and
+   * `~` reached the bare-term reader and came back as a generic
+   * `Unexpected character`, so a consumer branching on the code to say "not
+   * supported until v0.2" got that right for one of the three documented forms.
+   *
+   * In TOLERANT mode the modifier is dropped and the clause is MARKED, because a
+   * search box hands us `foo^` the moment someone starts typing a boost and must
+   * not blank out — but `onRecovered` still has to be able to see that something
+   * was thrown away.
+   */
+  private parseModifiers(expression: Expression): Expression {
+    let result = expression;
+
+    while (this.peek().type === 'modifier') {
+      const token = this.advance() as Extract<Token, { type: 'modifier' }>;
+
+      if (!this.tolerant) {
+        throw new SiftQLSyntaxError(
+          `The ${token.sigil === '^' ? 'boost' : 'fuzzy/proximity'} modifier "${token.raw}" is reserved and not supported in this version`,
+          span(token.start, token.end),
+          this.source,
+          { code: 'UNSUPPORTED_SYNTAX' },
+        );
+      }
+
+      result = {
+        ...result,
+        recovered: {
+          reason: RECOVERY_REASONS.unsupportedModifier,
+          synthetic: false,
+        },
+      };
+    }
+
+    return result;
   }
 
   /** True when a numeric literal begins exactly where `sign` ends. */
@@ -389,26 +473,69 @@ class Parser {
     );
   }
 
-  private parsePrimary(): Expression {
-    const next = this.peek();
+  /**
+   * Count one clause against the budget.
+   *
+   * Extracted because `parsePrimary` is no longer the only place a clause is
+   * produced: the negative fold makes one too, and when it did its own accounting
+   * by not doing any, `MAX_CLAUSES` stopped bounding the tree.
+   */
+  /**
+   * A group body reads colons as ordinary characters, so a nested field arrives
+   * here as an ordinary value — `d:(a:b)` is the text `a:b`. That is the right
+   * reading for a date-time and the wrong one for a mistake, so the mistake is
+   * still refused, distinguished by SHAPE: a field reference starts with a letter
+   * or underscore, and no ISO date-time or 24-hour time does.
+   *
+   * Without this, `name:(first:ada)` would have become a silent non-match rather
+   * than the clear refusal it used to be — trading one silently wrong answer for
+   * another.
+   */
+  private refuseNestedField(token: Extract<Token, { type: 'literal' }>): void {
+    if (
+      this.fieldGroupDepth === 0 ||
+      token.quote !== 'none' ||
+      !/^[A-Za-z_][A-Za-z0-9_.]*:/u.test(token.value)
+    ) {
+      return;
+    }
 
+    const name = token.value.slice(0, token.value.indexOf(':'));
+
+    this.fail(
+      `A field group may not contain another field: "${name}:" is not allowed inside ( ). If this is a value rather than a field, quote it: "${token.value}"`,
+      token,
+      ['a value'],
+    );
+  }
+
+  private countClause(at: Token): void {
     this.clauses += 1;
 
     if (this.clauses > MAX_CLAUSES) {
       this.fail(
         `Query is too large: more than ${String(MAX_CLAUSES)} clauses`,
-        next,
+        at,
         ['a shorter query'],
       );
     }
+  }
+
+  private parsePrimary(): Expression {
+    const next = this.peek();
+
+    this.countClause(next);
 
     switch (next.type) {
       case 'field':
         return this.parseTag();
-      case 'literal':
-        return this.parseLiteralOrWildcard(
-          this.advance() as Extract<Token, { type: 'literal' }>,
-        );
+      case 'literal': {
+        const token = this.advance() as Extract<Token, { type: 'literal' }>;
+
+        this.refuseNestedField(token);
+
+        return this.parseLiteralOrWildcard(token);
+      }
       case 'lparen':
         return this.parseGroup();
       case 'rangeOpen':
@@ -481,6 +608,15 @@ class Parser {
     this.advance();
 
     const field = this.buildField(fieldToken);
+    // A quote invented inside the field PATH is a recovery like any other, and it
+    // has to reach the node: without it `name.'first:ada` parsed in tolerant mode
+    // looked like a deliberate clause, and `onRecovered: 'throw'` accepted it.
+    const pathRecovered =
+      fieldToken.recovered === undefined
+        ? {}
+        : {
+            recovered: { reason: fieldToken.recovered, synthetic: false },
+          };
     const operator: ComparisonOperator = {
       location: span(operatorToken.start, operatorToken.end),
       operator: operatorToken.operator,
@@ -491,6 +627,7 @@ class Parser {
       const expression = this.parseMatchValue(operatorToken);
 
       return {
+        ...pathRecovered,
         caseSensitive: operatorToken.caseSensitive,
         expression,
         field,
@@ -504,6 +641,7 @@ class Parser {
     const expression = this.parseRelationalValue(operatorToken);
 
     return {
+      ...pathRecovered,
       caseSensitive: operatorToken.caseSensitive,
       expression,
       field,
@@ -547,10 +685,13 @@ class Parser {
     const next = this.peek();
 
     switch (next.type) {
-      case 'literal':
-        return this.parseLiteralOrWildcard(
-          this.advance() as Extract<Token, { type: 'literal' }>,
-        );
+      case 'literal': {
+        const token = this.advance() as Extract<Token, { type: 'literal' }>;
+
+        this.refuseNestedField(token);
+
+        return this.parseLiteralOrWildcard(token);
+      }
       case 'lparen':
         return this.parseFieldGroup();
       case 'rangeOpen':

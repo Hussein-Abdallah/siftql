@@ -431,8 +431,28 @@ const serializeBody = (
         depth,
       );
 
-      // `NOT` is a word and needs a space; `-` is a sigil and must not have one.
-      return node.operator === 'NOT' ? `NOT ${operand}` : `-${operand}`;
+      if (node.operator === 'NOT') {
+        // A word, so it needs a space.
+        return `NOT ${operand}`;
+      }
+
+      /*
+       * A sigil, so normally no space — EXCEPT before a digit.
+       *
+       * Inside a field group `-3` is the NUMBER minus three, not the negation of
+       * three, because a group body is a list of values. So printing
+       * `UnaryOperator{-, 3}` as `-3` silently changed what it meant:
+       * `n:(- 3)` came back as `n:(-3)` and re-parsed as a literal, which is a
+       * round-trip violation and, worse, a different query.
+       *
+       * The space is emitted at EVERY position rather than only inside a group.
+       * `- 3` and `-3` parse identically at the top level, so one unconditional
+       * rule is correct in both places, and a canonicaliser choosing the spelling
+       * that cannot be misread is exactly its job. The alternative — threading
+       * "am I inside a field group" through the whole serializer to save one
+       * character — is more code in exchange for a worse guarantee.
+       */
+      return /^\d/u.test(operand) ? `- ${operand}` : `-${operand}`;
     }
 
     case 'WildcardExpression':

@@ -77,6 +77,10 @@ export const RECOVERY_REASONS = Object.freeze({
   unclosedRange: 'unclosed-range',
   missingValue: 'missing-value',
   missingOperand: 'missing-operand',
+  /** A `^boost` or `~fuzzy` modifier was dropped; both are reserved for v0.2. */
+  unsupportedModifier: 'unsupported-modifier',
+  /** Text after the end of the query was ignored — a stray `)` or `]`. */
+  trailingInput: 'trailing-input',
 });
 
 /**

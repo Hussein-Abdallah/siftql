@@ -32,6 +32,12 @@ export type Token = SourceLocation &
          */
         readonly path: readonly string[];
         readonly quote: QuoteKind;
+        /**
+         * Set when tolerant mode invented a closing quote inside the field PATH —
+         * `name.'first:ada`. Without it the recovery was invisible and the clause
+         * looked like a deliberate full-text search for `name.first:ada`.
+         */
+        readonly recovered?: string;
       }
     | {
         readonly type: 'comparison';
@@ -62,6 +68,19 @@ export type Token = SourceLocation &
       }
     | { readonly type: 'rangeOpen'; readonly delimiter: '[' | '{' }
     | { readonly type: 'rangeClose'; readonly delimiter: '}' | ']' }
+    | {
+        /**
+         * `^boost` or `~fuzzy`/`~proximity`. Reserved for v0.2, so no node exists
+         * for them — but they get a TOKEN rather than an "unexpected character",
+         * because `types.ts` and `errors.ts` both promise the parser reports them
+         * as `UNSUPPORTED_SYNTAX`, and a consumer branching on that code to say
+         * "not supported yet" was getting a generic `SYNTAX` instead.
+         */
+        readonly type: 'modifier';
+        readonly sigil: '^' | '~';
+        /** The modifier as written, including any numeric argument: `^2`, `~0.8`. */
+        readonly raw: string;
+      }
     | { readonly type: 'and' }
     | { readonly type: 'eof' }
     | { readonly type: 'lparen' }

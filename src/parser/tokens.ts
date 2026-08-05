@@ -33,7 +33,16 @@ export type Token = SourceLocation &
         readonly path: readonly string[];
         readonly quote: QuoteKind;
       }
-    | { readonly type: 'comparison'; readonly operator: ComparisonOperator }
+    | {
+        readonly type: 'comparison';
+        readonly operator: ComparisonOperator;
+        /**
+         * True when the operator was written with a doubled colon (`::`,
+         * `::>=`, …), which makes the whole clause respect capitalisation.
+         * Quoting does NOT affect case; it only holds a value together.
+         */
+        readonly caseSensitive: boolean;
+      }
     | {
         readonly type: 'literal';
         /** The term as written, without surrounding quotes. */

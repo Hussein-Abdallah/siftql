@@ -14,7 +14,9 @@ const summary = (source: string, options: TokenizerOptions = {}): string[] =>
     .map((token) => {
       switch (token.type) {
         case 'comparison':
-          return `op(${token.operator})`;
+          return token.caseSensitive
+            ? `op(${token.operator},CS)`
+            : `op(${token.operator})`;
         case 'field':
           return `field(${token.name})`;
         case 'literal':
@@ -544,5 +546,81 @@ describe('missing-value suggestions', () => {
     } catch (error) {
       expect((error as SiftQLSyntaxError).message).toContain('height:>=100?');
     }
+  });
+});
+
+describe('case sensitivity — the doubled colon', () => {
+  it('defaults to case-insensitive', () => {
+    expect(summary('status:active')).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(active)',
+    ]);
+  });
+
+  it('turns on case sensitivity with ::', () => {
+    expect(summary('status::Active')).toEqual([
+      'field(status)',
+      'op(:,CS)',
+      'lit(Active)',
+    ]);
+  });
+
+  it('does NOT let quoting affect case', () => {
+    // Quotes hold a value together; they say nothing about capitalisation.
+    const [, quotedOperator] = lex('status:"in progress"');
+    const [, bareOperator] = lex('status:in\\ progress');
+
+    expect(
+      quotedOperator?.type === 'comparison' && quotedOperator.caseSensitive,
+    ).toBe(false);
+    expect(
+      bareOperator?.type === 'comparison' && bareOperator.caseSensitive,
+    ).toBe(false);
+  });
+
+  it('composes with every comparison operator, longest match first', () => {
+    expect(summary('h::>=1')).toEqual(['field(h)', 'op(:>=,CS)', 'lit(1)']);
+    expect(summary('h::<=1')).toEqual(['field(h)', 'op(:<=,CS)', 'lit(1)']);
+    expect(summary('h::=1')).toEqual(['field(h)', 'op(:=,CS)', 'lit(1)']);
+    expect(summary('h::>1')).toEqual(['field(h)', 'op(:>,CS)', 'lit(1)']);
+    expect(summary('h::<1')).toEqual(['field(h)', 'op(:<,CS)', 'lit(1)']);
+  });
+
+  it('scopes a whole range, so both bounds share one collation', () => {
+    expect(summary('v::[a TO z]')).toEqual([
+      'field(v)',
+      'op(:,CS)',
+      'open([)',
+      'lit(a)',
+      'to',
+      'lit(z)',
+      'close(])',
+    ]);
+  });
+
+  it('answers the multi-word containment case in both collations', () => {
+    expect(summary('text:"*is just*"')).toEqual([
+      'field(text)',
+      'op(:)',
+      'lit(*is just*|double)',
+    ]);
+    expect(summary('text::"*is just*"')).toEqual([
+      'field(text)',
+      'op(:,CS)',
+      'lit(*is just*|double)',
+    ]);
+  });
+
+  it('spans the operator correctly, doubled colon included', () => {
+    const [field, operator] = lex('h::>=1');
+
+    expect(field).toMatchObject({ end: 1, start: 0 });
+    // `::>=` is four characters.
+    expect(operator).toMatchObject({ end: 5, start: 1 });
+  });
+
+  it('still refuses a space after the doubled form', () => {
+    expect(() => lex('status:: in progress')).toThrow(SiftQLSyntaxError);
   });
 });

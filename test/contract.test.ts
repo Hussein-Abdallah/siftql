@@ -39,8 +39,8 @@ import {
 
 const at = (start: number, end: number): SourceLocation => ({ end, start });
 
-const segment = (name: string, quote: '"' | "'" | null = null) =>
-  ({ location: at(0, 0), name, quote, type: 'FieldSegment' }) as const;
+const segment = (name: string, quoted = false) =>
+  ({ location: at(0, 0), name, quoted, type: 'FieldSegment' }) as const;
 
 describe('isSafeUnquotedExpression', () => {
   it('accepts ordinary terms and bare dates', () => {
@@ -97,7 +97,7 @@ describe('field path helpers', () => {
   it('keeps a quoted segment containing a dot as one step', () => {
     const field: Field = {
       location: at(0, 5),
-      segments: [segment('a.b', "'")],
+      segments: [segment('a.b', true)],
       type: 'Field',
     };
 
@@ -128,7 +128,6 @@ describe('rangeBracket', () => {
     value: {
       literal: 'text',
       location: at(0, 1),
-      quote: null,
       quoted: false,
       type: 'LiteralExpression',
       value: '1',

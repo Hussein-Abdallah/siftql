@@ -94,7 +94,12 @@ export interface NodeBase {
  * 2. Lexical primitives
  * ------------------------------------------------------------------------- */
 
-/** The two quote characters the grammar accepts. */
+/**
+ * The two quote characters the grammar accepts. They are EXACT SYNONYMS: `'a b'`
+ * and `"a b"` parse to identical nodes, so swapping quote styles inside a JSON,
+ * YAML or shell string can never change what a query means. Exported for query
+ * builders and input validators; the AST does not record which one was typed.
+ */
 export type QuoteChar = '"' | "'";
 
 /**
@@ -261,28 +266,35 @@ export interface LiteralExpressionBase extends NodeBase, ClauseModifiers {
 }
 
 /**
- * A bare term: `foo`, `100`, `2020-06-01`, `2020-06-01T12:00:00Z`. Matched
- * case-INsensitively. `value` is decoded — escapes resolved — so the source
- * `foo\*bar` yields `foo*bar` here and re-serializes with the backslash back.
+ * A bare term: `foo`, `100`, `2020-06-01`, `2020-06-01T12:00:00Z`. `value` is
+ * decoded — escapes resolved — so the source `foo\*bar` yields `foo*bar` here
+ * and re-serializes with the backslash back.
  */
 export interface BareTextLiteral extends LiteralExpressionBase, Fuzzable {
   readonly literal: 'text';
   readonly quoted: false;
-  readonly quote: null;
-  readonly value: string;
-}
-
-/** A quoted term: `'foo'`, `"2020-06-01 12:00:00"`. Matched case-SENSITIVELY. */
-export interface QuotedTextLiteral extends LiteralExpressionBase, Proximate {
-  readonly literal: 'text';
-  readonly quoted: true;
-  readonly quote: QuoteChar;
   readonly value: string;
 }
 
 /**
- * `quoted` and `quote` are paired by construction, and `quoted` is the single
- * fact deciding case sensitivity and wildcard eligibility.
+ * A quoted term: `'foo'`, `"in progress"`. Quoting holds a value TOGETHER — it
+ * allows spaces and reserved characters — and nothing more. It does not affect
+ * case; see {@link TagBase.caseSensitive}.
+ */
+export interface QuotedTextLiteral extends LiteralExpressionBase, Proximate {
+  readonly literal: 'text';
+  readonly quoted: true;
+  readonly value: string;
+}
+
+/**
+ * The two quote characters are exact synonyms and which one was typed is NOT
+ * recorded: `'a b'` and `"a b"` produce identical nodes, so swapping quote
+ * styles in a JSON, YAML or shell string can never change meaning. Quote style
+ * is therefore on serialize()'s normalisation whitelist (I4); bare-vs-quoted is
+ * NOT, because `quoted` remains load-bearing — it decides fuzzy-vs-proximity
+ * eligibility (`report~2` is edit distance, `"report"~2` is phrase slop) and
+ * whether a `true`/`null` token is a keyword or a four-character string.
  */
 export type TextLiteral = BareTextLiteral | QuotedTextLiteral;
 
@@ -290,7 +302,6 @@ export type TextLiteral = BareTextLiteral | QuotedTextLiteral;
 export interface BooleanLiteral extends LiteralExpressionBase {
   readonly literal: 'boolean';
   readonly quoted: false;
-  readonly quote: null;
   readonly value: boolean;
 }
 
@@ -298,7 +309,6 @@ export interface BooleanLiteral extends LiteralExpressionBase {
 export interface NullLiteral extends LiteralExpressionBase {
   readonly literal: 'null';
   readonly quoted: false;
-  readonly quote: null;
   readonly value: null;
 }
 
@@ -359,32 +369,21 @@ export type WildcardSegment =
  * {@link BareTextLiteral} instead. Adjacent literal segments are always merged,
  * so a given pattern has exactly one representation.
  */
-export interface WildcardExpressionBase extends NodeBase, ClauseModifiers {
+export interface WildcardExpression extends NodeBase, ClauseModifiers {
   readonly type: 'WildcardExpression';
   readonly pattern: NonEmptyArray<WildcardSegment>;
+  /**
+   * Whether the pattern was written inside quotes. Wildcards are LIVE inside
+   * quotes exactly as they are bare, so `text:"*is just*"` is a pattern and not
+   * a literal — that is what makes containment of a multi-word value writable
+   * without escaping every space. A literal asterisk is `\*` in both forms.
+   *
+   * This carries no semantic weight: the two spellings match identically. It is
+   * retained only so serialize() can reproduce the author's form, since
+   * bare-vs-quoted is deliberately NOT on the normalisation whitelist.
+   */
+  readonly quoted: boolean;
 }
-
-/** `foo*bar` — matched case-INsensitively, mirroring {@link BareTextLiteral}. */
-export interface BareWildcardExpression extends WildcardExpressionBase {
-  readonly quoted: false;
-  readonly quote: null;
-}
-
-/**
- * `'foo*bar'` — matched case-SENSITIVELY, mirroring {@link QuotedTextLiteral}.
- * This is what makes `status:'*active*'` a case-sensitive containment search.
- */
-export interface QuotedWildcardExpression extends WildcardExpressionBase {
-  readonly quoted: true;
-  readonly quote: QuoteChar;
-}
-
-/**
- * `quoted` is the single fact deciding case sensitivity, and it means the same
- * thing here as on {@link TextLiteral} — one rule, both node kinds.
- */
-export type WildcardExpression =
-  BareWildcardExpression | QuotedWildcardExpression;
 
 /* ------------------------------------------------------------------------- *
  * 6. Regex
@@ -485,8 +484,13 @@ export interface FieldSegment extends NodeBase {
   readonly type: 'FieldSegment';
   /** Decoded: quotes stripped, escapes resolved. */
   readonly name: string;
-  /** Quoting is per segment: `'full name'.first` and `name.'first name'`. */
-  readonly quote: QuoteChar | null;
+  /**
+   * Quoting is per segment (`'full name'.first`, `name.'first name'`) and is
+   * load-bearing here: a quoted segment is never split on its dots, so
+   * `'a.b':x` addresses a literal key while `a.b:x` walks into a nested object.
+   * Which quote character was used is not recorded — they are synonyms.
+   */
+  readonly quoted: boolean;
 }
 
 export interface Field extends NodeBase {
@@ -587,6 +591,26 @@ export type UnaryOperatorSymbol = 'NOT' | '-';
 export interface TagBase extends NodeBase, ClauseModifiers {
   readonly type: 'Tag';
   readonly field: Field;
+  /**
+   * Whether this clause respects capitalisation. `false` for `status:active`,
+   * `true` for `status::Active` — the doubled colon is the ONLY thing that
+   * turns it on, and it scopes the whole clause including ranges and ordering.
+   *
+   * Case lives HERE rather than on the operand for three reasons. It is a
+   * property of the comparison, not of the text: `height::[a TO z]` has two
+   * operands and exactly one collation, so a per-leaf flag would make a
+   * mixed-collation range representable. Flipping it is a legal AST transform
+   * that must always have a correct serialisation, which a flag encoded in the
+   * quoting of a leaf does not (dropping the quotes to change case can split
+   * one node into two). And a compiler lowering to SQL or Elasticsearch needs
+   * the collation once per predicate, not once per token.
+   *
+   * Case sensitivity is NEVER inferred from the operand's own capitalisation.
+   * Inferring it (as ripgrep's smart-case does) makes case-insensitive matching
+   * of a capitalised word — `NASA`, a surname, a German noun — unspellable, and
+   * fails by silently returning nothing.
+   */
+  readonly caseSensitive: boolean;
 }
 
 /**
@@ -781,7 +805,7 @@ export const OPERATOR_PRECEDENCE: Readonly<Record<string, number>> =
 export interface AstBuilders {
   /** Bare term. Reserved characters are escaped on serialize, never reinterpreted. */
   readonly term: (value: string) => BareTextLiteral;
-  readonly quoted: (value: string, quote?: QuoteChar) => QuotedTextLiteral;
+  readonly quoted: (value: string) => QuotedTextLiteral;
   readonly boolean: (value: boolean) => BooleanLiteral;
   readonly null: () => NullLiteral;
   /**
@@ -789,17 +813,26 @@ export interface AstBuilders {
    * literally use {@link AstBuilders.term}, which escapes everything. Returns a
    * plain term when the pattern turns out to contain no metacharacter.
    */
-  readonly wildcard: (pattern: string) => WildcardExpression | BareTextLiteral;
+  readonly wildcard: (
+    pattern: string,
+    quoted?: boolean,
+  ) => WildcardExpression | BareTextLiteral;
   readonly regex: (
     pattern: string,
     flags?: readonly RegexFlag[],
   ) => RegexExpression;
   readonly field: (...path: NonEmptyArray<string>) => Field;
-  readonly tag: (field: Field, expression: MatchTagExpression) => MatchTag;
+  /** `caseSensitive` defaults to false — the `:` form, not `::`. */
+  readonly tag: (
+    field: Field,
+    expression: MatchTagExpression,
+    caseSensitive?: boolean,
+  ) => MatchTag;
   readonly compare: (
     field: Field,
     operator: RelationalOperatorSymbol,
     expression: TextLiteral,
+    caseSensitive?: boolean,
   ) => RelationalTag;
   readonly range: (
     lower: TextLiteral | null,

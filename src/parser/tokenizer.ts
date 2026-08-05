@@ -370,7 +370,7 @@ export class Tokenizer {
 
   private finishField(start: number, name: string, quote: QuoteKind): Token {
     const fieldEnd = this.index;
-    const operator = this.readComparisonOperator();
+    const { caseSensitive, operator } = this.readComparisonOperator();
 
     this.mode = 'value';
     this.lastClausePrefix = this.source.slice(start, this.index);
@@ -380,6 +380,7 @@ export class Tokenizer {
     const path = quote === 'none' ? name.split('.') : [name];
 
     this.pending.push({
+      caseSensitive,
       end: this.index,
       operator,
       start: fieldEnd,
@@ -389,41 +390,40 @@ export class Tokenizer {
     return { end: fieldEnd, name, path, quote, start, type: 'field' };
   }
 
-  private readComparisonOperator(): ComparisonOperator {
-    // Longest match first: `:>=` must win over `:>`.
-    if (this.source.startsWith(':>=', this.index)) {
-      this.index += 3;
+  /**
+   * Read the operator that follows a field name.
+   *
+   * A DOUBLED colon makes the whole clause case-sensitive: `status::Active`,
+   * `name::>=M`, `version::[a TO z]`. Case is a property of the comparison, not
+   * of the operand, so it rides here rather than on the value — which is what
+   * keeps `height::[a TO z]` from being able to express two different
+   * collations for its two boundaries.
+   *
+   * Longest match first throughout, so `::>=` beats `::>` beats `::`, and
+   * `:>=` beats `:>` beats `:`.
+   */
+  private readComparisonOperator(): {
+    caseSensitive: boolean;
+    operator: ComparisonOperator;
+  } {
+    const caseSensitive = this.source.startsWith('::', this.index);
 
-      return ':>=';
+    // Skip the extra colon so the suffix table below is shared by both forms.
+    if (caseSensitive) {
+      this.index += 1;
     }
 
-    if (this.source.startsWith(':<=', this.index)) {
-      this.index += 3;
+    for (const candidate of [':>=', ':<=', ':=', ':>', ':<'] as const) {
+      if (this.source.startsWith(candidate, this.index)) {
+        this.index += candidate.length;
 
-      return ':<=';
-    }
-
-    if (this.source.startsWith(':=', this.index)) {
-      this.index += 2;
-
-      return ':=';
-    }
-
-    if (this.source.startsWith(':>', this.index)) {
-      this.index += 2;
-
-      return ':>';
-    }
-
-    if (this.source.startsWith(':<', this.index)) {
-      this.index += 2;
-
-      return ':<';
+        return { caseSensitive, operator: candidate };
+      }
     }
 
     this.index += 1;
 
-    return ':';
+    return { caseSensitive, operator: ':' };
   }
 
   private readBareLiteral(start: number): Extract<Token, { type: 'literal' }> {

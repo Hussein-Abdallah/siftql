@@ -472,7 +472,7 @@ describe('AST depth', () => {
 
   it('says what is wrong and what to look for', () => {
     expect(() => matches(nestedNode(50_000), {})).toThrowError(
-      /deeper than parse\(\) can produce/u,
+      /too deep to walk/u,
     );
   });
 

@@ -166,7 +166,7 @@ const assertDepth = (root: SiftQLAst, fn: string): void => {
       throw new SiftQLArgumentError(
         `${fn}() received an AST nested more than ${String(
           MAX_AST_DEPTH,
-        )} levels deep. That is deeper than parse() can produce, so it was built by hand or arrived as JSON — check for a node that points back at one of its own ancestors.`,
+        )} levels deep, which is too deep to walk. If you built this tree yourself or deserialized it, check for a node that points back at one of its own ancestors; if it came from parse(), the query exceeded what the parser is supposed to accept and this is a defect in siftql.`,
         { argument: 'node', received: root.type },
       );
     }

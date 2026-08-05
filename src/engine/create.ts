@@ -128,9 +128,18 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     overrides: EvaluateOptions = {},
   ): SiftQLAst =>
     applyRecoveryPolicy(
-      typeof query === 'string'
-        ? parse(query, { tolerant: resolved.tolerant })
-        : assertNode(query, fn),
+      // Checked whether it was PARSED or handed to us. The parser's own caps are
+      // supposed to make a parsed tree shallow enough to walk, and a bug that
+      // lets one slip past them must not surface as a raw RangeError from
+      // whichever helper was on the stack — `applyRecoveryPolicy` recurses
+      // before the evaluator's own counter ever runs, so checking only the
+      // hand-built path left that gap open.
+      assertNode(
+        typeof query === 'string'
+          ? parse(query, { tolerant: resolved.tolerant })
+          : query,
+        fn,
+      ),
       overrides.onRecovered ?? resolved.onRecovered,
     );
 

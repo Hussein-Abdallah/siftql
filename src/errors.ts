@@ -57,7 +57,9 @@ export type SiftQLErrorCode =
   /** Duplicate type name, unknown built-in, malformed `dateFormat`. */
   | 'CONFIG'
   /** A user-supplied regex was refused by the backtracking screen. */
-  | 'UNSAFE_PATTERN';
+  | 'UNSAFE_PATTERN'
+  /** A public function was called with an argument of the wrong shape. */
+  | 'ARGUMENT';
 
 /**
  * Base class for every error siftql throws. Catch this to catch them all.
@@ -84,8 +86,12 @@ export class SiftQLError extends Error {
   /** @internal */
   public readonly [SIFTQL_ERROR] = true;
 
-  public constructor(message: string, code: SiftQLErrorCode = 'CONFIG') {
-    super(message);
+  public constructor(
+    message: string,
+    code: SiftQLErrorCode = 'CONFIG',
+    options: { readonly cause?: unknown } = {},
+  ) {
+    super(message, options);
     // NOT `new.target.name`: a minifier renames the class, so a production
     // bundle reported `err.name === 'x'`. Each subclass sets its own literal.
     this.name = 'SiftQLError';
@@ -165,6 +171,8 @@ export interface OperandErrorDetails {
   /** Set when a type claimed the operand and reported it malformed. */
   readonly reason?: string | null | undefined;
   readonly hint?: string | null | undefined;
+  /** Original exception, when a value type threw rather than returning a result. */
+  readonly cause?: unknown;
 }
 
 /**
@@ -185,7 +193,11 @@ export class SiftQLOperandError extends SiftQLError {
   public readonly hint: string | null;
 
   public constructor(message: string, details: OperandErrorDetails) {
-    super(message, details.code ?? 'OPERAND');
+    super(
+      message,
+      details.code ?? 'OPERAND',
+      'cause' in details ? { cause: details.cause } : {},
+    );
     this.name = 'SiftQLOperandError';
     this.location = details.location;
     this.site = details.site;
@@ -205,6 +217,13 @@ export interface ValueErrorDetails {
   readonly reason?: string | null | undefined;
   /** Location of the QUERY clause that forced the coercion. */
   readonly location: SourceLocation;
+  /**
+   * The original exception, when this failure came from consumer code throwing
+   * — a getter on the record, a Proxy trap, a custom `coerceValue`. Preserved so
+   * "every error siftql throws is a SiftQLError" costs no diagnostic detail: the
+   * stack that actually failed is still one `.cause` away.
+   */
+  readonly cause?: unknown;
 }
 
 /**
@@ -226,7 +245,7 @@ export class SiftQLValueError extends SiftQLError {
   public readonly location: SourceLocation;
 
   public constructor(message: string, details: ValueErrorDetails) {
-    super(message, 'VALUE');
+    super(message, 'VALUE', 'cause' in details ? { cause: details.cause } : {});
     this.name = 'SiftQLValueError';
     this.typeName = details.typeName;
     this.path = details.path;
@@ -254,10 +273,41 @@ export class SiftQLRecoveredQueryError extends SiftQLError {
   }
 }
 
+/**
+ * A public function was called with an argument of the wrong SHAPE — `parse(null)`,
+ * `filter(query, notAnArray)`, `serialize({ type: 'bogus' })`.
+ *
+ * Distinct from {@link SiftQLConfigError}, which is a wrong OPTION, and from
+ * {@link SiftQLSyntaxError}, which is a wrong QUERY. All three are caller
+ * mistakes, but they are found at different boundaries and fixed in different
+ * places, so collapsing them would lose the one piece of information the caller
+ * needs: whether to look at the call site, the engine setup, or the query text.
+ */
+export class SiftQLArgumentError extends SiftQLError {
+  /** Parameter name as it appears in the signature: `'query'`, `'items'`. */
+  public readonly argument: string;
+
+  /** The offending value, so a caller can log what actually arrived. */
+  public readonly received: unknown;
+
+  public constructor(
+    message: string,
+    details: { readonly argument: string; readonly received: unknown },
+  ) {
+    super(message, 'ARGUMENT');
+    this.name = 'SiftQLArgumentError';
+    this.argument = details.argument;
+    this.received = details.received;
+  }
+}
+
 /** Bad engine configuration: duplicate type name, malformed `dateFormat`. */
 export class SiftQLConfigError extends SiftQLError {
-  public constructor(message: string) {
-    super(message, 'CONFIG');
+  public constructor(
+    message: string,
+    options: { readonly cause?: unknown } = {},
+  ) {
+    super(message, 'CONFIG', options);
     this.name = 'SiftQLConfigError';
   }
 }
@@ -275,6 +325,8 @@ export interface ValueFailure {
   readonly reason: string | null;
   readonly location: SourceLocation;
   readonly onValueError: OnValueError;
+  /** Original exception, when consumer code threw rather than returning a signal. */
+  readonly cause?: unknown;
 }
 
 const describeValueFailure = (failure: ValueFailure): string => {
@@ -296,10 +348,20 @@ const describeValueFailure = (failure: ValueFailure): string => {
  * forget to handle the outcome.
  */
 export const signalValueFailure = (failure: ValueFailure): false => {
-  const disposition: FailureDisposition = dispositionFor(
+  const disposition: FailureDisposition | undefined = dispositionFor(
     failure.site,
     failure.kind,
   );
+
+  if (disposition === undefined) {
+    // An unknown site or kind. The only way to reach this from outside is a
+    // value type returning a failure kind that is not one of the three, and
+    // treating it as "no match" would silently apply the most lenient row in the
+    // table to a failure nobody has classified.
+    throw new SiftQLConfigError(
+      `No failure policy for site "${failure.site}" with kind "${failure.kind}". A value type must fail with MISS, malformedValue(...), or an 'incomparable' result.`,
+    );
+  }
 
   if (disposition === 'value-error' && failure.onValueError === 'throw') {
     throw new SiftQLValueError(describeValueFailure(failure), {
@@ -309,6 +371,7 @@ export const signalValueFailure = (failure: ValueFailure): false => {
       reason: failure.reason,
       typeName: failure.typeName,
       value: failure.value,
+      ...('cause' in failure ? { cause: failure.cause } : {}),
     });
   }
 

@@ -1,3 +1,5 @@
+import { MAX_CLAUSES, MAX_DEPTH } from '../limits.js';
+import { assertOptions, assertQuery } from '../validate.js';
 import { SiftQLSyntaxError } from '../errors.js';
 import type {
   BooleanOperator,
@@ -84,10 +86,8 @@ const span = (start: number, end: number): SourceLocation => ({ end, start });
  * 2,000 is far beyond any human-written query while leaving a wide margin
  * under the ~5,000 where the first stage actually fails.
  */
-const MAX_CLAUSES = 2000;
 
 /** Guards against a deeply NESTED query exhausting the descent itself. */
-const MAX_DEPTH = 200;
 
 class Parser {
   private readonly source: string;
@@ -911,8 +911,12 @@ class Parser {
  * become `MissingExpression` nodes and the result is always usable.
  */
 export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
-  const tolerant = options.tolerant ?? false;
-  const tokens = new Tokenizer(query, { tolerant }).tokenize();
+  const source = assertQuery(query, 'parse');
 
-  return new Parser(query, tokens, tolerant).parse();
+  assertOptions(options, 'parse');
+
+  const tolerant = options.tolerant ?? false;
+  const tokens = new Tokenizer(source, { tolerant }).tokenize();
+
+  return new Parser(source, tokens, tolerant).parse();
 };

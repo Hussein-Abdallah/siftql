@@ -1,4 +1,16 @@
-import { SiftQLOperandError, signalValueFailure } from '../errors.js';
+import {
+  SiftQLArgumentError,
+  SiftQLOperandError,
+  signalValueFailure,
+} from '../errors.js';
+import { MAX_AST_DEPTH } from '../limits.js';
+import {
+  callCompare,
+  callCoerceValue,
+  callHighlight,
+  callParseOperand,
+  callPredicate,
+} from './consumer.js';
 import type {
   AnyValueType,
   OperandSite,
@@ -105,12 +117,20 @@ const resolveOperand = (
   const candidates: string[] = [];
 
   for (const type of context.registry.types) {
-    const result = type.parseOperand(token, {
-      caseSensitive,
-      lookup: (name) => context.registry.get(name),
-      options: context.options,
-      site,
-    });
+    const result = callParseOperand(
+      type,
+      token,
+      // Frozen for the same reason as ValueContext: a type must not be able to
+      // rewrite engine policy from inside a callback siftql invoked.
+      Object.freeze({
+        caseSensitive,
+        lookup: (name: string) => context.registry.get(name),
+        options: context.options,
+        site,
+      }),
+      location,
+      raw,
+    );
 
     candidates.push(type.name);
 
@@ -158,20 +178,34 @@ const resolveOperand = (
   });
 };
 
+/**
+ * The context handed to a value type, FROZEN.
+ *
+ * `readonly` is a compile-time claim and nothing more: a type authored in
+ * JavaScript, or one that casts, can assign to `ctx.options` or
+ * `ctx.options.onValueError` and change how siftql treats every LATER record in
+ * the same filter — a per-record callback quietly rewriting engine-wide policy.
+ * Freezing makes the declared immutability real.
+ *
+ * Shallow is not enough: `options` and `options.temporal` are the parts worth
+ * tampering with, so both are frozen at engine construction (see
+ * `resolveOptions`), and `path` is frozen here because it is built per call.
+ */
 const valueContext = (
   site: OperandSite,
   caseSensitive: boolean,
   path: readonly (string | number)[],
   isKey: boolean,
   context: EvaluationContext,
-): ValueContext => ({
-  caseSensitive,
-  isKey,
-  lookup: (name) => context.registry.get(name),
-  options: context.options,
-  path,
-  site,
-});
+): ValueContext =>
+  Object.freeze({
+    caseSensitive,
+    isKey,
+    lookup: (name: string) => context.registry.get(name),
+    options: context.options,
+    path: Object.freeze([...path]),
+    site,
+  });
 
 /** Read one candidate through the bound type, applying the failure policy. */
 const readValue = (
@@ -184,9 +218,31 @@ const readValue = (
   context: EvaluationContext,
 ): { ok: true; value: unknown } | { ok: false } => {
   const [path, raw, candidateIsKey = false] = candidate;
-  const result = bound.type.coerceValue(
+
+  // Reading the value itself threw — a getter or a Proxy trap. That is dirty
+  // DATA, so it follows onValueError exactly like an unreadable value, instead
+  // of escaping raw and destroying the whole result set.
+  if (candidate.length > 3) {
+    return {
+      ok: signalValueFailure({
+        cause: candidate[3],
+        kind: 'invalid',
+        location,
+        onValueError: context.options.onValueError,
+        path,
+        reason: 'reading this value threw',
+        site: site.kind,
+        typeName: bound.type.name,
+        value: undefined,
+      }),
+    };
+  }
+
+  const result = callCoerceValue(
+    bound.type,
     raw,
     valueContext(site, caseSensitive, path, isKey || candidateIsKey, context),
+    failureSite(bound, site, path, location, raw, context),
   );
 
   if (result.ok) {
@@ -208,6 +264,30 @@ const readValue = (
   return { ok: survived };
 };
 
+/**
+ * The descriptor a value-side failure needs, assembled once.
+ *
+ * Every callback that touches a datum can fail, and each one has to be able to
+ * say WHICH value at WHICH path failed WHICH clause. Building that in one place
+ * keeps the four call sites honest — an omitted `path` here becomes an error
+ * message that cannot be acted on.
+ */
+const failureSite = (
+  bound: BoundOperand,
+  site: OperandSite,
+  path: readonly (string | number)[],
+  location: { readonly start: number; readonly end: number },
+  value: unknown,
+  context: EvaluationContext,
+) => ({
+  location,
+  onValueError: context.options.onValueError,
+  path,
+  site: site.kind,
+  typeName: bound.type.name,
+  value,
+});
+
 const matchOne = (
   bound: BoundOperand,
   value: unknown,
@@ -215,22 +295,87 @@ const matchOne = (
   caseSensitive: boolean,
   path: readonly (string | number)[],
   isKey: boolean,
+  location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
 ): boolean => {
   // `matches` is `:`; when a type omits it, `:` and `:=` agree. That single
   // choice is the whole match-versus-equality semantics, expressed once.
   // Called as a method so a type may legitimately use `this`.
-  return bound.type.matches === undefined
-    ? bound.type.equals(value, bound.operand)
-    : bound.type.matches(
-        value,
-        bound.operand,
-        valueContext(site, caseSensitive, path, isKey, context),
+  const { type } = bound;
+  const failure = failureSite(bound, site, path, location, value, context);
+
+  return type.matches === undefined
+    ? callPredicate(
+        type,
+        'equals',
+        () => type.equals(value, bound.operand),
+        failure,
+      )
+    : callPredicate(
+        type,
+        'matches',
+        () =>
+          type.matches?.(
+            value,
+            bound.operand,
+            valueContext(site, caseSensitive, path, isKey, context),
+          ),
+        failure,
       );
 };
 
-const compareOne = (bound: BoundOperand, value: unknown): number | null =>
-  bound.type.ordering?.compare(value, bound.operand) ?? null;
+const compareOne = (
+  bound: BoundOperand,
+  value: unknown,
+  site: OperandSite,
+  path: readonly (string | number)[],
+  location: { readonly start: number; readonly end: number },
+  context: EvaluationContext,
+): number | null => {
+  const { ordering } = bound.type;
+
+  if (ordering === undefined) {
+    return null;
+  }
+
+  return callCompare(
+    bound.type,
+    () => ordering.compare(value, bound.operand),
+    failureSite(bound, site, path, location, value, context),
+  );
+};
+
+/**
+ * Compare the two BOUNDARIES of a range against each other.
+ *
+ * Separate from {@link compareOne} because the failure means something different:
+ * nothing from the record is involved, so a throw here is a query-side defect in
+ * the value type and is raised unconditionally.
+ */
+const compareOperands = (
+  lower: BoundOperand,
+  upper: BoundOperand,
+  location: { readonly start: number; readonly end: number },
+  field: Field,
+): number | null => {
+  try {
+    return lower.type.ordering?.compare(upper.operand, lower.operand) ?? null;
+  } catch (error) {
+    throw new SiftQLOperandError(
+      `Value type ${lower.type.name}.ordering.compare() threw while checking the range boundaries against each other: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      {
+        cause: error,
+        code: 'MIXED_RANGE_TYPES',
+        hint: 'This is a defect in that value type, not in the query.',
+        location,
+        raw: '',
+        site: { field, inclusive: true, kind: 'range', side: 'upper' },
+      },
+    );
+  }
+};
 
 /** Range evaluation, written once for every type that has an ordering. */
 const withinBoundary = (
@@ -238,13 +383,17 @@ const withinBoundary = (
   boundary: RangeBoundary,
   value: unknown,
   side: 'lower' | 'upper',
+  site: OperandSite,
+  path: readonly (string | number)[],
+  location: { readonly start: number; readonly end: number },
+  context: EvaluationContext,
 ): boolean | null => {
   if (!boundary.bounded || bound === null) {
     // Unbounded: nothing to fail against.
     return true;
   }
 
-  const ordering = compareOne(bound, value);
+  const ordering = compareOne(bound, value, site, path, location, context);
 
   if (ordering === null) {
     return null;
@@ -283,7 +432,21 @@ export const compileExpression = (
    * silently discarded at the group boundary.
    */
   defaultCaseSensitive = false,
+  /**
+   * Frames spent so far. Bounded by MAX_AST_DEPTH, which is exactly what
+   * `parse()` can emit — so this can only fire for a hand-built or deserialized
+   * tree, and it fires as a named error rather than a raw `RangeError` from
+   * whichever helper happened to be on the stack when it ran out.
+   */
+  depth = 0,
 ): Predicate => {
+  if (depth > MAX_AST_DEPTH) {
+    throw new SiftQLArgumentError(
+      `This AST nests more than ${String(MAX_AST_DEPTH)} levels deep, which is deeper than parse() can produce and deep enough to exhaust the call stack. It was built by hand or arrived as JSON; check for a cycle.`,
+      { argument: 'query', received: node.type },
+    );
+  }
+
   switch (node.type) {
     case 'EmptyExpression':
       // The empty query matches everything.
@@ -295,12 +458,14 @@ export const compileExpression = (
         context,
         defaultField,
         defaultCaseSensitive,
+        depth + 1,
       );
       const right = compileExpression(
         node.right,
         context,
         defaultField,
         defaultCaseSensitive,
+        depth + 1,
       );
 
       if (node.operator.operator === 'AND') {
@@ -366,6 +531,7 @@ export const compileExpression = (
         context,
         defaultField,
         defaultCaseSensitive,
+        depth + 1,
       );
 
     case 'UnaryOperator': {
@@ -374,6 +540,7 @@ export const compileExpression = (
         context,
         defaultField,
         defaultCaseSensitive,
+        depth + 1,
       );
 
       return (item, sink) => {
@@ -401,6 +568,7 @@ export const compileExpression = (
           context,
           node.field,
           node.caseSensitive,
+          depth + 1,
         );
       }
 
@@ -479,7 +647,8 @@ const emit = (
     return;
   }
 
-  const query = bound.type.highlight?.(
+  const query = callHighlight(
+    bound.type,
     value,
     bound.operand,
     valueContext(site, caseSensitive, segments, isKey, context),
@@ -595,10 +764,31 @@ const compileClause = (
             };
 
             if (isEquality) {
-              return record(bound.type.equals(read.value, bound.operand));
+              return record(
+                callPredicate(
+                  bound.type,
+                  'equals',
+                  () => bound.type.equals(read.value, bound.operand),
+                  failureSite(
+                    bound,
+                    site,
+                    candidate[0],
+                    node.expression.location,
+                    read.value,
+                    context,
+                  ),
+                ),
+              );
             }
 
-            const ordering = compareOne(bound, read.value);
+            const ordering = compareOne(
+              bound,
+              read.value,
+              site,
+              candidate[0],
+              node.expression.location,
+              context,
+            );
 
             if (ordering === null) {
               return signalValueFailure({
@@ -679,6 +869,7 @@ const compileClause = (
               caseSensitive,
               candidate[0],
               false,
+              node.expression.location,
               context,
             );
 
@@ -760,6 +951,7 @@ const compileClause = (
             caseSensitive,
             candidate[0],
             candidate[2] ?? false,
+            node.location,
             context,
           );
 
@@ -857,7 +1049,10 @@ const compileRange = (
   // `[2020-06-01 TO 14:30]` is as incoherent as mixing a date with a number.
   // Only the name was checked, so that one slipped through as an empty result.
   if (lower?.type.name === upper?.type.name && lower && upper) {
-    const ordering = lower.type.ordering?.compare(upper.operand, lower.operand);
+    // QUERY-side, not value-side: both sides here are operands from the query
+    // text, so a type throwing while comparing them is a broken query rather
+    // than dirty data, and `onValueError` must not be able to swallow it.
+    const ordering = compareOperands(lower, upper, range.location, field);
 
     if (ordering === null) {
       throw new SiftQLOperandError(
@@ -911,8 +1106,26 @@ const compileRange = (
           return false;
         }
 
-        const low = withinBoundary(lower, range.lower, read.value, 'lower');
-        const high = withinBoundary(upper, range.upper, read.value, 'upper');
+        const low = withinBoundary(
+          lower,
+          range.lower,
+          read.value,
+          'lower',
+          site,
+          candidate[0],
+          range.location,
+          context,
+        );
+        const high = withinBoundary(
+          upper,
+          range.upper,
+          read.value,
+          'upper',
+          site,
+          candidate[0],
+          range.location,
+          context,
+        );
 
         if (low === null || high === null) {
           return signalValueFailure({

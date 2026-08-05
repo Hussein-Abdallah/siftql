@@ -1,3 +1,6 @@
+import { SiftQLArgumentError } from './errors.js';
+import { MAX_AST_DEPTH } from './limits.js';
+import { assertNode } from './validate.js';
 import type {
   Expression,
   Field,
@@ -302,10 +305,28 @@ const serializeNode = (
    * the tokenizer is in value mode and a colon is ordinary.
    */
   position: TermPosition = 'term',
-): string =>
-  `${requiredPrefix(node)}${serializeBody(node, position)}${modifiers(node)}`;
+  /**
+   * Frames spent so far. Counted rather than measured up front: a pre-pass would
+   * walk the whole tree a second time to answer a question the walk itself
+   * answers for free.
+   */
+  depth = 0,
+): string => {
+  if (depth > MAX_AST_DEPTH) {
+    throw new SiftQLArgumentError(
+      `This AST nests more than ${String(MAX_AST_DEPTH)} levels deep, which is deeper than parse() can produce and deep enough to exhaust the call stack. It was built by hand or arrived as JSON; check for a cycle.`,
+      { argument: 'node', received: node.type },
+    );
+  }
 
-const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
+  return `${requiredPrefix(node)}${serializeBody(node, position, depth)}${modifiers(node)}`;
+};
+
+const serializeBody = (
+  node: SiftQLAst,
+  position: TermPosition,
+  depth: number,
+): string => {
   switch (node.type) {
     case 'EmptyExpression':
       return '';
@@ -339,6 +360,7 @@ const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
       let text = wrap(
         deepest.left,
         precedenceOf(deepest.left) < precedenceOf(deepest),
+        depth,
       );
 
       const appendRight = (frame: LogicalNode): void => {
@@ -347,6 +369,7 @@ const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
         const right = wrap(
           frame.right,
           precedenceOf(frame.right) <= precedenceOf(frame),
+          depth,
         );
 
         text =
@@ -376,7 +399,7 @@ const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
       return '';
 
     case 'ParenthesizedExpression':
-      return `(${serializeNode(node.expression)})`;
+      return `(${serializeNode(node.expression, 'term', depth + 1)})`;
 
     case 'RangeExpression':
       return `${serializeBoundary(node.lower, 'lower')} TO ${serializeBoundary(
@@ -397,6 +420,7 @@ const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
       return `${serializeField(node.field)}${colon}${operator}${serializeNode(
         node.expression,
         'value',
+        depth + 1,
       )}`;
     }
 
@@ -404,6 +428,7 @@ const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
       const operand = wrap(
         node.operand,
         precedenceOf(node.operand) < precedenceOf(node),
+        depth,
       );
 
       // `NOT` is a word and needs a space; `-` is a sigil and must not have one.
@@ -418,8 +443,12 @@ const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
   }
 };
 
-const wrap = (node: Expression, needsBrackets: boolean): string => {
-  const text = serializeNode(node);
+const wrap = (
+  node: Expression,
+  needsBrackets: boolean,
+  depth: number,
+): string => {
+  const text = serializeNode(node, 'term', depth + 1);
 
   return needsBrackets ? `(${text})` : text;
 };
@@ -431,4 +460,5 @@ const wrap = (node: Expression, needsBrackets: boolean): string => {
  * guaranteed to be byte-identical to the text originally parsed — see the
  * normalisation list above.
  */
-export const serialize = (ast: SiftQLAst): string => serializeNode(ast);
+export const serialize = (ast: SiftQLAst): string =>
+  serializeNode(assertNode(ast, 'serialize'));

@@ -9,6 +9,7 @@
 export const VERSION = '0.1.0';
 
 export { parse, type ParseOptions } from './parser/parser.js';
+export { MAX_AST_DEPTH, MAX_CLAUSES, MAX_DEPTH } from './limits.js';
 export { serialize } from './serialize.js';
 export {
   createEngine,
@@ -31,6 +32,7 @@ export {
 
 export {
   isSiftQLError,
+  SiftQLArgumentError,
   SiftQLConfigError,
   SiftQLError,
   SiftQLOperandError,

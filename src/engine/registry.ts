@@ -1,3 +1,4 @@
+import { resolveTypeInput } from './consumer.js';
 import { SiftQLConfigError } from '../errors.js';
 import type {
   AnyValueType,
@@ -25,10 +26,12 @@ import { builtinValueTypes } from '../values/index.js';
  * There is no mutation API at any level. `with()` returns a new registry.
  */
 
-const resolveInput = (
-  input: ValueTypeInput,
-  environment: TypeEnvironment,
-): AnyValueType => (typeof input === 'function' ? input(environment) : input);
+/**
+ * A factory that throws, or returns something that is not a value type, is a
+ * CONFIG failure — see `./consumer.ts` for why each callback is routed the way
+ * it is.
+ */
+const resolveInput = resolveTypeInput;
 
 const assertUniqueNames = (types: readonly AnyValueType[]): void => {
   const seen = new Set<string>();

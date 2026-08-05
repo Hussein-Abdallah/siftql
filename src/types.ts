@@ -786,6 +786,48 @@ export type AstVisitor<R = void> = {
 };
 
 /**
+ * The `type` values that may appear at the ROOT of a tree, i.e. every member of
+ * {@link SiftQLAst}. `Field`, `RangeBoundary` and the other interior nodes are
+ * absent: they are parts of an expression, never a query on their own.
+ */
+export const ROOT_NODE_TYPES: ReadonlySet<string> = Object.freeze(
+  new Set<string>([
+    'EmptyExpression',
+    'LiteralExpression',
+    'LogicalExpression',
+    'MissingExpression',
+    'ParenthesizedExpression',
+    'RangeExpression',
+    'RegexExpression',
+    'Tag',
+    'UnaryOperator',
+    'WildcardExpression',
+  ] satisfies SiftQLAst['type'][]),
+);
+
+/**
+ * Is this a siftql AST root?
+ *
+ * STRUCTURAL, because the AST is deliberately plain JSON: it survives
+ * `structuredClone`, a `postMessage` across a worker boundary, and a round trip
+ * through a database. There is no class to test with `instanceof`, and inventing
+ * one purely so this check could exist would give up the property that makes the
+ * AST worth having.
+ *
+ * This confirms the SHAPE of the root only, not the whole tree. A full recursive
+ * validation would have to walk every node on every call to `serialize`, which
+ * turns an O(n) operation into two, and the evaluator already refuses what it
+ * cannot handle. The point here is to catch `null`, `{}`, a parse result from
+ * some other library, and a mistyped `type` — the cases that otherwise surfaced
+ * as a `TypeError` from deep inside a walk, or as a silently empty query.
+ */
+export const isSiftQLNode = (value: unknown): value is SiftQLAst =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  ROOT_NODE_TYPES.has((value as { readonly type?: unknown }).type as string);
+
+/**
  * Binding power used by the serializer to insert the minimum parentheses that
  * preserve tree shape (in addition to every explicit ParenthesizedExpression
  * node). Implicit AND binds exactly as tightly as explicit AND; all binary

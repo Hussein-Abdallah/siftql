@@ -1,3 +1,4 @@
+import { isDateLike } from '../internal.js';
 import {
   claimed,
   DECLINED,
@@ -43,9 +44,7 @@ export const createDatetimeType = (env: TypeEnvironment): TemporalValueType =>
     coerceValue: (value) => {
       if (
         typeof value === 'boolean' ||
-        (typeof value === 'object' &&
-          value !== null &&
-          !(value instanceof Date))
+        (typeof value === 'object' && value !== null && !isDateLike(value))
       ) {
         return MISS;
       }

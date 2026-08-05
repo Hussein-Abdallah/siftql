@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2021",
-    "lib": ["ES2021"],
+    // ES2022 for `Error.cause`, which Node 16.9+ supports — so every runtime
+    // allowed by `engines.node: >=18` has it. `target` stays ES2021: this
+    // widens the built-ins we may TYPE against, not the syntax we emit.
+    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "moduleDetection": "force",

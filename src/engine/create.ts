@@ -11,6 +11,12 @@ import { compileExpression, type EvaluationContext } from './evaluate.js';
 import { applyRecoveryPolicy } from './prune.js';
 import { HighlightSink } from './highlight.js';
 import { createRegistry } from './registry.js';
+import {
+  assertItems,
+  assertOptions,
+  assertQuery,
+  assertNode,
+} from '../validate.js';
 
 /**
  * Engines.
@@ -23,22 +29,35 @@ import { createRegistry } from './registry.js';
  * global registry could never express.
  */
 
-const resolveOptions = (options: EngineOptions): ResolvedEngineOptions => ({
-  id: options.id ?? 'default',
-  matchKeys: options.matchKeys ?? false,
-  maxPatternLength: options.maxPatternLength ?? 1000,
-  onRecovered: options.onRecovered ?? 'prune',
-  // Default 'skip': one dirty row must not be able to destroy an entire
-  // result set. A bad QUERY still always throws; that is not configurable.
-  onValueError: options.onValueError ?? 'skip',
-  // On by default: a search box is usually fed by whoever is looking at it.
-  regexGuard: options.regexGuard ?? true,
-  temporal: {
-    dateFormat: options.dateFormat,
-    parseDate: options.parseDate,
-  },
-  tolerant: options.tolerant ?? false,
-});
+/**
+ * FROZEN, and deeply.
+ *
+ * This object is handed to every value type on every candidate, through
+ * `ValueContext.options`. `readonly` in the type does not survive to runtime, so
+ * without this a custom type could set `ctx.options.onValueError = 'skip'` on the
+ * first record and silently relax the failure policy for the rest of the filter —
+ * an engine-wide setting rewritten from inside a per-value callback.
+ */
+const resolveOptions = (options: EngineOptions): ResolvedEngineOptions =>
+  Object.freeze({
+    id: options.id ?? 'default',
+    matchKeys: options.matchKeys ?? false,
+    maxPatternLength: options.maxPatternLength ?? 1000,
+    onRecovered: options.onRecovered ?? 'prune',
+    // Default 'skip': one dirty row must not be able to destroy an entire
+    // result set. A bad QUERY still always throws; that is not configurable.
+    onValueError: options.onValueError ?? 'skip',
+    // On by default: a search box is usually fed by whoever is looking at it.
+    regexGuard: options.regexGuard ?? true,
+    temporal: Object.freeze({
+      dateFormat:
+        typeof options.dateFormat === 'object'
+          ? Object.freeze([...options.dateFormat])
+          : options.dateFormat,
+      parseDate: options.parseDate,
+    }),
+    tolerant: options.tolerant ?? false,
+  });
 
 export interface Engine {
   readonly options: ResolvedEngineOptions;
@@ -72,6 +91,11 @@ export interface Engine {
 }
 
 export const createEngine = (options: EngineOptions = {}): Engine => {
+  // Eagerly, before anything closes over it: a malformed `dateFormat` must be a
+  // createEngine() failure, not a surprise on whichever record first holds a
+  // date.
+  assertOptions(options, 'createEngine');
+
   const resolved = resolveOptions(options);
   const registry = createRegistry(
     resolved,
@@ -80,14 +104,16 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
   );
 
   const contextFor = (overrides: EvaluateOptions = {}): EvaluationContext => ({
-    options: {
+    // Frozen for the same reason `resolved` is: per-call overrides produce a new
+    // options object, and it reaches value types just as the engine's own does.
+    options: Object.freeze({
       ...resolved,
       matchKeys: overrides.matchKeys ?? resolved.matchKeys,
       maxPatternLength: overrides.maxPatternLength ?? resolved.maxPatternLength,
       onRecovered: overrides.onRecovered ?? resolved.onRecovered,
       onValueError: overrides.onValueError ?? resolved.onValueError,
       regexGuard: overrides.regexGuard ?? resolved.regexGuard,
-    },
+    }),
     registry,
   });
 
@@ -98,17 +124,22 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
    */
   const toAst = (
     query: SiftQLAst | string,
+    fn: string,
     overrides: EvaluateOptions = {},
   ): SiftQLAst =>
     applyRecoveryPolicy(
       typeof query === 'string'
         ? parse(query, { tolerant: resolved.tolerant })
-        : query,
+        : assertNode(query, fn),
       overrides.onRecovered ?? resolved.onRecovered,
     );
 
   return {
-    extend: (extra) => createEngine({ ...options, ...extra }),
+    extend: (extra) => {
+      assertOptions(extra, 'engine.extend');
+
+      return createEngine({ ...options, ...extra });
+    },
 
     filter: <T>(
       query: SiftQLAst | string,
@@ -118,12 +149,16 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       // Compiled ONCE, not per item: a filter over 10,000 rows resolves the
       // operand a single time, and a bad query throws immediately rather than
       // on whichever row first reaches it.
+      assertOptions(overrides, 'filter');
+
       const predicate = compileExpression(
-        toAst(query, overrides),
+        toAst(query, 'filter', overrides),
         contextFor(overrides),
       );
 
-      return items.filter((item) => predicate(item, null));
+      return assertItems(items, 'filter').filter((item) =>
+        predicate(item, null),
+      ) as T[];
     },
 
     highlight: (query, item, overrides = {}) => {
@@ -131,8 +166,10 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       // `overrides` must reach toAst, not just contextFor: toAst is where the
       // recovery policy is applied, so omitting it made highlight() ignore a
       // per-call onRecovered that filter() and test() both honoured.
+      assertOptions(overrides, 'highlight');
+
       const matched = compileExpression(
-        toAst(query, overrides),
+        toAst(query, 'highlight', overrides),
         contextFor(overrides),
       )(item, sink);
 
@@ -141,14 +178,23 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
 
     options: resolved,
 
-    parse: (query, parseOptions) =>
-      parse(query, { tolerant: resolved.tolerant, ...parseOptions }),
+    parse: (query, parseOptions) => {
+      assertOptions(parseOptions, 'engine.parse');
 
-    test: (query, item, overrides = {}) =>
-      compileExpression(toAst(query, overrides), contextFor(overrides))(
-        item,
-        null,
-      ),
+      return parse(assertQuery(query, 'engine.parse'), {
+        tolerant: resolved.tolerant,
+        ...parseOptions,
+      });
+    },
+
+    test: (query, item, overrides = {}) => {
+      assertOptions(overrides, 'test');
+
+      return compileExpression(
+        toAst(query, 'test', overrides),
+        contextFor(overrides),
+      )(item, null);
+    },
 
     types: registry,
   };

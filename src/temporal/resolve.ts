@@ -1,3 +1,4 @@
+import { isDateLike } from '../internal.js';
 import { formatWidth, parseWithFormats } from './format.js';
 import { parseIso } from './iso.js';
 import type { ResolvedTemporal, TemporalOptions } from './types.js';
@@ -27,7 +28,9 @@ const fromHookResult = (
     return null;
   }
 
-  return asInstant(result instanceof Date ? result.getTime() : result);
+  // isDateLike, not instanceof: a hook may hand back a cross-realm Date, and
+  // must not be able to throw out of here with a Date-prototyped impostor.
+  return asInstant(isDateLike(result) ? result.getTime() : result);
 };
 
 /**
@@ -69,7 +72,7 @@ export const resolveTemporal = (
   value: unknown,
   options: TemporalOptions = {},
 ): ResolvedTemporal | null => {
-  if (value instanceof Date) {
+  if (isDateLike(value)) {
     return asInstant(value.getTime());
   }
 

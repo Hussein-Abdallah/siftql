@@ -271,10 +271,32 @@ export const VALUE_FAILURE_POLICY = Object.freeze({
   Record<EvaluationSite, Readonly<Record<ValueFailureKind, FailureDisposition>>>
 >;
 
+/**
+ * Look up a disposition, or `undefined` for a pair the table does not cover.
+ *
+ * `undefined` is in the return type deliberately. The lookup used to be
+ * `VALUE_FAILURE_POLICY[site][kind]` typed as always returning a
+ * `FailureDisposition`, which was a lie in exactly the case that mattered: a
+ * custom type returning `{ ok: false, kind: 'bogus' }` produced `undefined`,
+ * `undefined === 'value-error'` was false, and the failure was silently
+ * dispositioned as `'no-match'`. That turned an unknown failure kind into a
+ * quiet non-match — and, for an `ordered` or `range` site, quietly downgraded
+ * the strictest row in the table to the most lenient behaviour it has.
+ *
+ * Typing the absence forces `signalValueFailure` to decide what an unknown pair
+ * means, which it does by refusing it.
+ */
 export const dispositionFor = (
   site: EvaluationSite,
   kind: ValueFailureKind,
-): FailureDisposition => VALUE_FAILURE_POLICY[site][kind];
+): FailureDisposition | undefined =>
+  // Indexed through a widened view: the declared parameter types say the lookup
+  // always succeeds, and the whole point here is that at runtime it may not.
+  (
+    VALUE_FAILURE_POLICY as Readonly<
+      Record<string, Readonly<Record<string, FailureDisposition>>>
+    >
+  )[site]?.[kind];
 
 /* ========================================================================= *
  * 4. CONTEXTS

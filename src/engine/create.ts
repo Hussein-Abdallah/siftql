@@ -2,11 +2,13 @@ import { parse, type ParseOptions } from '../parser/parser.js';
 import type {
   EngineOptions,
   EvaluateOptions,
+  Highlight,
   ResolvedEngineOptions,
   ValueTypeRegistry,
 } from '../registry.js';
 import type { SiftQLAst } from '../types.js';
 import { compileExpression, type EvaluationContext } from './evaluate.js';
+import { HighlightSink } from './highlight.js';
 import { createRegistry } from './registry.js';
 
 /**
@@ -43,6 +45,19 @@ export interface Engine {
     item: unknown,
     options?: EvaluateOptions,
   ): boolean;
+  /**
+   * Which fields made `item` match, and what to light up inside each.
+   *
+   * Returns an empty array when the item does not match at all. Highlights from
+   * the losing branch of an OR, and from everything under a satisfied NOT, are
+   * discarded -- a highlight survives only if the clause that produced it is
+   * part of the reason the record matched.
+   */
+  highlight(
+    query: SiftQLAst | string,
+    item: unknown,
+    options?: EvaluateOptions,
+  ): Highlight[];
   filter<T>(
     query: SiftQLAst | string,
     items: readonly T[],
@@ -88,7 +103,17 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       // on whichever row first reaches it.
       const predicate = compileExpression(toAst(query), contextFor(overrides));
 
-      return items.filter((item) => predicate(item));
+      return items.filter((item) => predicate(item, null));
+    },
+
+    highlight: (query, item, overrides = {}) => {
+      const sink = new HighlightSink();
+      const matched = compileExpression(toAst(query), contextFor(overrides))(
+        item,
+        sink,
+      );
+
+      return matched ? sink.drain() : [];
     },
 
     options: resolved,
@@ -97,7 +122,7 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       parse(query, { tolerant: resolved.tolerant, ...parseOptions }),
 
     test: (query, item, overrides = {}) =>
-      compileExpression(toAst(query), contextFor(overrides))(item),
+      compileExpression(toAst(query), contextFor(overrides))(item, null),
 
     types: registry,
   };
@@ -121,3 +146,10 @@ export const filter = <T>(
   items: readonly T[],
   options?: EvaluateOptions,
 ): T[] => engine().filter(query, items, options);
+
+/** Which fields made `item` match, and what to light up inside each. */
+export const highlight = (
+  query: SiftQLAst | string,
+  item: unknown,
+  options?: EvaluateOptions,
+): Highlight[] => engine().highlight(query, item, options);

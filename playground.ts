@@ -9,6 +9,7 @@
 import {
   createEngine,
   filter,
+  highlight,
   parse,
   serialize,
   SiftQLOperandError,
@@ -308,6 +309,23 @@ for (const partial of [
     `${JSON.stringify(serialize(ast))}  (${ast.type})`,
   );
 }
+
+console.log('\n--- highlight: which fields matched, and what to light up ---');
+const hl = (query: string) => {
+  const found = highlight(query, rows[0]).map(
+    (entry) => entry.path + (entry.query ? ` ${String(entry.query)}` : ''),
+  );
+  console.log('OK    ', query.padEnd(42), '=>', JSON.stringify(found));
+};
+hl('status:"In Progress"'); //                     status
+hl('search'); //                                   title (unfielded, unanchored)
+hl('labels:urgent'); //                            labels.1 -- the element, not the array
+hl('priority:>=3'); //                             priority, no pattern: whole value matched
+hl('status:"In Progress" OR status:done'); //      ONLY the branch that matched
+hl('status:done OR status:"In Progress"'); //      same answer, either order
+hl('NOT status:done'); //                          [] -- status:done did NOT match
+hl('title:*search* AND NOT archived:true'); //     only the half that matched
+hl('status:done AND title:*search*'); //           [] -- the AND failed
 
 console.log('\n--- parse / serialize round trip ---');
 for (const query of [

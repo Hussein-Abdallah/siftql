@@ -10,7 +10,13 @@ export const VERSION = '0.1.0';
 
 export { parse, type ParseOptions } from './parser/parser.js';
 export { serialize } from './serialize.js';
-export { createEngine, filter, test, type Engine } from './engine/create.js';
+export {
+  createEngine,
+  filter,
+  highlight,
+  test,
+  type Engine,
+} from './engine/create.js';
 export { createRegistry } from './engine/registry.js';
 export {
   builtinValueTypes,
@@ -54,6 +60,7 @@ export {
   type AnyValueType,
   type EngineOptions,
   type EvaluateOptions,
+  type Highlight,
   type OperandContext,
   type OperandToken,
   type ValueContext,

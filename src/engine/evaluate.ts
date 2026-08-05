@@ -15,7 +15,13 @@ import type {
   TextLiteral,
 } from '../types.js';
 import { fieldPath } from '../types.js';
-import { allLeafValues, valuesAtPath, type Candidate } from './access.js';
+import {
+  allLeafValues,
+  formatPath,
+  valuesAtPath,
+  type Candidate,
+} from './access.js';
+import type { HighlightSink } from './highlight.js';
 
 /**
  * Evaluation.
@@ -28,6 +34,16 @@ import { allLeafValues, valuesAtPath, type Candidate } from './access.js';
  * Range evaluation in particular is implemented ONCE, on top of `compare` plus
  * per-boundary inclusivity, so no value type ever writes range code.
  */
+
+/**
+ * A compiled clause.
+ *
+ * The sink is threaded through matching rather than bolted on as a second walk,
+ * so `filter` and `highlight` can never disagree about what matched. When it is
+ * `null` — the `filter`/`test` path — the branches short-circuit exactly as
+ * before and the only cost is a null check.
+ */
+export type Predicate = (item: unknown, sink: HighlightSink | null) => boolean;
 
 /** A query operand, resolved to the type that claimed it. */
 interface BoundOperand {
@@ -260,7 +276,7 @@ export const compileExpression = (
   node: SiftQLAst,
   context: EvaluationContext,
   defaultField: Field | null = null,
-): ((item: unknown) => boolean) => {
+): Predicate => {
   switch (node.type) {
     case 'EmptyExpression':
       // The empty query matches everything.
@@ -270,9 +286,47 @@ export const compileExpression = (
       const left = compileExpression(node.left, context, defaultField);
       const right = compileExpression(node.right, context, defaultField);
 
-      return node.operator.operator === 'AND'
-        ? (item) => left(item) && right(item)
-        : (item) => left(item) || right(item);
+      if (node.operator.operator === 'AND') {
+        return (item, sink) => {
+          const checkpoint = sink?.mark() ?? 0;
+
+          // A failed conjunction contributed nothing, so neither side's
+          // highlights survive.
+          if (!left(item, sink) || !right(item, sink)) {
+            sink?.rollback(checkpoint);
+
+            return false;
+          }
+
+          return true;
+        };
+      }
+
+      return (item, sink) => {
+        // Without a sink, short-circuit as usual.
+        if (sink === null) {
+          return left(item, null) || right(item, null);
+        }
+
+        // With one, evaluate BOTH sides and keep only the branches that
+        // matched: this is the fix for highlights leaking out of the losing
+        // half of an OR.
+        const beforeLeft = sink.mark();
+        const leftMatched = left(item, sink);
+
+        if (!leftMatched) {
+          sink.rollback(beforeLeft);
+        }
+
+        const beforeRight = sink.mark();
+        const rightMatched = right(item, sink);
+
+        if (!rightMatched) {
+          sink.rollback(beforeRight);
+        }
+
+        return leftMatched || rightMatched;
+      };
     }
 
     case 'MissingExpression':
@@ -285,7 +339,17 @@ export const compileExpression = (
     case 'UnaryOperator': {
       const operand = compileExpression(node.operand, context, defaultField);
 
-      return (item) => !operand(item);
+      return (item, sink) => {
+        const checkpoint = sink?.mark() ?? 0;
+        const matched = operand(item, sink);
+
+        // ALWAYS roll back. If the negation succeeded then the operand did not
+        // match, so whatever it lit up is precisely the wrong answer; and if it
+        // failed, the clause contributed nothing either way.
+        sink?.rollback(checkpoint);
+
+        return !matched;
+      };
     }
 
     case 'Tag': {
@@ -310,11 +374,64 @@ export const compileExpression = (
   }
 };
 
+/**
+ * Test every candidate.
+ *
+ * Without a sink this stops at the first hit, exactly as `.some()` did. With
+ * one it keeps going, because a UI wants every field that matched lit up, not
+ * just the first.
+ */
+const anyCandidateMatches = (
+  candidates: readonly Candidate[],
+  sink: HighlightSink | null,
+  hit: (candidate: Candidate) => boolean,
+): boolean => {
+  let matched = false;
+
+  for (const candidate of candidates) {
+    if (hit(candidate)) {
+      matched = true;
+
+      if (sink === null) {
+        return true;
+      }
+    }
+  }
+
+  return matched;
+};
+
+/** Record a hit, asking the type what to light up inside the matched value. */
+const emit = (
+  sink: HighlightSink,
+  bound: BoundOperand,
+  value: unknown,
+  candidate: Candidate,
+  site: OperandSite,
+  caseSensitive: boolean,
+  context: EvaluationContext,
+): void => {
+  const [segments] = candidate;
+  const query = bound.type.highlight?.(
+    value,
+    bound.operand,
+    valueContext(site, caseSensitive, segments, false, context),
+  );
+
+  sink.add(
+    query
+      ? { path: formatPath(segments), query, segments }
+      : // A range or a boolean has no textual footprint, so the whole value is
+        // the match and there is no pattern to report.
+        { path: formatPath(segments), segments },
+  );
+};
+
 const compileClause = (
   node: Expression,
   context: EvaluationContext,
   field: Field | null,
-): ((item: unknown) => boolean) => {
+): Predicate => {
   const path = field ? fieldPath(field) : null;
 
   const candidatesFor = (item: unknown): Candidate[] =>
@@ -355,8 +472,8 @@ const compileClause = (
       );
       const operator = node.operator.operator;
 
-      return (item) =>
-        candidatesFor(item).some((candidate) => {
+      return (item, sink) =>
+        anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
           const read = readValue(
             bound,
             candidate,
@@ -371,8 +488,24 @@ const compileClause = (
             return false;
           }
 
+          const record = (matched: boolean): boolean => {
+            if (matched && sink) {
+              emit(
+                sink,
+                bound,
+                read.value,
+                candidate,
+                site,
+                caseSensitive,
+                context,
+              );
+            }
+
+            return matched;
+          };
+
           if (isEquality) {
-            return bound.type.equals(read.value, bound.operand);
+            return record(bound.type.equals(read.value, bound.operand));
           }
 
           const ordering = compareOne(bound, read.value);
@@ -392,13 +525,13 @@ const compileClause = (
 
           switch (operator) {
             case ':>':
-              return ordering > 0;
+              return record(ordering > 0);
             case ':>=':
-              return ordering >= 0;
+              return record(ordering >= 0);
             case ':<':
-              return ordering < 0;
+              return record(ordering < 0);
             default:
-              return ordering <= 0;
+              return record(ordering <= 0);
           }
         });
     }
@@ -424,8 +557,8 @@ const compileClause = (
       sourceOf(node.expression),
     );
 
-    return (item) =>
-      candidatesFor(item).some((candidate) => {
+    return (item, sink) =>
+      anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
         const read = readValue(
           bound,
           candidate,
@@ -436,7 +569,7 @@ const compileClause = (
           context,
         );
 
-        return (
+        const matched =
           read.ok &&
           matchOne(
             bound,
@@ -446,8 +579,21 @@ const compileClause = (
             candidate[0],
             false,
             context,
-          )
-        );
+          );
+
+        if (matched && sink) {
+          emit(
+            sink,
+            bound,
+            read.value,
+            candidate,
+            site,
+            caseSensitive,
+            context,
+          );
+        }
+
+        return matched;
       });
   }
 
@@ -468,8 +614,8 @@ const compileClause = (
     sourceOf(node),
   );
 
-  return (item) =>
-    candidatesFor(item).some((candidate) => {
+  return (item, sink) =>
+    anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
       const read = readValue(
         bound,
         candidate,
@@ -480,10 +626,15 @@ const compileClause = (
         context,
       );
 
-      return (
+      const matched =
         read.ok &&
-        matchOne(bound, read.value, site, false, candidate[0], false, context)
-      );
+        matchOne(bound, read.value, site, false, candidate[0], false, context);
+
+      if (matched && sink) {
+        emit(sink, bound, read.value, candidate, site, false, context);
+      }
+
+      return matched;
     });
 };
 
@@ -491,7 +642,7 @@ const compileRange = (
   node: Extract<Expression, { type: 'Tag' }>,
   context: EvaluationContext,
   candidatesFor: (item: unknown) => Candidate[],
-): ((item: unknown) => boolean) => {
+): Predicate => {
   if (node.expression.type !== 'RangeExpression') {
     return () => false;
   }
@@ -563,8 +714,8 @@ const compileRange = (
     side: 'lower',
   };
 
-  return (item) =>
-    candidatesFor(item).some((candidate) => {
+  return (item, sink) =>
+    anyCandidateMatches(candidatesFor(item), sink, (candidate) => {
       const read = readValue(
         reference,
         candidate,
@@ -595,7 +746,23 @@ const compileRange = (
         });
       }
 
-      return low && high;
+      const matched = low && high;
+
+      if (matched && sink) {
+        // A range has no textual footprint, so `emit` records the path with no
+        // pattern -- the whole value is the match.
+        emit(
+          sink,
+          reference,
+          read.value,
+          candidate,
+          site,
+          caseSensitive,
+          context,
+        );
+      }
+
+      return matched;
     });
 };
 

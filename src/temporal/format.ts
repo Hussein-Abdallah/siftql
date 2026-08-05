@@ -44,7 +44,7 @@ type TokenName =
   | 'year';
 
 /** Ordered longest-first so that `YYYY` is never mistaken for two `YY`s. */
-const TOKENS: ReadonlyArray<readonly [string, TokenName, string]> = [
+const TOKENS: readonly (readonly [string, TokenName, string])[] = [
   ['YYYY', 'year', String.raw`\d{4}`],
   ['SSS', 'fraction', String.raw`\d{3}`],
   ['MM', 'month', String.raw`\d{2}`],
@@ -62,7 +62,7 @@ const escapeLiteral = (character: string): string =>
 type CompiledFormat = {
   readonly kind: 'date' | 'datetime' | 'time';
   readonly regex: RegExp;
-};
+}
 
 /**
  * A malformed layout is a programming error in the host application, not bad
@@ -153,11 +153,11 @@ export const parseWithFormat = (
     return null;
   }
 
-  const hour = groups['hour'] === undefined ? 0 : Number(groups['hour']);
-  const minute = groups['minute'] === undefined ? 0 : Number(groups['minute']);
-  const second = groups['second'] === undefined ? 0 : Number(groups['second']);
+  const hour = groups.hour === undefined ? 0 : Number(groups.hour);
+  const minute = groups.minute === undefined ? 0 : Number(groups.minute);
+  const second = groups.second === undefined ? 0 : Number(groups.second);
   const millisecond =
-    groups['fraction'] === undefined ? 0 : Number(groups['fraction']);
+    groups.fraction === undefined ? 0 : Number(groups.fraction);
 
   if (!isValidTimeOfDay(hour, minute, second, millisecond)) {
     return null;
@@ -171,9 +171,9 @@ export const parseWithFormat = (
     };
   }
 
-  const year = Number(groups['year']);
-  const month = Number(groups['month']);
-  const day = Number(groups['day']);
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
 
   if (!isValidCalendarDate(year, month, day)) {
     return null;

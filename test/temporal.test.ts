@@ -229,6 +229,34 @@ describe('resolution order', () => {
     expect(resolved?.value).toBe(JUNE_1_2020);
   });
 
+  it('does not consult the hook at all for canonical ISO', () => {
+    let calls = 0;
+
+    const resolved = resolveTemporal('2020-06-01', {
+      parseDate: () => {
+        calls += 1;
+
+        return null;
+      },
+    });
+
+    expect(resolved?.value).toBe(JUNE_1_2020);
+    expect(calls).toBe(0);
+  });
+
+  it('trusts the instant a hook returns, even a mis-zoned one', () => {
+    // A hook is the one place the fail-loud guarantee cannot reach: it hands
+    // back a number of milliseconds and that number is taken at face value.
+    // The classic mistake is a library that parses in the host's local zone
+    // (Luxon's fromFormat, day.js without a plugin) rather than UTC, which
+    // silently shifts every result by the host offset.
+    const misZoned = resolveTemporal('01-06-2020', {
+      parseDate: () => JUNE_1_2020 + 4 * 3_600_000,
+    });
+
+    expect(misZoned?.value).toBe(JUNE_1_2020 + 4 * 3_600_000);
+  });
+
   it('opts into native parsing only when the user asks for it', () => {
     const resolved = resolveTemporal('June 1, 2020', {
       parseDate: (value) => {

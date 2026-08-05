@@ -49,9 +49,9 @@ const parseIsoDate = (value: string): ResolvedTemporal | null => {
     return null;
   }
 
-  const year = Number(groups['year']);
-  const month = Number(groups['month']);
-  const day = Number(groups['day']);
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
 
   if (!isValidCalendarDate(year, month, day)) {
     return null;
@@ -71,13 +71,13 @@ const parseIsoDateTime = (value: string): ResolvedTemporal | null => {
     return null;
   }
 
-  const year = Number(groups['year']);
-  const month = Number(groups['month']);
-  const day = Number(groups['day']);
-  const hour = Number(groups['hour']);
-  const minute = Number(groups['minute']);
-  const second = groups['second'] === undefined ? 0 : Number(groups['second']);
-  const millisecond = fractionToMilliseconds(groups['fraction']);
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
+  const hour = Number(groups.hour);
+  const minute = Number(groups.minute);
+  const second = groups.second === undefined ? 0 : Number(groups.second);
+  const millisecond = fractionToMilliseconds(groups.fraction);
 
   if (
     !isValidCalendarDate(year, month, day) ||
@@ -87,7 +87,7 @@ const parseIsoDateTime = (value: string): ResolvedTemporal | null => {
   }
 
   const local = utcTimestamp(year, month, day, hour, minute, second, millisecond);
-  const offsetMinutes = offsetToMinutes(groups['offset']);
+  const offsetMinutes = offsetToMinutes(groups.offset);
 
   return {
     domain: 'instant',
@@ -105,10 +105,10 @@ const parseIsoTime = (value: string): ResolvedTemporal | null => {
     return null;
   }
 
-  const hour = Number(groups['hour']);
-  const minute = Number(groups['minute']);
-  const second = groups['second'] === undefined ? 0 : Number(groups['second']);
-  const millisecond = fractionToMilliseconds(groups['fraction']);
+  const hour = Number(groups.hour);
+  const minute = Number(groups.minute);
+  const second = groups.second === undefined ? 0 : Number(groups.second);
+  const millisecond = fractionToMilliseconds(groups.fraction);
 
   if (!isValidTimeOfDay(hour, minute, second, millisecond)) {
     return null;

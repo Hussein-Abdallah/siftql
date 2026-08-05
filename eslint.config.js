@@ -21,6 +21,11 @@ export default tseslint.config(
         'error',
         { fixStyle: 'inline-type-imports' },
       ],
+      // Prefer closed `type` aliases over `interface` for everything.
+      // Interfaces are open to declaration merging, which means a consumer could
+      // silently augment an exported shape from their own code. The AST and the
+      // ValueType contract are documented public API, so they must be sealed.
+      '@typescript-eslint/consistent-type-definitions': ['error', 'type'],
       '@typescript-eslint/no-unnecessary-condition': [
         'error',
         // noUncheckedIndexedAccess makes `arr[i]` possibly-undefined, and the

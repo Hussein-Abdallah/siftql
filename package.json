@@ -60,7 +60,8 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run test:coverage && npm run build"
+    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run test:coverage && npm run build",
+    "examples": "npm run build && node examples/showcase.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

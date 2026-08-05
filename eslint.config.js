@@ -42,9 +42,22 @@ export default tseslint.config(
     },
   },
   {
-    // Config files are plain JS and are not part of the TS project graph.
-    files: ['**/*.js'],
+    // Config files and the runnable examples are plain JS, outside the TS
+    // project graph. The examples import from dist/ on purpose: they exercise
+    // the published package rather than the source tree.
+    files: ['**/*.js', '**/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
+  },
+  {
+    // The examples are a console program by design: printing real output is
+    // the entire point of the file, and it never ships (files: ["dist"]).
+    files: ['examples/**/*.mjs'],
+    languageOptions: {
+      globals: { console: 'readonly', process: 'readonly' },
+    },
+    rules: {
+      'no-console': 'off',
+    },
   },
   {
     files: ['test/**/*.ts'],

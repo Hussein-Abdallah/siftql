@@ -484,3 +484,86 @@ describe('regular expressions', () => {
     );
   });
 });
+
+describe('second audit', () => {
+  it('parses a quoted segment in the middle of a path', () => {
+    // `a.'b':c` stopped at the quote and silently became two clauses, so it
+    // matched a record that merely contained the text.
+    const node = parse("a.'b':c");
+
+    expect(node.type).toBe('Tag');
+    expect(
+      node.type === 'Tag' && node.field.segments.map((s) => s.name),
+    ).toEqual(['a', 'b']);
+    expect(
+      filter("a.'b':c", [{ a: { b: 'c' } }, { b: 'c', note: 'xa.x' }]),
+    ).toEqual([{ a: { b: 'c' } }]);
+  });
+
+  it('keeps a dot INSIDE a quoted segment as one step', () => {
+    const node = parse("a.'b.c':x");
+
+    expect(
+      node.type === 'Tag' && node.field.segments.map((s) => s.name),
+    ).toEqual(['a', 'b.c']);
+  });
+
+  it('reads a negative number in a field group as a value, not a negation', () => {
+    // `n:(-3)` was parsed as NOT 3, so it matched a row whose n was 7.
+    expect(matches('n:(-3)', { n: 7 })).toBe(false);
+    expect(matches('n:(-3)', { n: -3 })).toBe(true);
+    expect(matches('n:(-3 OR -5)', { n: -5 })).toBe(true);
+    // Only an ADJACENT sign folds, and only inside a group.
+    expect(matches('n:(- 3)', { n: 7 })).toBe(true);
+    expect(filter('-a:x', [{ a: 'x' }, { a: 'y' }])).toEqual([{ a: 'y' }]);
+  });
+
+  it('recovers an incomplete range in tolerant mode', () => {
+    // The documented promise is that a tolerant parse ALWAYS returns a usable
+    // AST; every incomplete range threw instead.
+    for (const query of ['a:[', '[', 'a:[1', 'a:[1 TO']) {
+      expect(() => parse(query, { tolerant: true }), query).not.toThrow();
+    }
+
+    expect(() => parse('a:[')).toThrow(SiftQLSyntaxError);
+  });
+
+  it('marks an unterminated quote or regex as recovered', () => {
+    // Without the marker a half-typed `"` became a real clause matching every
+    // row, and onRecovered could not see that anything had been invented.
+    expect(parse('"', { tolerant: true }).recovered?.reason).toBe(
+      'unterminated-quote',
+    );
+    expect(parse('/a', { tolerant: true }).recovered?.reason).toBe(
+      'unterminated-regex',
+    );
+    expect(parse('"a"', { tolerant: true }).recovered).toBeUndefined();
+  });
+
+  it('prints the reserved v0.2 modifiers instead of dropping them', () => {
+    const location = { end: 0, start: 0 };
+    const term = (extra: object): SiftQLAst =>
+      ({
+        literal: 'text',
+        location,
+        quoted: false,
+        type: 'LiteralExpression',
+        value: 'foo',
+        ...extra,
+      }) as SiftQLAst;
+
+    expect(
+      serialize(
+        term({ boost: { factor: '2', location, type: 'BoostModifier' } }),
+      ),
+    ).toBe('foo^2');
+    expect(
+      serialize(
+        term({ fuzzy: { distance: '2', location, type: 'FuzzyModifier' } }),
+      ),
+    ).toBe('foo~2');
+    expect(
+      serialize(term({ required: { location, type: 'RequiredModifier' } })),
+    ).toBe('+foo');
+  });
+});

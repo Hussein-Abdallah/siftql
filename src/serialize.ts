@@ -252,6 +252,48 @@ const serializeBoundary = (
   return side === 'lower' ? `${bracket}${value}` : `${value}${bracket}`;
 };
 
+/**
+ * Print the v0.2 modifiers a node carries.
+ *
+ * The v0.1 parser never produces these — it rejects the syntax with
+ * UNSUPPORTED_SYNTAX — but `types.ts` states that the serializer prints them so
+ * a hand-built forward-compatible query round-trips. It did not, and silently
+ * dropping them meant `serialize()` lost information from an AST a consumer had
+ * deliberately constructed.
+ *
+ * Order is fixed so output is canonical: required, then boost, then the
+ * fuzzy/proximity slot (which are mutually exclusive by construction — fuzzy
+ * attaches only to bare terms and proximity only to quoted ones).
+ */
+const modifiers = (node: SiftQLAst): string => {
+  const carrier = node as {
+    readonly boost?: { readonly factor: string };
+    readonly fuzzy?: { readonly distance: string | null };
+    readonly proximity?: { readonly slop: string };
+    readonly required?: unknown;
+  };
+
+  let text = '';
+
+  if (carrier.boost) {
+    text += `^${carrier.boost.factor}`;
+  }
+
+  if (carrier.fuzzy) {
+    text += `~${carrier.fuzzy.distance ?? ''}`;
+  }
+
+  if (carrier.proximity) {
+    text += `~${carrier.proximity.slop}`;
+  }
+
+  return text;
+};
+
+/** `+term` binds before the term itself. */
+const requiredPrefix = (node: SiftQLAst): string =>
+  (node as { readonly required?: unknown }).required === undefined ? '' : '+';
+
 const serializeNode = (
   node: SiftQLAst,
   /**
@@ -260,7 +302,10 @@ const serializeNode = (
    * the tokenizer is in value mode and a colon is ordinary.
    */
   position: TermPosition = 'term',
-): string => {
+): string =>
+  `${requiredPrefix(node)}${serializeBody(node, position)}${modifiers(node)}`;
+
+const serializeBody = (node: SiftQLAst, position: TermPosition): string => {
   switch (node.type) {
     case 'EmptyExpression':
       return '';

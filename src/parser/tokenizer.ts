@@ -363,9 +363,24 @@ export class Tokenizer {
   /**
    * Read a word, then decide what it is. A word followed immediately by `:` is a
    * field name; otherwise it is a bare term or a boolean keyword.
+   *
+   * A dot may be followed by a QUOTED segment — `a.'b':c` addresses the key `b`
+   * nested under `a`. The quoted part is folded back into the bare form with its
+   * dots escaped, so the existing splitter and the parser's decoder handle it
+   * with no special case: `a.'b.c'` becomes `a.b\.c`, which splits into exactly
+   * two segments. Without this the scan stopped at the quote and the whole thing
+   * silently became two separate clauses.
    */
   private readBareTerm(start: number): Token {
-    const word = this.readWord(DEFAULT_TERMINATORS);
+    let word = this.readWord(DEFAULT_TERMINATORS);
+
+    while (word.endsWith('.') && (this.peek() === '"' || this.peek() === "'")) {
+      const segment = this.readQuoted(this.index, this.peek());
+
+      // Escape the segment's own dots so it stays ONE path step.
+      word += segment.value.replace(/\./gu, String.raw`\.`);
+      word += this.readWord(DEFAULT_TERMINATORS);
+    }
 
     if (word.length === 0) {
       this.index += 1;

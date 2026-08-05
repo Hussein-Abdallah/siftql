@@ -311,6 +311,33 @@ class Parser {
   private parseUnary(): Expression {
     const next = this.peek();
 
+    /*
+     * Inside a field group, `-3` is the number minus three, not "NOT 3".
+     *
+     * A group body is a list of VALUES for the enclosing field, and the
+     * tokenizer reads it in default mode where a leading `-` is prohibition.
+     * `n:(-3 OR -5)` therefore became `n:(NOT 3 OR NOT 5)` and matched a row
+     * whose n was 7. Only an ADJACENT sign is folded — `n:(- 3)` keeps its
+     * negation — and only inside a group, so top-level `-foo` is untouched.
+     */
+    if (
+      this.fieldGroupDepth > 0 &&
+      next.type === 'prohibit' &&
+      this.isAdjacentNumber(next)
+    ) {
+      this.advance();
+
+      const digits = this.advance() as Extract<Token, { type: 'literal' }>;
+
+      return {
+        literal: 'text',
+        location: span(next.start, digits.end),
+        quoted: false,
+        type: 'LiteralExpression',
+        value: `-${digits.value}`,
+      };
+    }
+
     if (next.type === 'not' || next.type === 'prohibit') {
       this.advance();
 
@@ -348,6 +375,18 @@ class Parser {
     }
 
     return this.parsePrimary();
+  }
+
+  /** True when a numeric literal begins exactly where `sign` ends. */
+  private isAdjacentNumber(sign: Token): boolean {
+    const after = this.peek(1);
+
+    return (
+      after.type === 'literal' &&
+      after.quote === 'none' &&
+      after.start === sign.end &&
+      /^\d/u.test(after.value)
+    );
   }
 
   private parsePrimary(): Expression {
@@ -740,10 +779,12 @@ class Parser {
     const to = this.peek();
 
     if (to.type !== 'to') {
-      this.fail('Expected "TO" between the range boundaries', to, ['"TO"']);
+      if (!this.tolerant) {
+        this.fail('Expected "TO" between the range boundaries', to, ['"TO"']);
+      }
+    } else {
+      this.advance();
     }
-
-    this.advance();
 
     const close = this.tokens[this.findRangeClose()];
     const upperInclusive =
@@ -796,6 +837,21 @@ class Parser {
     const token = this.peek();
 
     if (token.type !== 'literal') {
+      if (this.tolerant) {
+        // Search-as-you-type sees `a:[` on the way to a real range. Recovering
+        // it as unbounded keeps the promise that a tolerant parse always
+        // returns a usable AST; the marker lets onRecovered refuse it.
+        return {
+          bounded: false,
+          location: span(token.start, token.start),
+          recovered: {
+            reason: RECOVERY_REASONS.unclosedRange,
+            synthetic: true,
+          },
+          type: 'RangeBoundary',
+        };
+      }
+
       return this.fail(`Expected the ${side} range boundary`, token, [
         'a value',
         '"*"',

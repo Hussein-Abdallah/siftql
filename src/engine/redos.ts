@@ -17,9 +17,19 @@
  * against a case this screen cannot see anyway. Precision matters more than
  * recall here: a false positive rejects a query the user legitimately wants.
  *
- * siftql's own wildcard compilation needs no screening — it emits only
- * `[\s\S]*` and `[\s\S]`, which cannot nest, so `*a*a*a*a*a*a*a*a*` runs in
- * under 2ms against input that hangs `(a+)+`.
+ * WILDCARDS ARE NOT EXEMPT, despite emitting no nested quantifier. Several
+ * `[\s\S]*` separated by literals partition the input exponentially when the
+ * match FAILS, because every star must try every split before the engine can
+ * conclude there is none:
+ *
+ *     value: 40 "a"s          *a*a*a*b        2.5ms
+ *                             *a*a*a*a*a*b     36ms
+ *                             *a*a*a*a*a*a*b  190ms
+ *                             *a*a*a*a*a*a*a*b 852ms      ~6x per star
+ *
+ * A benchmark that only measures MATCHING patterns misses this entirely —
+ * `*a*a*a*a*` succeeds greedily on the first attempt and never backtracks,
+ * which is exactly how the exemption came to be believed in the first place.
  */
 
 export interface PatternRisk {

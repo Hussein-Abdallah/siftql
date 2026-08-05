@@ -452,8 +452,21 @@ that itself contains a quantifier — plus a length cap. Precision is weighted o
 recall, so `(a|b)*` and `(abc)*` are allowed. Turn it off with
 `regexGuard: false` where the query author is trusted.
 
-siftql's own wildcard compilation needs no screening: it emits only `[\s\S]*`
-and `[\s\S]`, which cannot nest.
+**Wildcards are not exempt either.** They compile to `[\s\S]*` and `[\s\S]`
+with no nested quantifier, but several stars separated by literals still
+partition the input exponentially when the match _fails_ — every star must try
+every split before the engine can conclude there is none:
+
+```
+value: 40 "a"s     name:*a*a*a*b          2.5ms
+                   name:*a*a*a*a*a*b       36ms
+                   name:*a*a*a*a*a*a*a*b  852ms     ~6x per star
+```
+
+Nesting is not the only route to catastrophic backtracking, and a benchmark
+that only measures _matching_ patterns misses this — `*a*a*a*a*` succeeds
+greedily on the first attempt and never backtracks. Treat a query box that
+accepts unbounded stars from untrusted users as a denial-of-service surface.
 
 ## Development
 

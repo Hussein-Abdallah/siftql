@@ -25,10 +25,13 @@ import { createRegistry } from './registry.js';
 const resolveOptions = (options: EngineOptions): ResolvedEngineOptions => ({
   id: options.id ?? 'default',
   matchKeys: options.matchKeys ?? false,
+  maxPatternLength: options.maxPatternLength ?? 1000,
   onRecovered: options.onRecovered ?? 'prune',
   // Default 'skip': one dirty row must not be able to destroy an entire
   // result set. A bad QUERY still always throws; that is not configurable.
   onValueError: options.onValueError ?? 'skip',
+  // On by default: a search box is usually fed by whoever is looking at it.
+  regexGuard: options.regexGuard ?? true,
   temporal: {
     dateFormat: options.dateFormat,
     parseDate: options.parseDate,
@@ -79,8 +82,10 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     options: {
       ...resolved,
       matchKeys: overrides.matchKeys ?? resolved.matchKeys,
+      maxPatternLength: overrides.maxPatternLength ?? resolved.maxPatternLength,
       onRecovered: overrides.onRecovered ?? resolved.onRecovered,
       onValueError: overrides.onValueError ?? resolved.onValueError,
+      regexGuard: overrides.regexGuard ?? resolved.regexGuard,
     },
     registry,
   });

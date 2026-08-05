@@ -55,7 +55,9 @@ export type SiftQLErrorCode =
   /** `compile()` met a tolerant-recovery node under `onRecovered: 'throw'`. */
   | 'RECOVERED'
   /** Duplicate type name, unknown built-in, malformed `dateFormat`. */
-  | 'CONFIG';
+  | 'CONFIG'
+  /** A user-supplied regex was refused by the backtracking screen. */
+  | 'UNSAFE_PATTERN';
 
 /**
  * Base class for every error siftql throws. Catch this to catch them all.

@@ -577,6 +577,17 @@ export interface EvaluateOptions {
   /** Also test object KEYS, not only values. */
   readonly matchKeys?: boolean | undefined;
   /**
+   * Screen user-supplied regular expressions for shapes that can backtrack
+   * exponentially. Default `true`.
+   *
+   * It is a heuristic, not a guarantee: JavaScript offers no way to bound a
+   * regex engine's work once `test()` is running, so a pattern that passes can
+   * still be slow. Set `false` only where the query author is trusted.
+   */
+  readonly regexGuard?: boolean | undefined;
+  /** Longest accepted regex source. Default 1000. */
+  readonly maxPatternLength?: number | undefined;
+  /**
    * Governs value-side failures only, through {@link VALUE_FAILURE_POLICY}.
    * Default `'skip'`: the record does not match and evaluation continues. Query
    * operands ignore this entirely — a wrong query always throws.
@@ -605,6 +616,8 @@ export interface ResolvedEngineOptions {
   readonly id: string;
   readonly tolerant: boolean;
   readonly matchKeys: boolean;
+  readonly regexGuard: boolean;
+  readonly maxPatternLength: number;
   readonly onValueError: OnValueError;
   readonly onRecovered: OnRecovered;
   readonly temporal: TemporalOptions;

@@ -1,3 +1,4 @@
+import { assessPattern } from '../engine/redos.js';
 import {
   claimed,
   DECLINED,
@@ -84,8 +85,12 @@ export const wildcardType: ValueType<CompiledPattern, string> = defineValueType<
  * User-supplied regular expressions.
  *
  * Unlike every other type, the pattern here is arbitrary and can be
- * catastrophically slow. Structural guards live in the engine rather than in
- * this type, because they are a policy, not a matching rule.
+ * catastrophically slow: `/^(a+)+$/` against 31 characters hangs the process.
+ *
+ * The screen itself lives in `../engine/redos.ts` and is driven by engine
+ * OPTIONS rather than by this type, because whether to accept a risky pattern
+ * is a deployment policy — a trusted internal tool and a public search box want
+ * different answers — and not a rule about how a regex matches.
  */
 export const regexType: ValueType<CompiledPattern, string> = defineValueType<
   CompiledPattern,
@@ -101,9 +106,19 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
 
   name: 'regex',
 
-  parseOperand: (operand) => {
+  parseOperand: (operand, ctx) => {
     if (operand.kind !== 'regex') {
       return DECLINED;
+    }
+
+    if (ctx.options.regexGuard) {
+      const risk = assessPattern(operand.source, ctx.options.maxPatternLength);
+
+      if (risk) {
+        // A refused pattern stops resolution and is reported. Falling through
+        // to `string` would silently turn a regex query into a literal one.
+        return malformedOperand(risk.reason, risk.hint);
+      }
     }
 
     // A regular expression carries its OWN case semantics in its `i` flag, and

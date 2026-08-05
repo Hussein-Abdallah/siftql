@@ -310,6 +310,15 @@ for (const partial of [
   );
 }
 
+console.log('\n--- ReDoS screening: a heuristic, not a guarantee ---');
+run('v:/^(a+)+$/'); //      refused: nested quantifier -- this pattern hangs
+run('v:/(a*)*/'); //        refused
+run('v:/((a+))+/'); //      refused through an extra layer of grouping
+run('title:/(a|b)*/'); //   allowed: disjoint alternation is fine
+run('title:/^Wr.+e/'); //   allowed: an ordinary pattern
+run('title:*i*t*h*e*s*e*'); // allowed: siftql's own wildcards cannot nest
+// Turn it off for trusted authors: createEngine({ regexGuard: false }).
+
 console.log('\n--- highlight: which fields matched, and what to light up ---');
 const hl = (query: string) => {
   const found = highlight(query, rows[0]).map(

@@ -368,7 +368,127 @@ describe('errors', () => {
   });
 });
 
+describe('spaces in values', () => {
+  it('keeps a quoted phrase as one value', () => {
+    expect(summary('status:"in progress"')).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(in progress|double)',
+    ]);
+    expect(summary("status:'in progress'")).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(in progress|single)',
+    ]);
+  });
+
+  it('preserves interior whitespace exactly', () => {
+    expect(summary('status:"in  progress"')).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(in  progress|double)',
+    ]);
+    expect(summary('status:" "')).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit( |double)',
+    ]);
+    expect(summary('status:""')).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(|double)',
+    ]);
+  });
+
+  it('still splits an UNquoted phrase into separate clauses', () => {
+    // Standard Lucene behaviour: a space ends the term. Under whole-value
+    // equality this matches nothing, which is why the quoted form is the fix.
+    expect(summary('status:in progress')).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(in)',
+      'lit(progress)',
+    ]);
+  });
+
+  it('refuses a space between the operator and its value', () => {
+    expect(() => lex('status: in progress')).toThrow(SiftQLSyntaxError);
+    expect(() => lex('status: foo')).toThrow(SiftQLSyntaxError);
+    expect(() => lex('height:>= 100')).toThrow(SiftQLSyntaxError);
+  });
+
+  it('suggests the query the user probably meant', () => {
+    try {
+      lex('status: in progress');
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      const message = (error as SiftQLSyntaxError).message;
+
+      expect(message).toContain('status:"in progress"');
+      expect((error as SiftQLSyntaxError).expected).toEqual(['a value']);
+    }
+  });
+
+  it('stops the suggestion at a boolean keyword', () => {
+    try {
+      lex('status: in progress AND owner:sam');
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      const message = (error as SiftQLSyntaxError).message;
+
+      // The suggestion stops at AND. The caret excerpt below it still reprints
+      // the whole source line, so assert on the suggestion itself.
+      expect(message).toContain('Did you mean status:"in progress"?');
+      expect(message).not.toContain('in progress AND owner:sam"');
+    }
+  });
+
+  it('quotes the field name in the suggestion when it needs quoting', () => {
+    try {
+      lex("'work status': in progress");
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect((error as SiftQLSyntaxError).message).toContain(
+        `'work status':"in progress"`,
+      );
+    }
+  });
+
+  it('accepts a backslash-escaped space as part of a bare value', () => {
+    // Backslashes are preserved for the parser to decode: only the parser can
+    // tell an escaped \* from a wildcard * when it segments the pattern.
+    expect(summary(String.raw`status:in\ progress`)).toEqual([
+      'field(status)',
+      'op(:)',
+      String.raw`lit(in\ progress)`,
+    ]);
+  });
+
+  it('accepts an escaped character that would otherwise end the word', () => {
+    expect(summary(String.raw`name:foo\*bar`)).toEqual([
+      'field(name)',
+      'op(:)',
+      String.raw`lit(foo\*bar)`,
+    ]);
+    expect(summary(String.raw`name:a\:b`)).toEqual([
+      'field(name)',
+      'op(:)',
+      String.raw`lit(a\:b)`,
+    ]);
+    expect(summary(String.raw`a\ b`)).toEqual([String.raw`lit(a\ b)`]);
+  });
+});
+
 describe('tolerant mode', () => {
+  it('recovers from a space after the operator instead of refusing', () => {
+    expect(summary('status: in progress', { tolerant: true })).toEqual([
+      'field(status)',
+      'op(:)',
+      'lit(in)',
+      'lit(progress)',
+    ]);
+  });
+
   it('accepts an unclosed quote as a usable prefix', () => {
     expect(summary('name:"bar', { tolerant: true })).toEqual([
       'field(name)',
@@ -413,5 +533,16 @@ describe('spans', () => {
 
     expect(tokens.at(-1)?.type).toBe('eof');
     expect(tokens.filter((token) => token.type === 'eof')).toHaveLength(1);
+  });
+});
+
+describe('missing-value suggestions', () => {
+  it('does not quote a value that needs no quoting', () => {
+    try {
+      lex('height:>= 100');
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect((error as SiftQLSyntaxError).message).toContain('height:>=100?');
+    }
   });
 });

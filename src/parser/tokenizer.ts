@@ -1,4 +1,5 @@
 import { SiftQLSyntaxError } from '../errors.js';
+import { isSafeUnquotedExpression } from '../types.js';
 import type { ComparisonOperator, QuoteKind, Token } from './tokens.js';
 
 /**
@@ -84,6 +85,13 @@ export class Tokenizer {
    */
   private readonly pending: Token[] = [];
 
+  /**
+   * The most recent `field:` prefix exactly as written, e.g. `status:` or
+   * `'work status':>=`. Used only to phrase the suggestion in
+   * {@link failMissingValue}; `null` until a field has been read.
+   */
+  private lastClausePrefix: string | null = null;
+
   public constructor(source: string, options: TokenizerOptions = {}) {
     this.source = source;
     this.tolerant = options.tolerant ?? false;
@@ -118,11 +126,55 @@ export class Tokenizer {
     throw new SiftQLSyntaxError(message, { end, start }, this.source);
   }
 
+  /**
+   * A space between a comparison operator and its value ends the clause, so
+   * `status: in progress` would quietly become `status:in AND progress` and
+   * match nothing. That is far more often a typo than an intent, so it is
+   * refused — with the query the user probably meant.
+   */
+  private failMissingValue(): never {
+    const start = this.index;
+    const rest = this.source.slice(start).trimStart();
+    // Suggest quoting up to the next boolean keyword, which is where the
+    // intended value almost certainly ends.
+    const clause = (rest.split(/\s+(?:AND|OR|NOT)\s+/u)[0] ?? '').trim();
+    // Only quote the suggestion if the value actually needs it, so a stray
+    // space before a number suggests `height:>=100`, not `height:>="100"`.
+    const suggested = isSafeUnquotedExpression(clause)
+      ? clause
+      : JSON.stringify(clause);
+    const hint =
+      clause.length > 0 && this.lastClausePrefix !== null
+        ? ` Did you mean ${this.lastClausePrefix}${suggested}?`
+        : '';
+
+    throw new SiftQLSyntaxError(
+      `Expected a value immediately after the operator; a space here ends the clause.${hint}`,
+      { end: start + 1, start },
+      this.source,
+      { expected: ['a value'] },
+    );
+  }
+
   private nextToken(): Token {
     const queued = this.pending.shift();
 
     if (queued) {
       return queued;
+    }
+
+    if (
+      this.mode === 'value' &&
+      this.index < this.source.length &&
+      isWhitespace(this.peek())
+    ) {
+      if (this.tolerant) {
+        // Search-as-you-type: recover rather than refuse, and let the parser
+        // record a missing value.
+        this.mode = 'default';
+      } else {
+        return this.failMissingValue();
+      }
     }
 
     this.skipWhitespace();
@@ -321,6 +373,7 @@ export class Tokenizer {
     const operator = this.readComparisonOperator();
 
     this.mode = 'value';
+    this.lastClausePrefix = this.source.slice(start, this.index);
 
     // A quoted name is never split, so a literal key containing a dot stays
     // addressable as 'user.name' while user.name walks into a nested object.
@@ -404,11 +457,26 @@ export class Tokenizer {
     return { end: this.index, quote, start, type: 'literal', value };
   }
 
+  /**
+   * Read a bare word, honouring backslash escapes.
+   *
+   * An escaped character is part of the word even when it would otherwise end
+   * it, which is what makes `status:in\ progress` a single value and
+   * `name:foo\*bar` a literal asterisk rather than a wildcard. The backslashes
+   * are LEFT IN the returned text: only the parser can decode them, because it
+   * is the parser that must tell an escaped `\*` from a wildcard `*` when it
+   * segments the pattern. Decoding here would erase that distinction.
+   */
   private readWord(terminators: ReadonlySet<string>): string {
     const start = this.index;
 
     while (this.index < this.source.length) {
       const character = this.peek();
+
+      if (character === '\\' && this.index + 1 < this.source.length) {
+        this.index += 2;
+        continue;
+      }
 
       if (isWhitespace(character) || terminators.has(character)) {
         break;

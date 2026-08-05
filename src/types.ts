@@ -110,6 +110,17 @@ export type QuoteChar = '"' | "'";
  */
 export type RegexFlag = 'd' | 'g' | 'i' | 'm' | 's' | 'u' | 'v' | 'y';
 
+/**
+ * Bare words the parser turns into a TYPED literal rather than text. A string
+ * carrying one of these cannot be written bare either: `true` would come back
+ * as the boolean, not the four-character word.
+ */
+export const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
+  'true',
+  'false',
+  'null',
+]);
+
 /** Words that can never be a bare term: they are grammar keywords. */
 export const RESERVED_WORDS: ReadonlySet<string> = new Set([
   'AND',
@@ -148,7 +159,7 @@ export const isSafeUnquotedExpression = (value: string): boolean => {
     return false;
   }
 
-  if (RESERVED_WORDS.has(value)) {
+  if (RESERVED_WORDS.has(value) || KEYWORD_LITERALS.has(value)) {
     return false;
   }
 

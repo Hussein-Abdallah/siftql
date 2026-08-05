@@ -659,9 +659,16 @@ class Parser {
     }
 
     const scanned = scanPattern(token.value, contentStart);
+    // Tolerant mode invented the closing quote; the node must say so or
+    // `onRecovered` cannot see that anything was guessed at.
+    const recovered =
+      token.recovered === undefined
+        ? {}
+        : { recovered: { reason: token.recovered, synthetic: false } };
 
     if (scanned.kind === 'wildcard') {
       return {
+        ...recovered,
         location,
         pattern: scanned.segments,
         quoted,
@@ -671,6 +678,7 @@ class Parser {
 
     return quoted
       ? {
+          ...recovered,
           literal: 'text',
           location,
           quoted: true,
@@ -678,6 +686,7 @@ class Parser {
           value: scanned.value,
         }
       : {
+          ...recovered,
           literal: 'text',
           location,
           quoted: false,
@@ -712,6 +721,9 @@ class Parser {
       location: span(token.start, token.end),
       // Preserved exactly as written: RegExp#source is lossy.
       pattern: token.pattern,
+      ...(token.recovered === undefined
+        ? {}
+        : { recovered: { reason: token.recovered, synthetic: false } }),
       type: 'RegexExpression',
     };
   }

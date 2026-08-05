@@ -45,6 +45,9 @@ export {
   detectTemporalFormat,
   resolveTemporal,
   type ParseDateHook,
+  type ResolvedTemporal,
+  type TemporalDomain,
+  type TemporalKind,
   type TemporalOptions,
 } from './temporal/index.js';
 

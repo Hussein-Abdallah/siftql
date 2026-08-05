@@ -320,9 +320,19 @@ export const compileExpression = (
       }
 
       return (item, sink) => {
-        // Without a sink, short-circuit as usual.
-        if (sink === null) {
+        // Without a sink, short-circuit as usual -- EXCEPT under a throwing
+        // policy, where skipping the right operand means whether an error
+        // fires depends on which side happens to match first, and filter()
+        // then disagrees with highlight(), which never short-circuits.
+        if (sink === null && !exhaustiveScan(context)) {
           return left(item, null) || right(item, null);
+        }
+
+        if (sink === null) {
+          const leftMatched = left(item, null);
+          const rightMatched = right(item, null);
+
+          return leftMatched || rightMatched;
         }
 
         // With one, evaluate BOTH sides and keep only the branches that
@@ -484,7 +494,16 @@ const emit = (
           // carries lastIndex -- so a caller iterating the returned highlights
           // with .test()/.exec() would get alternating answers from what looks
           // like an independent regex.
-          query: new RegExp(query.source, query.flags),
+          // ALWAYS global, and always a fresh instance. A custom type may
+          // legitimately return a non-global RegExp, and a consumer looping on
+          // `while (m = query.exec(text))` — which is what every highlighter
+          // component does — would then spin forever, because exec without `g`
+          // never advances lastIndex. Normalising here means no third-party
+          // type can hang a caller's UI.
+          query: new RegExp(
+            query.source,
+            query.flags.includes('g') ? query.flags : `${query.flags}g`,
+          ),
           segments,
         }
       : // A range or a boolean has no textual footprint, so the whole value is
@@ -831,6 +850,26 @@ const compileRange = (
           return present;
         },
       );
+  }
+
+  // Two boundaries of the same TYPE can still be incomparable: `datetime`
+  // spans both calendar instants and wall-clock times, and
+  // `[2020-06-01 TO 14:30]` is as incoherent as mixing a date with a number.
+  // Only the name was checked, so that one slipped through as an empty result.
+  if (lower?.type.name === upper?.type.name && lower && upper) {
+    const ordering = lower.type.ordering?.compare(upper.operand, lower.operand);
+
+    if (ordering === null) {
+      throw new SiftQLOperandError(
+        'Range boundaries are not comparable with each other',
+        {
+          code: 'MIXED_RANGE_TYPES',
+          location: range.location,
+          raw: '',
+          site: { field, inclusive: true, kind: 'range', side: 'upper' },
+        },
+      );
+    }
   }
 
   if (lower && upper && lower.type.name !== upper.type.name) {

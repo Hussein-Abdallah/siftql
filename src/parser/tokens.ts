@@ -48,6 +48,8 @@ export type Token = SourceLocation &
         /** The term as written, without surrounding quotes. */
         readonly value: string;
         readonly quote: QuoteKind;
+        /** Set when tolerant mode invented the closing quote. */
+        readonly recovered?: string;
       }
     | {
         readonly type: 'regex';
@@ -55,6 +57,8 @@ export type Token = SourceLocation &
         readonly pattern: string;
         /** Regex flags such as `i`, or an empty string. */
         readonly flags: string;
+        /** Set when tolerant mode invented the closing slash. */
+        readonly recovered?: string;
       }
     | { readonly type: 'rangeOpen'; readonly delimiter: '[' | '{' }
     | { readonly type: 'rangeClose'; readonly delimiter: '}' | ']' }

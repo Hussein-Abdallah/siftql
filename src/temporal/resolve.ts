@@ -1,4 +1,4 @@
-import { parseWithFormats } from './format.js';
+import { formatWidth, parseWithFormats } from './format.js';
 import { parseIso } from './iso.js';
 import type { ResolvedTemporal, TemporalOptions } from './types.js';
 
@@ -116,6 +116,29 @@ export const resolveTemporal = (
   }
 
   if (typeof value === 'number') {
+    /*
+     * A DECLARED calendar layout overrides the epoch reading for numbers.
+     *
+     * With `dateFormat: 'YYYYMMDD'`, the number 20200631 is "June 31st" — a day
+     * that does not exist. Falling through to epoch milliseconds read it as
+     * 1970-01-01T05:36:40Z instead, so a query for everything before 2000
+     * matched it. The operand and the value must be read the same way or the
+     * comparison is meaningless; an impossible date is refused, not reinterpreted.
+     */
+    const widths =
+      options.dateFormat === undefined
+        ? []
+        : (typeof options.dateFormat === 'string'
+            ? [options.dateFormat]
+            : options.dateFormat
+          ).map((format) => formatWidth(format));
+
+    // Only refuse a number that is the right SHAPE for a declared layout. A
+    // 13-digit epoch is plainly not an attempt at YYYYMMDD and still resolves.
+    if (widths.includes(String(value).length)) {
+      return null;
+    }
+
     return asInstant(value);
   }
 

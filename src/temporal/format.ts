@@ -1,3 +1,4 @@
+import { SiftQLConfigError } from '../errors.js';
 import {
   isValidCalendarDate,
   isValidTimeOfDay,
@@ -63,9 +64,12 @@ interface CompiledFormat {
  * user input, so it is reported immediately and loudly rather than degrading to
  * "nothing matches".
  */
-export class InvalidDateFormatError extends TypeError {
+export class InvalidDateFormatError extends SiftQLConfigError {
   public constructor(format: string, reason: string) {
     super(`Invalid dateFormat ${JSON.stringify(format)}: ${reason}`);
+    // Extends SiftQLConfigError so it satisfies the documented contract: every
+    // error siftql throws is a SiftQLError and answers isSiftQLError(). A bare
+    // TypeError escaped both, so a caller catching SiftQLError missed it.
     this.name = 'InvalidDateFormatError';
   }
 }
@@ -178,6 +182,40 @@ export const parseWithFormat = (
     kind,
     value: utcTimestamp(year, month, day, hour, minute, second, millisecond),
   };
+};
+
+/**
+ * How many characters a layout consumes, or `null` if it is not fixed-width.
+ *
+ * Used to tell a number that was MEANT as this layout from one that was not:
+ * under `YYYYMMDD`, the 8-digit 20200631 is an attempt at a date (an impossible
+ * one), while the 13-digit 1593000000000 is plainly epoch milliseconds.
+ */
+export const formatWidth = (format: string): number | null => {
+  let width = 0;
+  let index = 0;
+
+  while (index < format.length) {
+    const token = TOKENS.find(([literal]) => format.startsWith(literal, index));
+
+    if (token) {
+      const [literal, , fragment] = token;
+      const digits = /\{(\d+)\}/u.exec(fragment)?.[1];
+
+      if (digits === undefined) {
+        return null;
+      }
+
+      width += Number(digits);
+      index += literal.length;
+      continue;
+    }
+
+    width += 1;
+    index += 1;
+  }
+
+  return width;
 };
 
 /** Try each declared layout in order; the first that parses wins. */

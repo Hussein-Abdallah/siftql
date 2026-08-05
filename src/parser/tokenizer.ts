@@ -68,6 +68,9 @@ const VALUE_TERMINATORS = new Set(['(', ')', ']', '}', '"', "'", '^', '~']);
 
 const isWhitespace = (character: string): boolean => WHITESPACE.has(character);
 
+const RECOVERED_QUOTE = 'unterminated-quote';
+const RECOVERED_REGEX = 'unterminated-regex';
+
 /**
  * Split an unquoted field name on its dots, honouring backslash escapes.
  *
@@ -398,13 +401,22 @@ export class Tokenizer {
 
   /** A quoted word is either a quoted field name or a case-sensitive term. */
   private readQuotedTerm(start: number, quoteCharacter: string): Token {
-    const { quote, value } = this.readQuoted(start, quoteCharacter);
+    const { quote, recovered, value } = this.readQuoted(start, quoteCharacter);
 
     if (this.peek() === ':') {
       return this.finishField(start, value, quote);
     }
 
-    return { end: this.index, quote, start, type: 'literal', value };
+    return recovered === true
+      ? {
+          end: this.index,
+          quote,
+          recovered: RECOVERED_QUOTE,
+          start,
+          type: 'literal',
+          value,
+        }
+      : { end: this.index, quote, start, type: 'literal', value };
   }
 
   private finishField(start: number, name: string, quote: QuoteKind): Token {
@@ -491,9 +503,18 @@ export class Tokenizer {
     start: number,
     quoteCharacter: string,
   ): Extract<Token, { type: 'literal' }> {
-    const { quote, value } = this.readQuoted(start, quoteCharacter);
+    const { quote, recovered, value } = this.readQuoted(start, quoteCharacter);
 
-    return { end: this.index, quote, start, type: 'literal', value };
+    return recovered === true
+      ? {
+          end: this.index,
+          quote,
+          recovered: RECOVERED_QUOTE,
+          start,
+          type: 'literal',
+          value,
+        }
+      : { end: this.index, quote, start, type: 'literal', value };
   }
 
   /**
@@ -512,8 +533,10 @@ export class Tokenizer {
     while (this.index < this.source.length) {
       const character = this.peek();
 
-      if (character === '\\' && this.index + 1 < this.source.length) {
-        this.index += 2;
+      if (character === '\\') {
+        // A trailing backslash protects nothing; stepping two would index past
+        // the end of the source.
+        this.index += this.index + 1 < this.source.length ? 2 : 1;
         continue;
       }
 
@@ -530,7 +553,7 @@ export class Tokenizer {
   private readQuoted(
     start: number,
     quoteCharacter: string,
-  ): { quote: QuoteKind; value: string } {
+  ): { quote: QuoteKind; recovered?: boolean; value: string } {
     // Skip the opening quote.
     this.index += 1;
 
@@ -546,6 +569,16 @@ export class Tokenizer {
         // would make `"a\\*b"` ambiguous between "literal backslash then
         // wildcard" and "literal asterisk". The escape is still consumed as a
         // unit so an escaped quote does not end the string.
+        //
+        // A TRAILING lone backslash has nothing to protect, so consuming two
+        // characters walked the index past the end and produced a span longer
+        // than the source.
+        if (this.index + 1 >= this.source.length) {
+          value += character;
+          this.index += 1;
+          break;
+        }
+
         value += character + this.peek(1);
         this.index += 2;
         continue;
@@ -554,10 +587,7 @@ export class Tokenizer {
       if (character === quoteCharacter) {
         this.index += 1;
 
-        return {
-          quote: quoteCharacter === '"' ? 'double' : 'single',
-          value,
-        };
+        return { quote: quoteCharacter === '"' ? 'double' : 'single', value };
       }
 
       value += character;
@@ -565,8 +595,14 @@ export class Tokenizer {
     }
 
     if (this.tolerant) {
-      // Search-as-you-type: `name:"bar` is a usable prefix, not a failure.
-      return { quote: quoteCharacter === '"' ? 'double' : 'single', value };
+      // Search-as-you-type: `name:"bar` is a usable prefix, not a failure --
+      // but it MUST be marked, or `onRecovered` cannot see that anything was
+      // invented and a half-typed quote silently becomes a real clause.
+      return {
+        quote: quoteCharacter === '"' ? 'double' : 'single',
+        recovered: true,
+        value,
+      };
     }
 
     return this.fail('Unterminated quoted string', start, this.index);
@@ -609,7 +645,14 @@ export class Tokenizer {
     }
 
     if (this.tolerant) {
-      return { end: this.index, flags: '', pattern, start, type: 'regex' };
+      return {
+        end: this.index,
+        flags: '',
+        pattern,
+        recovered: RECOVERED_REGEX,
+        start,
+        type: 'regex',
+      };
     }
 
     return this.fail('Unterminated regular expression', start, this.index);

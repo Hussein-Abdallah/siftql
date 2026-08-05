@@ -55,19 +55,44 @@ const precedenceOf = (node: Expression): number => {
 };
 
 /**
- * Escape a bare term. Every reserved character gets a backslash, and a LEADING
- * `-` or `+` does too, since those are structural only in first position — which
- * is exactly what lets `2020-06-01` stay unquoted.
+ * Which characters a bare term must escape, and it depends on WHERE the term
+ * sits — because the tokenizer reads the two positions in different modes.
+ *
+ *   TERM position   (`foo`, unfielded)      a colon would start a field name
+ *   VALUE position  (after `status:`)       a colon is an ordinary character
+ *
+ * That asymmetry is the whole reason `createdAt:>=2020-06-01T12:00:00+02:00`
+ * needs no quoting: escaping its colons would be not just noisy but a claim
+ * about the grammar that is false in that position.
+ *
+ * Some characters are structural only in FIRST position — a leading `-` is
+ * negation, a leading `/` opens a regex — which is exactly what lets an
+ * interior hyphen stay bare and keeps `2020-06-01` readable.
  */
-const escapeBareTerm = (value: string): string => {
+type TermPosition = 'term' | 'value';
+
+// Every character below is ASCII punctuation or whitespace, so there is no
+// grapheme cluster or surrogate pair for the spread to split.
+// eslint-disable-next-line @typescript-eslint/no-misused-spread
+const ALWAYS_ESCAPED = new Set([...' \t\n\r\f\v()]}"\'\\^~*?']);
+const TERM_ONLY_ESCAPED = new Set([':', '[', '{', '<', '>', '=', '/']);
+const LEADING_ONLY = { term: new Set(['-', '+', '/']), value: new Set(['/']) };
+
+const escapeBareTerm = (
+  value: string,
+  position: TermPosition = 'value',
+): string => {
   let escaped = '';
 
   for (let index = 0; index < value.length; index += 1) {
     const character = value.charAt(index);
-    const leadingMarker =
-      index === 0 && (character === '-' || character === '+');
 
-    if (RESERVED_CHARACTERS.has(character) || leadingMarker) {
+    const needsEscape =
+      ALWAYS_ESCAPED.has(character) ||
+      (position === 'term' && TERM_ONLY_ESCAPED.has(character)) ||
+      (index === 0 && LEADING_ONLY[position].has(character));
+
+    if (needsEscape) {
       escaped += '\\';
     }
 
@@ -104,16 +129,22 @@ const escapeQuotedTerm = (value: string): string => {
   return escaped;
 };
 
-const serializeTextLiteral = (node: TextLiteral): string =>
+const serializeTextLiteral = (
+  node: TextLiteral,
+  position: TermPosition = 'value',
+): string =>
   node.quoted
     ? `"${escapeQuotedTerm(node.value)}"`
     : // A bare empty term has no spelling, so it is the one case where the
       // bare/quoted flag cannot survive; every other value round-trips.
       node.value.length === 0
       ? '""'
-      : escapeBareTerm(node.value);
+      : escapeBareTerm(node.value, position);
 
-const serializeWildcard = (node: WildcardExpression): string => {
+const serializeWildcard = (
+  node: WildcardExpression,
+  position: TermPosition = 'value',
+): string => {
   const body = node.pattern
     .map((segment) => {
       switch (segment.type) {
@@ -124,7 +155,7 @@ const serializeWildcard = (node: WildcardExpression): string => {
         default:
           return node.quoted
             ? escapeQuotedTerm(segment.value)
-            : escapeBareTerm(segment.value);
+            : escapeBareTerm(segment.value, position);
       }
     })
     .join('');
@@ -176,19 +207,29 @@ const serializeBoundary = (
   side: 'lower' | 'upper',
 ): string => {
   const bracket = rangeBracket(side, boundary);
-  const value = boundary.bounded ? serializeTextLiteral(boundary.value) : '*';
+  const value = boundary.bounded
+    ? serializeTextLiteral(boundary.value, 'value')
+    : '*';
 
   return side === 'lower' ? `${bracket}${value}` : `${value}${bracket}`;
 };
 
-const serializeNode = (node: SiftQLAst): string => {
+const serializeNode = (
+  node: SiftQLAst,
+  /**
+   * `'term'` at the top level and inside groups, where a colon would start a
+   * field name; `'value'` after a comparison operator and inside a range, where
+   * the tokenizer is in value mode and a colon is ordinary.
+   */
+  position: TermPosition = 'term',
+): string => {
   switch (node.type) {
     case 'EmptyExpression':
       return '';
 
     case 'LiteralExpression':
       return node.literal === 'text'
-        ? serializeTextLiteral(node)
+        ? serializeTextLiteral(node, position)
         : String(node.value);
 
     case 'LogicalExpression': {
@@ -231,6 +272,7 @@ const serializeNode = (node: SiftQLAst): string => {
 
       return `${serializeField(node.field)}${colon}${operator}${serializeNode(
         node.expression,
+        'value',
       )}`;
     }
 
@@ -245,7 +287,7 @@ const serializeNode = (node: SiftQLAst): string => {
     }
 
     case 'WildcardExpression':
-      return serializeWildcard(node);
+      return serializeWildcard(node, position);
 
     default:
       return '';

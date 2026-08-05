@@ -306,3 +306,42 @@ describe('tolerant ASTs', () => {
     expect(serialize(parse('a AND', { tolerant: true }))).toBe('a AND ');
   });
 });
+
+describe('position-aware escaping', () => {
+  it('leaves colons alone in value position', () => {
+    // This is the whole reason value mode exists in the tokenizer: after a
+    // comparison operator a colon is an ordinary character, so escaping it
+    // would assert something about the grammar that is false there.
+    expect(serialize(parse('createdAt:>=2020-06-01T12:00:00+02:00'))).toBe(
+      'createdAt:>=2020-06-01T12:00:00+02:00',
+    );
+    expect(serialize(parse('start:14:30'))).toBe('start:14:30');
+    expect(
+      serialize(parse('d:[2020-01-01T00:00:00Z TO 2020-12-31T23:59:59Z]')),
+    ).toBe('d:[2020-01-01T00:00:00Z TO 2020-12-31T23:59:59Z]');
+  });
+
+  it('escapes a colon in TERM position, where it would start a field', () => {
+    const tagged = parse('a:b');
+    const bare = parse('"a:b"');
+
+    // The quoted form holds the colon without ceremony...
+    expect(serialize(bare)).toBe('"a:b"');
+    // ...while the tagged form is genuinely a field and a value.
+    expect(tagged.type).toBe('Tag');
+  });
+
+  it('round-trips an unfielded term containing a colon', () => {
+    roundTrips('"12:00"');
+    roundTrips('"a:b"');
+  });
+
+  it('still escapes what is structural in value position', () => {
+    expect(serialize(parse(String.raw`status:in\ progress`))).toBe(
+      String.raw`status:in\ progress`,
+    );
+    expect(serialize(parse(String.raw`name:foo\*bar`))).toBe(
+      String.raw`name:foo\*bar`,
+    );
+  });
+});

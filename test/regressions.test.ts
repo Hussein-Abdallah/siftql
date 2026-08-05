@@ -17,6 +17,7 @@ import {
   SiftQLSyntaxError,
   SiftQLValueError,
   test as matches,
+  type SiftQLAst,
 } from '../src/index.js';
 
 /**
@@ -542,15 +543,14 @@ describe('second audit', () => {
 
   it('prints the reserved v0.2 modifiers instead of dropping them', () => {
     const location = { end: 0, start: 0 };
-    const term = (extra: object): SiftQLAst =>
-      ({
-        literal: 'text',
-        location,
-        quoted: false,
-        type: 'LiteralExpression',
-        value: 'foo',
-        ...extra,
-      }) as SiftQLAst;
+    const term = (extra: object): SiftQLAst => ({
+      literal: 'text',
+      location,
+      quoted: false,
+      type: 'LiteralExpression',
+      value: 'foo',
+      ...extra,
+    });
 
     expect(
       serialize(

@@ -26,7 +26,7 @@ export type TemporalKind = 'date' | 'datetime' | 'time';
 export type TemporalDomain = 'instant' | 'timeOfDay';
 
 /** A temporal value that has been successfully resolved to a number. */
-export type ResolvedTemporal = {
+export interface ResolvedTemporal {
   /** Which line `value` sits on. Never compare across domains. */
   readonly domain: TemporalDomain;
   /** The surface form this was resolved from, retained for diagnostics. */
@@ -36,7 +36,7 @@ export type ResolvedTemporal = {
    * (`timeOfDay`). Always a finite integer.
    */
   readonly value: number;
-};
+}
 
 /**
  * User-supplied parser hook.
@@ -48,7 +48,7 @@ export type ResolvedTemporal = {
 export type ParseDateHook = (value: unknown) => Date | number | null;
 
 /** Options governing how raw values are resolved into temporal values. */
-export type TemporalOptions = {
+export interface TemporalOptions {
   /**
    * Declared non-ISO layout(s), e.g. `'DD-MM-YYYY'`. An array is tried in order
    * and the first layout that parses wins. Declaring the layout is what makes
@@ -61,4 +61,4 @@ export type TemporalOptions = {
    * meaning of a `null` return.
    */
   readonly parseDate?: ParseDateHook | undefined;
-};
+}

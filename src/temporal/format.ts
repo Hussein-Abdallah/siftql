@@ -53,10 +53,10 @@ const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/gu;
 const escapeLiteral = (character: string): string =>
   character.replace(REGEX_SPECIAL, String.raw`\$&`);
 
-type CompiledFormat = {
+interface CompiledFormat {
   readonly kind: 'date' | 'datetime' | 'time';
   readonly regex: RegExp;
-};
+}
 
 /**
  * A malformed layout is a programming error in the host application, not bad

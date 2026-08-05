@@ -21,11 +21,16 @@ export default tseslint.config(
         'error',
         { fixStyle: 'inline-type-imports' },
       ],
-      // Prefer closed `type` aliases over `interface` for everything.
-      // Interfaces are open to declaration merging, which means a consumer could
-      // silently augment an exported shape from their own code. The AST and the
-      // ValueType contract are documented public API, so they must be sealed.
-      '@typescript-eslint/consistent-type-definitions': ['error', 'type'],
+      // `interface` for object shapes, `type` for unions and aliases.
+      //
+      // Sealing against declaration merging argued for `type` everywhere, but
+      // the AST is a ~40-node hierarchy built on `extends NodeBase` and mixins
+      // such as `extends LiteralExpressionBase, Fuzzable`. Expressed as
+      // intersections that hierarchy produces markedly worse error messages and
+      // a worse published .d.ts, and every consumer pays that cost daily —
+      // whereas merging an exported interface requires a consumer to write a
+      // deliberate `declare module` block. The rarer hazard loses.
+      '@typescript-eslint/consistent-type-definitions': ['error', 'interface'],
       '@typescript-eslint/no-unnecessary-condition': [
         'error',
         // noUncheckedIndexedAccess makes `arr[i]` possibly-undefined, and the

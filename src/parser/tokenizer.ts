@@ -24,13 +24,13 @@ import type { ComparisonOperator, QuoteKind, Token } from './tokens.js';
 
 type Mode = 'default' | 'range' | 'value';
 
-export type TokenizerOptions = {
+export interface TokenizerOptions {
   /**
    * Best-effort tokenizing for incomplete input, for search-as-you-type. An
    * unterminated quote or regex consumes to end of input instead of throwing.
    */
   readonly tolerant?: boolean | undefined;
-};
+}
 
 const WHITESPACE = new Set([' ', '\t', '\n', '\r', '\f', '\v']);
 

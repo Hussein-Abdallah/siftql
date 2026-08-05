@@ -304,7 +304,21 @@ const matchOne = (
   const { type } = bound;
   const failure = failureSite(bound, site, path, location, value, context);
 
-  return type.matches === undefined
+  // Reading `type.matches` is itself a property access on consumer code, so it
+  // goes through the guard rather than being tested first and called after.
+  let hasMatches: boolean;
+
+  try {
+    hasMatches = type.matches !== undefined;
+  } catch {
+    return signalValueFailure({
+      ...failure,
+      kind: 'invalid',
+      reason: 'reading matches threw',
+    });
+  }
+
+  return !hasMatches
     ? callPredicate(
         type,
         'equals',

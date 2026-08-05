@@ -44,11 +44,19 @@ const expectOnlySiftQLErrors = (run: () => unknown): unknown => {
   }
 };
 
+/**
+ * A real BareTextLiteral.
+ *
+ * Written out in full deliberately: an earlier version of this helper carried
+ * `kind` and `raw` — neither of which is in the contract — and no `literal` or
+ * `quoted`, which are. It was structurally invalid, and three tests here were
+ * passing on it until node-shape validation started refusing it.
+ */
 const litNode = (): SiftQLAst =>
   ({
-    kind: 'bareText',
+    literal: 'text',
     location: { end: 1, start: 0 },
-    raw: 'a',
+    quoted: false,
     type: 'LiteralExpression',
     value: 'a',
   }) as unknown as SiftQLAst;
@@ -462,6 +470,294 @@ describe('the failure-policy table is looked up, not assumed', () => {
   });
 });
 
+describe('shared references in a record', () => {
+  /*
+   * The audit that followed the first version of this file found the fix here
+   * had traded a denial of service for silently wrong answers. Both directions
+   * are pinned, because a fix for either alone is what went wrong twice.
+   */
+  it('follows a parent back-reference instead of refusing it', () => {
+    const root: Record<string, unknown> = { name: 'root' };
+    const kid: Record<string, unknown> = { name: 'kid', parent: root };
+
+    root.children = [kid];
+
+    // Ground truth: root.children[0].parent.name === 'root'. Refusing to
+    // re-enter an object already on the branch answered false here — on a path
+    // that is finite, because a fielded walk takes one step per query segment
+    // and cannot loop.
+    expect(matches('children.0.parent.name:root', root)).toBe(true);
+    expect(matches('parent.children.0.name:kid', kid)).toBe(true);
+  });
+
+  it('gives the same answer whether or not the record shares identity', () => {
+    // The sharpest symptom of the ancestor-set bug: an acyclic record of the
+    // identical shape answered true, so the result depended on object identity
+    // rather than on the data.
+    const shared: Record<string, unknown> = { name: 'root' };
+    const withSharing = { children: [{ name: 'kid', parent: shared }] };
+    const withoutSharing = {
+      children: [{ name: 'kid', parent: { name: 'root' } }],
+    };
+
+    expect(matches('children.0.parent.name:root', withSharing)).toBe(
+      matches('children.0.parent.name:root', withoutSharing),
+    );
+  });
+
+  it('walks an exponentially-aliased record in bounded time', () => {
+    // 21 objects, ~1,000,000 distinct paths. Visiting each object once makes
+    // this linear; before, it doubled per level and took 8.7 seconds.
+    let unfielded: unknown = { leaf: 'needle' };
+    let fielded: unknown = { v: 'needle' };
+
+    for (let index = 0; index < 20; index += 1) {
+      unfielded = { a: unfielded, b: unfielded };
+      fielded = { a: [fielded, fielded] };
+    }
+
+    const started = Date.now();
+
+    expect(filter('needle', [unfielded])).toHaveLength(1);
+    expect(
+      filter(`${Array.from({ length: 20 }, () => 'a').join('.')}.v:needle`, [
+        fielded,
+      ]),
+    ).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('still finds a value in a cyclic record', () => {
+    const self: Record<string, unknown> = { name: 'x' };
+
+    self.a = [self, self];
+
+    // The cycle is bounded by the same visit-once rule, with nothing special
+    // about it — and unlike the ancestor-set version, the value is still FOUND.
+    const path = Array.from({ length: 12 }, () => 'a').join('.');
+
+    expect(filter(`${path}.name:x`, [self])).toHaveLength(1);
+    expect(filter('x', [self])).toHaveLength(1);
+  });
+});
+
+describe('arrays and accessors that lie', () => {
+  it('never expands a declared length', () => {
+    // A sparse array declaring 600,000,000 slots and holding one killed the
+    // process outright — an uncatchable OOM from a 200-byte record.
+    const sparse = new Array<unknown>(600_000_000);
+
+    sparse[0] = 'needle';
+
+    const started = Date.now();
+
+    expect(filter('needle', [{ tags: sparse }])).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('ignores a length trap that lies', () => {
+    const liar = new Proxy(['needle'], {
+      get: (target, key, receiver): unknown =>
+        key === 'length' ? 5e8 : Reflect.get(target, key, receiver),
+    });
+
+    expect(filter('needle', [{ tags: liar }])).toHaveLength(1);
+  });
+
+  it('survives a getter that throws only on the second read', () => {
+    // `safeLength` read `length` twice and guarded only the first.
+    let reads = 0;
+    const tags = new Proxy(['a'], {
+      get(target, key, receiver): unknown {
+        if (key === 'length') {
+          reads += 1;
+
+          if (reads >= 2) {
+            throw new Error('second read');
+          }
+        }
+
+        return Reflect.get(target, key, receiver);
+      },
+    });
+
+    expectOnlySiftQLErrors(() => filter('a', [{ tags }]));
+  });
+
+  it('survives a throwing getOwnPropertyDescriptor trap', () => {
+    // hasOwnProperty invokes this trap, and the own-property TEST had no guard
+    // even though every property READ did.
+    const trapped = () => {
+      throw new Error('gopd');
+    };
+
+    expectOnlySiftQLErrors(() =>
+      filter('k:a', [
+        new Proxy({ k: 'a' }, { getOwnPropertyDescriptor: trapped }),
+      ]),
+    );
+    expectOnlySiftQLErrors(() =>
+      filter('a', [
+        { tags: new Proxy(['a'], { getOwnPropertyDescriptor: trapped }) },
+      ]),
+    );
+    expectOnlySiftQLErrors(() =>
+      filter('tags.0:a', [
+        { tags: new Proxy(['a'], { getOwnPropertyDescriptor: trapped }) },
+      ]),
+    );
+  });
+
+  it('routes a read failure on an INTERMEDIATE path segment', () => {
+    // This was silently discarded: the branch was dropped and the error with
+    // it, so a caller who asked to be told about dirty data was told nothing.
+    const rows = [
+      {
+        get a(): Record<string, unknown> {
+          throw new Error('boom');
+        },
+      },
+    ];
+
+    expect(filter('a.b:null', rows)).toHaveLength(0);
+    expect(() =>
+      createEngine({ onValueError: 'throw' }).filter('a.b:null', rows),
+    ).toThrowError(/reading this value threw/u);
+  });
+});
+
+describe('shared subtrees in an AST', () => {
+  const literal = () => litNode();
+
+  /** `{left: v, right: v}` n deep: n+1 nodes, 2^n paths. */
+  const shared = (levels: number): SiftQLAst => {
+    let node = literal();
+
+    for (let index = 0; index < levels; index += 1) {
+      node = {
+        left: node,
+        location: { end: 1, start: 0 },
+        operator: {
+          location: { end: 1, start: 0 },
+          notation: 'explicit',
+          operator: 'OR',
+          type: 'BooleanOperator',
+        },
+        right: node,
+        type: 'LogicalExpression',
+      } as unknown as SiftQLAst;
+    }
+
+    return node;
+  };
+
+  it('refuses a tree whose expansion is too large', () => {
+    // 41 nodes at depth 20 serialized to a 6 MB string; 29 nodes took the
+    // validator itself 32 seconds. Depth saw nothing wrong, because nothing was.
+    const started = Date.now();
+
+    expect(() => serialize(shared(24))).toThrow(SiftQLArgumentError);
+    expect(() => matches(shared(24), {})).toThrow(SiftQLArgumentError);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('says the expansion is the problem, not the depth', () => {
+    expect(() => serialize(shared(24))).toThrowError(
+      /larger than 500000 nodes when expanded/u,
+    );
+  });
+
+  it('still accepts modest, legitimate sharing', () => {
+    // `const t = builders.term('a'); builders.or(t, t)` is a natural thing to
+    // write and must keep working: sharing is not the error, expansion is.
+    expect(serialize(shared(8))).toContain('OR');
+  });
+
+  it('does not invoke getters on AST nodes', () => {
+    // Object.values reads every own enumerable property, so an accessor-backed
+    // node threw a raw error out of serialize() for a tree that used to print.
+    const withAccessor = {
+      literal: 'text',
+      location: { end: 1, start: 0 },
+      quoted: false,
+      type: 'LiteralExpression',
+      value: 'x',
+      get extra(): unknown {
+        throw new Error('accessor');
+      },
+    } as unknown as SiftQLAst;
+
+    expect(serialize(withAccessor)).toBe('x');
+  });
+});
+
+describe('the validator cannot itself fail', () => {
+  // describeArgument runs only when an argument is ALREADY known to be wrong,
+  // and it read `constructor.name` and `length` unguarded — so the code whose
+  // job is to produce SiftQLArgumentError threw the raw error instead.
+  const hostile = (): unknown =>
+    new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('trap');
+        },
+      },
+    );
+
+  const cases: readonly [string, () => unknown][] = [
+    ['parse(a hostile proxy)', () => parse(hostile() as never)],
+    [
+      'parse with a throwing option accessor',
+      () =>
+        parse('a', {
+          get tolerant(): boolean {
+            throw new Error('opt');
+          },
+        }),
+    ],
+    [
+      'filter with a hostile items proxy',
+      () =>
+        filter(
+          'a',
+          new Proxy([1], {
+            get(target, key, receiver): unknown {
+              if (key === 'length') {
+                throw new Error('len');
+              }
+
+              return Reflect.get(target, key, receiver);
+            },
+          }) as never,
+        ),
+    ],
+    [
+      'filter with hostile overrides',
+      () => filter('a', [{}], hostile() as never),
+    ],
+    [
+      'createEngine with a throwing type name',
+      () =>
+        createEngine({
+          types: [
+            {
+              get name(): string {
+                throw new Error('name');
+              },
+            } as never,
+          ],
+        }),
+    ],
+  ];
+
+  for (const [label, run] of cases) {
+    it(`${label} still fails as a SiftQLError`, () => {
+      expectOnlySiftQLErrors(run);
+    });
+  }
+});
+
 describe('AST depth', () => {
   it('refuses a hand-built tree too deep to walk', () => {
     const tooDeep = nestedNode(50_000);
@@ -472,7 +768,7 @@ describe('AST depth', () => {
 
   it('says what is wrong and what to look for', () => {
     expect(() => matches(nestedNode(50_000), {})).toThrowError(
-      /too deep to walk/u,
+      /nested more than 2200 levels deep/u,
     );
   });
 

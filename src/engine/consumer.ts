@@ -56,8 +56,17 @@ import type {
 } from '../registry.js';
 
 /** What a failing callback is called in a message: `number.coerceValue()`. */
-const describe = (type: AnyValueType, method: string): string =>
-  `${typeof type.name === 'string' ? type.name : '<unnamed>'}.${method}()`;
+const describe = (type: AnyValueType, method: string): string => {
+  let name: unknown;
+
+  try {
+    name = type.name;
+  } catch {
+    name = undefined;
+  }
+
+  return `${typeof name === 'string' ? name : '<unnamed>'}.${method}()`;
+};
 
 const brokenType = (
   type: AnyValueType,
@@ -75,10 +84,24 @@ const brokenType = (
  * Shape checks for what a callback hands back.
  * ------------------------------------------------------------------------- */
 
-const isResult = (value: unknown): value is { readonly ok: boolean } =>
-  typeof value === 'object' &&
-  value !== null &&
-  typeof (value as { ok?: unknown }).ok === 'boolean';
+/**
+ * Does this look like a result object?
+ *
+ * The `.ok` read is INSIDE the guard, because the returned object's `ok` may be
+ * an accessor that throws — in which case the check written to catch a badly
+ * shaped return value was itself the thing that escaped raw.
+ */
+const isResult = (value: unknown): value is { readonly ok: boolean } => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+
+  try {
+    return typeof (value as { ok?: unknown }).ok === 'boolean';
+  } catch {
+    return false;
+  }
+};
 
 /* ------------------------------------------------------------------------- *
  * Config-time: resolving a type input.
@@ -312,12 +335,13 @@ export const callHighlight = (
   operand: unknown,
   ctx: ValueContext,
 ): RegExp | null => {
-  if (type.highlight === undefined) {
-    return null;
-  }
-
+  // The member LOOKUP is inside the try as well: `highlight` may be a getter, and
+  // on a Proxy-wrapped type even reading the name runs consumer code.
   try {
-    const pattern = type.highlight(value, operand, ctx);
+    // Called as a method, and looked up INSIDE the try: an optional call does the
+    // lookup here, so a `highlight` accessor that throws is caught like any other
+    // misbehaving member, and a type may still legitimately use `this`.
+    const pattern = type.highlight?.(value, operand, ctx);
 
     return pattern instanceof RegExp ? pattern : null;
   } catch {

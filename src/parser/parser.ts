@@ -912,10 +912,9 @@ class Parser {
  */
 export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
   const source = assertQuery(query, 'parse');
-
-  assertOptions(options, 'parse');
-
-  const tolerant = options.tolerant ?? false;
+  // The SNAPSHOT, not `options`: reading the caller's object again after
+  // validating it let a throwing accessor escape from here raw.
+  const tolerant = assertOptions(options, 'parse').tolerant ?? false;
   const tokens = new Tokenizer(source, { tolerant }).tokenize();
 
   return new Parser(source, tokens, tolerant).parse();

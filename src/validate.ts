@@ -23,8 +23,13 @@
  */
 
 import { SiftQLArgumentError, SiftQLConfigError } from './errors.js';
-import type { OnRecovered, OnValueError, TypeStrategy } from './registry.js';
-import { MAX_AST_DEPTH } from './limits.js';
+import type {
+  EngineOptions,
+  OnRecovered,
+  OnValueError,
+  TypeStrategy,
+} from './registry.js';
+import { MAX_AST_DEPTH, MAX_AST_NODES } from './limits.js';
 import { type SiftQLAst, isSiftQLNode } from './types.js';
 
 /**
@@ -34,6 +39,23 @@ import { type SiftQLAst, isSiftQLNode } from './types.js';
  * object" does not distinguish `null` from an array from a Date. Long values are
  * clipped: an error message quoting a 40 KB document is not a diagnostic.
  */
+/**
+ * Read one property for reporting purposes, or give up.
+ *
+ * The failure path must not be able to fail. `describeArgument` runs only when an
+ * argument is ALREADY known to be wrong, and it reached for `constructor.name`
+ * and `length` unguarded — so a Proxy whose `get` trap throws made the function
+ * whose entire job is to turn bad arguments into `SiftQLArgumentError` throw the
+ * raw error instead, at the one moment it was supposed to help.
+ */
+const peek = (holder: object, key: PropertyKey): unknown => {
+  try {
+    return (holder as Record<PropertyKey, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+};
+
 export const describeArgument = (value: unknown): string => {
   if (value === null) {
     return 'null';
@@ -44,7 +66,11 @@ export const describeArgument = (value: unknown): string => {
   }
 
   if (Array.isArray(value)) {
-    return `an array (length ${String(value.length)})`;
+    const length = peek(value, 'length');
+
+    return typeof length === 'number'
+      ? `an array (length ${String(length)})`
+      : 'an array';
   }
 
   if (typeof value === 'string') {
@@ -58,8 +84,11 @@ export const describeArgument = (value: unknown): string => {
   }
 
   if (typeof value === 'object') {
-    const name: unknown = (value as { constructor?: { name?: unknown } })
-      .constructor?.name;
+    const constructor = peek(value, 'constructor');
+    const named =
+      constructor !== null &&
+      (typeof constructor === 'object' || typeof constructor === 'function');
+    const name = named ? peek(constructor, 'name') : undefined;
 
     return typeof name === 'string' && name !== 'Object'
       ? `a ${name} instance`
@@ -133,27 +162,173 @@ export const assertItems = (value: unknown, fn: string): readonly unknown[] => {
  * `''` for `{ type: 'bogus' }`, which is indistinguishable from a legitimately
  * empty query and turned a typo into a query that matched everything.
  */
+
+/* ------------------------------------------------------------------------- *
+ * Node shape.
+ *
+ * Checking `type` alone was not enough, and the gap was wider than it looked:
+ * `serialize({ type: 'bogus' })` was caught, but `serialize({ type: 'Tag' })`
+ * threw `TypeError: Cannot read properties of undefined (reading 'operator')`
+ * from inside the serializer — as did five of the ten root types, across all four
+ * entry points. That is the exact case the contract invites, since the AST is
+ * advertised as plain JSON that survives `structuredClone`, a `postMessage` and a
+ * database round trip; a truncated or hand-built node is the normal way to get
+ * one wrong.
+ *
+ * A TABLE rather than ten predicates, because the walk already visits every node
+ * and the question at each is the same: which properties must be present, and of
+ * what kind. Interior node types are included — `Field`, `RangeBoundary`,
+ * `ComparisonOperator` — since a walk reaches them too and they are exactly the
+ * ones a truncated tree tends to be missing.
+ * ------------------------------------------------------------------------- */
+
+type Check = (value: unknown) => boolean;
+
+const isObject: Check = (value) =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const isString: Check = (value) => typeof value === 'string';
+const isBool: Check = (value) => typeof value === 'boolean';
+const isArray: Check = (value) => Array.isArray(value);
+const isNonEmptyArray: Check = (value) =>
+  Array.isArray(value) && value.length > 0;
+
+const oneOf =
+  (...allowed: readonly string[]): Check =>
+  (value) =>
+    typeof value === 'string' && allowed.includes(value);
+
+const NODE_SHAPES: Readonly<Record<string, Readonly<Record<string, Check>>>> =
+  Object.freeze({
+    BooleanOperator: {
+      notation: oneOf('explicit', 'implicit'),
+      operator: oneOf('AND', 'OR'),
+    },
+    ComparisonOperator: {
+      operator: oneOf(':', ':=', ':>', ':>=', ':<', ':<='),
+    },
+    EmptyExpression: {},
+    Field: { segments: isNonEmptyArray },
+    FieldSegment: { name: isString, quoted: isBool },
+    LiteralExpression: {
+      literal: oneOf('text', 'boolean', 'null'),
+      quoted: isBool,
+    },
+    LogicalExpression: {
+      left: isObject,
+      operator: isObject,
+      right: isObject,
+    },
+    MissingExpression: {},
+    ParenthesizedExpression: { expression: isObject },
+    RangeBoundary: { bounded: isBool },
+    RangeExpression: { lower: isObject, upper: isObject },
+    RegexExpression: { flags: isArray, pattern: isString },
+    Tag: {
+      caseSensitive: isBool,
+      expression: isObject,
+      field: isObject,
+      kind: oneOf('match', 'relational'),
+      operator: isObject,
+    },
+    UnaryOperator: { operand: isObject, operator: oneOf('NOT', '-') },
+    WildcardAny: {},
+    WildcardExpression: { pattern: isNonEmptyArray, quoted: isBool },
+    WildcardLiteral: { value: isString },
+    WildcardSingle: {},
+  });
+
+/** What a `bounded: true` boundary needs on top of the base shape. */
+const BOUNDED_BOUNDARY: Readonly<Record<string, Check>> = Object.freeze({
+  inclusive: isBool,
+  value: isObject,
+});
+
 /**
- * Refuse a tree too deep to walk, and a tree that is not a tree at all.
+ * Check one node's own shape. Returns the offending property, or `null`.
  *
- * ITERATIVE, and therefore also the cycle check: a hand-built AST whose child
- * points back at an ancestor is not detectable by shape, but any walk of it
- * exceeds the depth limit, so bounding depth bounds both hazards with one pass.
- * A recursive depth check would itself overflow on the input it exists to
- * refuse.
- *
- * Generic over properties rather than switching on `node.type`, because the
- * point is to protect walks that have not been written yet as much as the four
- * that exist — `prune`, `findRecovered`, `compileExpression` and `serializeNode`
- * all recurse, and each one added to core is another place to forget.
- *
- * One O(n) pass per QUERY, not per item: `filter` over 10,000 records validates
- * once and then compiles once.
+ * A node whose `type` this does not recognise passes: interior shapes we have no
+ * table entry for are the business of whoever reads them, and refusing an
+ * unknown `type` here would make adding a node type a breaking change for
+ * anything already holding a tree.
  */
-const assertDepth = (root: SiftQLAst, fn: string): void => {
+const shapeProblem = (node: object, type: string): string | null => {
+  const required = NODE_SHAPES[type];
+
+  if (required === undefined) {
+    return null;
+  }
+
+  const checks: Readonly<Record<string, Check>> =
+    type === 'RangeBoundary' && peek(node, 'bounded') === true
+      ? { ...required, ...BOUNDED_BOUNDARY }
+      : required;
+
+  for (const [property, accepts] of Object.entries(checks)) {
+    if (!accepts(peek(node, property))) {
+      return property;
+    }
+  }
+
+  // Every node carries a location; error rendering and highlight offsets read it.
+  const location = peek(node, 'location');
+
+  if (
+    !isObject(location) ||
+    typeof peek(location as object, 'start') !== 'number' ||
+    typeof peek(location as object, 'end') !== 'number'
+  ) {
+    return 'location';
+  }
+
+  return null;
+};
+
+/**
+ * Refuse a tree too deep, or too large when expanded, to walk.
+ *
+ * ITERATIVE, because a recursive depth check would overflow on exactly the input
+ * it exists to refuse.
+ *
+ * Two budgets, because they catch different things and neither implies the other:
+ *
+ *  - DEPTH bounds a long chain, which is what exhausts the call stack in the
+ *    recursive walks downstream (`prune`, `findRecovered`, `serializeNode`,
+ *    `compileExpression`).
+ *  - VISITS bounds the work. A shared subtree makes the number of PATHS
+ *    exponential in the number of nodes, and every downstream walk is
+ *    path-shaped: 49 nodes at depth 24 serialized to a 100 MB string, and 29
+ *    nodes took this check itself 32 seconds. Depth saw nothing wrong with
+ *    either, because nothing was.
+ *
+ * Together they also subsume the cycle check. A node that points back at an
+ * ancestor produces unbounded paths, so it exhausts the visit budget and is
+ * refused — no ancestor set required, and no risk of the mistake that cost
+ * `access.ts` two attempts, where refusing a repeated object threw away
+ * legitimate finite paths.
+ *
+ * Generic over properties rather than switching on `node.type`, because the point
+ * is to protect walks that have not been written yet as much as the four that
+ * exist. Property reads are GUARDED: `Object.values` invokes getters, so an AST
+ * node backed by an accessor — a class instance, a reactive proxy — threw a raw
+ * error out of `serialize()` for a tree that used to serialize fine.
+ *
+ * One pass per QUERY, not per item: `filter` over 10,000 records validates once
+ * and then compiles once.
+ */
+const assertWalkable = (root: SiftQLAst, fn: string): void => {
   const stack: { readonly node: object; readonly depth: number }[] = [
     { depth: 0, node: root },
   ];
+
+  let visits = 0;
+
+  const refuse = (problem: string): never => {
+    throw new SiftQLArgumentError(
+      `${fn}() received an AST that is ${problem}. If you built this tree yourself or deserialized it, check for a node that points back at one of its own ancestors, or a subtree reachable by very many paths; if it came from parse(), the query exceeded what the parser is supposed to accept and this is a defect in siftql.`,
+      { argument: 'node', received: root.type },
+    );
+  };
 
   while (stack.length > 0) {
     const frame = stack.pop();
@@ -162,18 +337,43 @@ const assertDepth = (root: SiftQLAst, fn: string): void => {
       break;
     }
 
-    if (frame.depth > MAX_AST_DEPTH) {
-      throw new SiftQLArgumentError(
-        `${fn}() received an AST nested more than ${String(
-          MAX_AST_DEPTH,
-        )} levels deep, which is too deep to walk. If you built this tree yourself or deserialized it, check for a node that points back at one of its own ancestors; if it came from parse(), the query exceeded what the parser is supposed to accept and this is a defect in siftql.`,
-        { argument: 'node', received: root.type },
-      );
+    visits += 1;
+
+    if (visits > MAX_AST_NODES) {
+      refuse(`larger than ${String(MAX_AST_NODES)} nodes when expanded`);
     }
 
-    for (const child of Object.values(frame.node)) {
+    if (frame.depth > MAX_AST_DEPTH) {
+      refuse(`nested more than ${String(MAX_AST_DEPTH)} levels deep`);
+    }
+
+    const type = peek(frame.node, 'type');
+
+    if (typeof type === 'string') {
+      const problem = shapeProblem(frame.node, type);
+
+      if (problem !== null) {
+        throw new SiftQLArgumentError(
+          `${fn}() received a malformed ${type} node: its "${problem}" property is missing or of the wrong kind. If this tree was deserialized, it may have been truncated; builders from siftql's \`builders\` export always produce complete nodes.`,
+          { argument: 'node', received: type },
+        );
+      }
+    }
+
+    let children: unknown[];
+
+    try {
+      children = Object.values(frame.node);
+    } catch {
+      // A throwing getter or ownKeys trap. Nothing to descend into; the walks
+      // downstream read only the properties they need, and if one of those
+      // throws it is reported where it is read.
+      continue;
+    }
+
+    for (const child of children) {
       if (typeof child === 'object' && child !== null) {
-        stack.push({ depth: frame.depth + 1, node: child as object });
+        stack.push({ depth: frame.depth + 1, node: child });
       }
     }
   }
@@ -181,11 +381,14 @@ const assertDepth = (root: SiftQLAst, fn: string): void => {
 
 export const assertNode = (value: unknown, fn: string): SiftQLAst => {
   if (!isSiftQLNode(value)) {
+    const named =
+      typeof value === 'object' && value !== null
+        ? peek(value, 'type')
+        : undefined;
+
     const hint =
-      typeof value === 'object' &&
-      value !== null &&
-      typeof (value as { type?: unknown }).type === 'string'
-        ? ` "${(value as { type: string }).type}" is not a known node type.`
+      typeof named === 'string'
+        ? ` "${named}" is not a known node type.`
         : ' Pass the result of parse().';
 
     throw new SiftQLArgumentError(
@@ -194,7 +397,7 @@ export const assertNode = (value: unknown, fn: string): SiftQLAst => {
     );
   }
 
-  assertDepth(value, fn);
+  assertWalkable(value, fn);
 
   return value;
 };
@@ -282,12 +485,12 @@ const checkTypes = (value: unknown): void => {
       continue;
     }
 
-    if (
-      typeof input !== 'object' ||
-      input === null ||
-      typeof (input as { name?: unknown }).name !== 'string' ||
-      (input as { name: string }).name.length === 0
-    ) {
+    const name =
+      typeof input === 'object' && input !== null
+        ? peek(input, 'name')
+        : undefined;
+
+    if (typeof name !== 'string' || name.length === 0) {
       throw new SiftQLConfigError(
         `options.types[${String(index)}] must be a value type with a non-empty string name, or a factory returning one; received ${describeArgument(input)}.`,
       );
@@ -296,9 +499,9 @@ const checkTypes = (value: unknown): void => {
     // `matches` and `ordering` are optional; `equals` is not — `:` falls back
     // to it, so a type without it cannot answer the most common operator.
     for (const method of ['parseOperand', 'coerceValue', 'equals'] as const) {
-      if (typeof (input as Record<string, unknown>)[method] !== 'function') {
+      if (typeof peek(input as object, method) !== 'function') {
         throw new SiftQLConfigError(
-          `options.types[${String(index)}] ("${(input as { name: string }).name}") is missing ${method}(). A value type needs parseOperand, coerceValue and equals.`,
+          `options.types[${String(index)}] ("${name}") is missing ${method}(). A value type needs parseOperand, coerceValue and equals.`,
         );
       }
     }
@@ -314,9 +517,9 @@ const checkTypes = (value: unknown): void => {
  * than degrading. A typo'd option is a cost; a config that cannot survive a
  * version skew is worse.
  */
-export const assertOptions = (value: unknown, fn: string): void => {
+export const assertOptions = (value: unknown, fn: string): EngineOptions => {
   if (value === undefined) {
-    return;
+    return {};
   }
 
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -326,29 +529,32 @@ export const assertOptions = (value: unknown, fn: string): void => {
     );
   }
 
-  const options = value as Record<string, unknown>;
+  // Read through `peek`: an option may be an accessor, and a throwing one must
+  // produce a config error rather than escape from the validator.
+  const read = (key: string): unknown => peek(value, key);
 
-  checkBoolean('tolerant', options.tolerant);
-  checkBoolean('matchKeys', options.matchKeys);
-  checkBoolean('regexGuard', options.regexGuard);
-  checkEnum('onValueError', options.onValueError, ON_VALUE_ERROR);
-  checkEnum('onRecovered', options.onRecovered, ON_RECOVERED);
-  checkEnum('typeStrategy', options.typeStrategy, TYPE_STRATEGY);
-  checkDateFormat(options.dateFormat);
+  checkBoolean('tolerant', read('tolerant'));
+  checkBoolean('matchKeys', read('matchKeys'));
+  checkBoolean('regexGuard', read('regexGuard'));
+  checkEnum('onValueError', read('onValueError'), ON_VALUE_ERROR);
+  checkEnum('onRecovered', read('onRecovered'), ON_RECOVERED);
+  checkEnum('typeStrategy', read('typeStrategy'), TYPE_STRATEGY);
+  checkDateFormat(read('dateFormat'));
 
-  if (options.id !== undefined && typeof options.id !== 'string') {
-    badOption('id', 'a string', options.id);
+  const id = read('id');
+
+  if (id !== undefined && typeof id !== 'string') {
+    badOption('id', 'a string', id);
   }
 
-  if (
-    options.parseDate !== undefined &&
-    typeof options.parseDate !== 'function'
-  ) {
-    badOption('parseDate', 'a function', options.parseDate);
+  const parseDate = read('parseDate');
+
+  if (parseDate !== undefined && typeof parseDate !== 'function') {
+    badOption('parseDate', 'a function', parseDate);
   }
 
-  if (options.maxPatternLength !== undefined) {
-    const length = options.maxPatternLength;
+  if (read('maxPatternLength') !== undefined) {
+    const length = read('maxPatternLength');
 
     if (
       typeof length !== 'number' ||
@@ -359,5 +565,35 @@ export const assertOptions = (value: unknown, fn: string): void => {
     }
   }
 
-  checkTypes(options.types);
+  checkTypes(read('types'));
+
+  /*
+   * A SNAPSHOT, not the caller's object.
+   *
+   * Validating in place and then handing the original back was not enough:
+   * `parse` went on to read `options.tolerant`, and `contextFor` to read
+   * `options.matchKeys`, so an option implemented as a throwing accessor passed
+   * validation and then escaped raw from the code that used it. Every value is
+   * read exactly once, here, behind a guard — after this the engine is reading
+   * plain data and cannot be surprised.
+   *
+   * Unknown keys are dropped rather than copied. They were already documented as
+   * accepted-and-ignored, and carrying an arbitrary accessor forward would
+   * reintroduce exactly the hazard this closes.
+   */
+  return {
+    dateFormat: read('dateFormat') as EngineOptions['dateFormat'],
+    id: read('id') as EngineOptions['id'],
+    matchKeys: read('matchKeys') as EngineOptions['matchKeys'],
+    maxPatternLength: read(
+      'maxPatternLength',
+    ) as EngineOptions['maxPatternLength'],
+    onRecovered: read('onRecovered') as EngineOptions['onRecovered'],
+    onValueError: read('onValueError') as EngineOptions['onValueError'],
+    parseDate: read('parseDate') as EngineOptions['parseDate'],
+    regexGuard: read('regexGuard') as EngineOptions['regexGuard'],
+    tolerant: read('tolerant') as EngineOptions['tolerant'],
+    types: read('types') as EngineOptions['types'],
+    typeStrategy: read('typeStrategy') as EngineOptions['typeStrategy'],
+  };
 };

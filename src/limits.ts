@@ -41,3 +41,26 @@ export const MAX_CLAUSES = 2000;
  * instead of a raw `RangeError` that names none of the offending structure.
  */
 export const MAX_AST_DEPTH = MAX_CLAUSES + MAX_DEPTH;
+
+/**
+ * Most node visits `serialize()` and the evaluator will spend on one tree.
+ *
+ * VISITS, not distinct nodes, and that distinction is the whole reason this
+ * exists. Depth alone bounds a chain but not the WORK, because an AST may share
+ * a subtree: `{ left: v, right: v }` nested 24 deep is 49 objects and 16 million
+ * paths. A depth check waved it through, `assertNode` then took 32 seconds on 29
+ * objects, and `serialize()` produced a 100 MB string from 49 — both from a
+ * payload small enough to arrive as JSON, which `types.ts` advertises as the
+ * supported transport.
+ *
+ * Sharing is not itself an error and is not refused: `const t = builders.term
+ * ('a'); builders.or(t, t)` is a natural thing to write and costs two visits.
+ * What is refused is an EXPANSION too large to print or compile, which is the
+ * quantity that actually hurts.
+ *
+ * The value is empirical: the largest tree `parse()` can emit — 199 levels of
+ * parentheses around a 1,800-clause chain — expands to about 15,000 visits, so
+ * 500,000 leaves a factor of thirty for hand-built trees while capping a
+ * serialized string at a few megabytes and this check at tens of milliseconds.
+ */
+export const MAX_AST_NODES = 500_000;

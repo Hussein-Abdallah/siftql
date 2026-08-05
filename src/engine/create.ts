@@ -1,3 +1,4 @@
+import { isSiftQLError, SiftQLArgumentError } from '../errors.js';
 import { parse, type ParseOptions } from '../parser/parser.js';
 import type {
   EngineOptions,
@@ -59,6 +60,38 @@ const resolveOptions = (options: EngineOptions): ResolvedEngineOptions =>
     tolerant: options.tolerant ?? false,
   });
 
+/**
+ * Run the predicate over the corpus, converting a hostile array-like into a
+ * named error.
+ *
+ * `Array.isArray` accepts a Proxy wrapping an array, and iterating one runs the
+ * caller's traps — so `items.filter(...)` could throw a raw error even after the
+ * argument had been validated. Nothing is copied: guarding the ITERATION rather
+ * than snapshotting the data keeps `filter` allocation-free for the ordinary
+ * case, which is every case that is not deliberately adversarial.
+ */
+const sift = (
+  items: readonly unknown[],
+  predicate: (item: unknown, sink: null) => boolean,
+): unknown[] => {
+  try {
+    return items.filter((item) => predicate(item, null));
+  } catch (error) {
+    // A SiftQLError from the predicate is the engine reporting a real failure and
+    // must pass through untouched; anything else came from reading the array.
+    if (isSiftQLError(error)) {
+      throw error;
+    }
+
+    throw new SiftQLArgumentError(
+      `Reading the items array threw: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { argument: 'items', received: items },
+    );
+  }
+};
+
 export interface Engine {
   readonly options: ResolvedEngineOptions;
   readonly types: ValueTypeRegistry;
@@ -103,7 +136,7 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     options.typeStrategy ?? 'prepend',
   );
 
-  const contextFor = (overrides: EvaluateOptions = {}): EvaluationContext => ({
+  const contextFor = (overrides: EvaluateOptions): EvaluationContext => ({
     // Frozen for the same reason `resolved` is: per-call overrides produce a new
     // options object, and it reaches value types just as the engine's own does.
     options: Object.freeze({
@@ -125,7 +158,7 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
   const toAst = (
     query: SiftQLAst | string,
     fn: string,
-    overrides: EvaluateOptions = {},
+    overrides: EvaluateOptions,
   ): SiftQLAst =>
     applyRecoveryPolicy(
       // Checked whether it was PARSED or handed to us. The parser's own caps are
@@ -144,11 +177,8 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     );
 
   return {
-    extend: (extra) => {
-      assertOptions(extra, 'engine.extend');
-
-      return createEngine({ ...options, ...extra });
-    },
+    extend: (extra) =>
+      createEngine({ ...options, ...assertOptions(extra, 'engine.extend') }),
 
     filter: <T>(
       query: SiftQLAst | string,
@@ -158,16 +188,13 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       // Compiled ONCE, not per item: a filter over 10,000 rows resolves the
       // operand a single time, and a bad query throws immediately rather than
       // on whichever row first reaches it.
-      assertOptions(overrides, 'filter');
-
+      const checked = assertOptions(overrides, 'filter');
       const predicate = compileExpression(
-        toAst(query, 'filter', overrides),
-        contextFor(overrides),
+        toAst(query, 'filter', checked),
+        contextFor(checked),
       );
 
-      return assertItems(items, 'filter').filter((item) =>
-        predicate(item, null),
-      ) as T[];
+      return sift(assertItems(items, 'filter'), predicate) as T[];
     },
 
     highlight: (query, item, overrides = {}) => {
@@ -175,11 +202,10 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
       // `overrides` must reach toAst, not just contextFor: toAst is where the
       // recovery policy is applied, so omitting it made highlight() ignore a
       // per-call onRecovered that filter() and test() both honoured.
-      assertOptions(overrides, 'highlight');
-
+      const checked = assertOptions(overrides, 'highlight');
       const matched = compileExpression(
-        toAst(query, 'highlight', overrides),
-        contextFor(overrides),
+        toAst(query, 'highlight', checked),
+        contextFor(checked),
       )(item, sink);
 
       return matched ? sink.drain() : [];
@@ -188,20 +214,19 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     options: resolved,
 
     parse: (query, parseOptions) => {
-      assertOptions(parseOptions, 'engine.parse');
+      const checked = assertOptions(parseOptions, 'engine.parse');
 
       return parse(assertQuery(query, 'engine.parse'), {
-        tolerant: resolved.tolerant,
-        ...parseOptions,
+        tolerant: checked.tolerant ?? resolved.tolerant,
       });
     },
 
     test: (query, item, overrides = {}) => {
-      assertOptions(overrides, 'test');
+      const checked = assertOptions(overrides, 'test');
 
       return compileExpression(
-        toAst(query, 'test', overrides),
-        contextFor(overrides),
+        toAst(query, 'test', checked),
+        contextFor(checked),
       )(item, null);
     },
 

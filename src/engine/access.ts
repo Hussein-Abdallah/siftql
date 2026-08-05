@@ -12,34 +12,43 @@
  *
  * Both yield `[path, value]` pairs so a highlight can name exactly where it hit.
  *
- * THREE HAZARDS THAT ARE NOT HYPOTHETICAL, since `filter()` takes whatever the
- * host application has:
+ * `filter()` takes whatever the host application has, so the hazards below are
+ * not hypothetical. Each is a bug this module has actually shipped.
  *
- *  - DEPTH. Both walks are ITERATIVE, with an explicit stack. Recursion here
- *    meant an 18 KB record of plain nested JSON threw a raw `RangeError` that
- *    destroyed the whole result set — a stack limit is not a property of the
- *    data, so it must not be a property of the answer.
- *  - CYCLES AND ALIASES. Each walk tracks the ANCESTORS of the node it is
- *    visiting, not everything it has ever seen. The distinction is the whole
- *    point: a global visited-set also skips aliases, and the same object
- *    referenced from two different places is not a cycle — dropping the second
- *    reference loses real leaves. No tracking at all let `{a: [self, self]}`
- *    double the frontier per path segment; sixteen segments was 65,536
- *    candidates.
+ * DEPTH. Both walks are ITERATIVE, with an explicit stack. Recursion meant an
+ * 18 KB record of plain nested JSON threw a raw `RangeError` that destroyed the
+ * whole result set — a stack limit is not a property of the data, so it must not
+ * be a property of the answer.
  *
- *    Both walks are LINEAR in the size of the record, which took two attempts.
- *    The obvious way to make the ancestor set per-branch is to copy it on
- *    descent, and that is O(depth) per node — so a 60,000-level record went from
- *    a crash to a thirty-second hang, which is not an improvement.
- *    {@link allLeafValues} therefore keeps one mutable set with explicit exit
- *    markers, and builds paths as a linked list materialised only for values it
- *    actually emits. {@link valuesAtPath} still copies, because there the set is
- *    bounded by the number of segments in the QUERY (`a.b.c` is three) rather
- *    than by the depth of the data.
- *  - HOSTILE ACCESSORS. Every property read goes through {@link safeRead},
- *    because a getter or a Proxy trap may throw. That is dirty DATA, so it is
- *    reported as a failed candidate and dispositioned by `onValueError` like any
- *    other unreadable value — never allowed to abort the run.
+ * SHARED REFERENCES, which is where two earlier attempts went wrong and is worth
+ * spelling out. An object can be reachable by more than one path — a parent
+ * pointer, an ORM back-reference, the same tag list on two fields — and in the
+ * worst case the number of PATHS is exponential in the number of OBJECTS:
+ * `{a: v, b: v}` nested twenty deep is 21 objects and a million paths.
+ *
+ *  - Doing nothing made that a denial of service: 21 objects took 8.7 seconds,
+ *    doubling per level.
+ *  - Refusing to re-enter an object already on the current branch fixed the cost
+ *    and BROKE THE ANSWER. A fielded walk cannot loop — it takes exactly one step
+ *    per query segment — so on `children.0.parent.name` the guard fired on a
+ *    perfectly finite path and returned `false` where the truth was `root`.
+ *    Worse, an acyclic record of the same shape answered `true`, so the result
+ *    depended on object identity rather than on the data.
+ *
+ * What is correct AND bounded is to visit each object ONCE, keeping the first
+ * path that reaches it. Every distinct value is still found, so no match is ever
+ * missed; what is given up is the *duplicate* paths to a value already reported.
+ * A cycle is then handled by the same rule, with nothing special about it. The
+ * visible consequence — a value reachable twice is highlighted at one path, not
+ * both — is documented on {@link allLeafValues} and {@link valuesAtPath}.
+ *
+ * HOSTILE ACCESSORS. Every property read and every own-property test goes through
+ * a guard, because a getter, a `getOwnPropertyDescriptor` trap or an `ownKeys`
+ * trap may throw. That is dirty DATA, so it is reported as a failed candidate and
+ * dispositioned by `onValueError` like any other unreadable value — never allowed
+ * to abort the run. `length` is never trusted either: `new Array(6e8)` with one
+ * real element used to be expanded to its declared length and killed the process
+ * outright, so both walks enumerate OWN KEYS and never the declared range.
  */
 
 import { isDateLike } from '../internal.js';
@@ -56,7 +65,7 @@ export type Candidate = readonly [
    */
   isKey?: boolean,
   /**
-   * Set when reading this value THREW — a getter or a Proxy trap. The candidate
+   * Set when reading this value THREW — a getter, or a Proxy trap. The candidate
    * is still reported so the engine can route it through the failure policy
    * rather than losing the whole record.
    */
@@ -69,9 +78,69 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   !Array.isArray(value) &&
   !isDateLike(value);
 
-/** Own properties only — `key in holder` would walk the prototype chain. */
-const hasOwn = (holder: object, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(holder, key);
+type ReadResult =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly error: unknown };
+
+/** Read one property, surviving a throwing getter or `get` trap. */
+const safeRead = (holder: object, key: PropertyKey): ReadResult => {
+  try {
+    return { ok: true, value: (holder as Record<PropertyKey, unknown>)[key] };
+  } catch (error) {
+    return { error, ok: false };
+  }
+};
+
+/**
+ * Own properties only — `key in holder` would walk the prototype chain.
+ *
+ * Guarded, because `hasOwnProperty` invokes the `getOwnPropertyDescriptor` trap
+ * on a Proxy and that trap may throw. Treating a failed interrogation as "not
+ * present" is the safe direction: the key is skipped rather than read through a
+ * mechanism that has already misbehaved once.
+ */
+const hasOwn = (holder: object, key: PropertyKey): boolean => {
+  try {
+    return Object.prototype.hasOwnProperty.call(holder, key);
+  } catch {
+    return false;
+  }
+};
+
+/** List own enumerable string keys, surviving a hostile `ownKeys` trap. */
+const safeKeys = (holder: object): string[] => {
+  try {
+    return Object.keys(holder);
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * The indices an array actually HOLDS, in order.
+ *
+ * Never `length`. A sparse `new Array(600_000_000)` carrying one element
+ * declares half a billion slots, and expanding that range — even lazily, via
+ * `Array.from({ length })` — exhausted the heap and killed the process, from a
+ * 200-byte record. `Object.keys` on the same array returns one key. A `length`
+ * trap that lies is bounded by the same reasoning, since its answer is never
+ * consulted.
+ */
+const ownIndices = (array: readonly unknown[]): number[] => {
+  const indices: number[] = [];
+
+  for (const key of safeKeys(array)) {
+    const index = asIndex(key);
+
+    if (index !== null) {
+      indices.push(index);
+    }
+  }
+
+  // Object.keys yields integer keys in ascending order already; sorting keeps
+  // that true for an exotic object whose ownKeys trap does not.
+  return indices.sort((left, right) => left - right);
+};
 
 /**
  * An array index written as a path segment: `tags.0`, but NOT `tags.01`.
@@ -90,89 +159,33 @@ const asIndex = (key: string): number | null => {
   return Number.isSafeInteger(index) ? index : null;
 };
 
-type ReadResult =
-  | { readonly ok: true; readonly value: unknown }
-  | { readonly ok: false; readonly error: unknown };
-
-/** Read one property, surviving a throwing getter or Proxy trap. */
-const safeRead = (holder: object, key: PropertyKey): ReadResult => {
-  try {
-    return { ok: true, value: (holder as Record<PropertyKey, unknown>)[key] };
-  } catch (error) {
-    return { error, ok: false };
-  }
-};
-
-/** List own enumerable string keys, surviving a hostile `ownKeys` trap. */
-const safeKeys = (holder: object): string[] => {
-  try {
-    return Object.keys(holder);
-  } catch {
-    return [];
-  }
-};
-
-/** Array length, surviving a lying or throwing accessor. */
-const safeLength = (value: readonly unknown[]): number => {
-  const read = safeRead(value, 'length');
-
-  return read.ok && typeof read.value === 'number' && read.value >= 0
-    ? Math.min(read.value, value.length)
-    : 0;
-};
-
-/** One branch of a walk, carrying the ancestors seen along THAT branch. */
+/** One branch of a walk. `readError` is set when reading this value threw. */
 interface Step {
   readonly path: readonly (string | number)[];
   readonly value: unknown;
-  readonly seen: ReadonlySet<object>;
-  /** Set when reading this value threw; carried through to the Candidate. */
   readonly readError?: unknown;
 }
 
-const descend = (step: Step, value: unknown): ReadonlySet<object> => {
-  if (typeof value !== 'object' || value === null) {
-    return step.seen;
-  }
-
-  const next = new Set(step.seen);
-
-  next.add(value);
-
-  return next;
-};
-
-/** A walk step becomes a candidate, carrying any read failure with it. */
 const asCandidate = (step: Step): Candidate =>
   'readError' in step
     ? [step.path, step.value, false, step.readError]
     : [step.path, step.value];
 
-/** Expand one array level, skipping holes and surviving hostile accessors. */
-const explode = (step: Step): Step[] => {
-  const array = step.value as readonly unknown[];
-  const length = safeLength(array);
-  const steps: Step[] = [];
+const stepFrom = (
+  path: readonly (string | number)[],
+  key: string | number,
+  read: ReadResult,
+): Step => ({
+  path: [...path, key],
+  value: read.ok ? read.value : undefined,
+  ...(read.ok ? {} : { readError: read.error }),
+});
 
-  for (let index = 0; index < length; index += 1) {
-    if (!hasOwn(array, String(index))) {
-      // A hole. `Array.prototype.entries()` yields `[i, undefined]` for these
-      // rather than skipping them, so the check is explicit.
-      continue;
-    }
-
-    const read = safeRead(array, index);
-
-    steps.push({
-      path: [...step.path, index],
-      seen: step.seen,
-      value: read.ok ? read.value : undefined,
-      ...(read.ok ? {} : { readError: read.error }),
-    });
-  }
-
-  return steps;
-};
+/** Expand one array level into its own elements, skipping holes. */
+const explode = (step: Step): Step[] =>
+  ownIndices(step.value as readonly unknown[]).map((index) =>
+    stepFrom(step.path, index, safeRead(step.value as object, index)),
+  );
 
 /**
  * Walk `path` from `item`.
@@ -180,16 +193,51 @@ const explode = (step: Step): Step[] => {
  * A missing key still yields `undefined` exactly once, so `member:null` matches
  * a record where the key is simply absent — "unset" and "explicitly null" are
  * the same answer to "is this empty?".
+ *
+ * When two segments of the frontier arrive at the SAME object, only the first is
+ * carried forward; see the module header. The value is still found, at one path.
  */
 export const valuesAtPath = (
   item: unknown,
   path: readonly string[],
 ): Candidate[] => {
-  let frontier: Step[] = [{ path: [], seen: new Set(), value: item }];
+  let frontier: Step[] = [{ path: [], value: item }];
+
+  /*
+   * A read that threw part-way ALONG the path, rather than at its end.
+   *
+   * These cannot stay in the frontier — there is no value to descend into — but
+   * dropping them silently was its own defect: under `onValueError: 'throw'` a
+   * throwing getter on an intermediate segment produced no match and no error, so
+   * a caller who had explicitly asked to be told about dirty data was told
+   * nothing. They are reported as failed candidates instead.
+   */
+  const failed: Candidate[] = [];
 
   for (const key of path) {
     const next: Step[] = [];
     const index = asIndex(key);
+    // Visit each object once per segment: the alias-collapsing rule from the
+    // module header, applied one level at a time.
+    const visited = new Set<object>();
+
+    const push = (step: Step): void => {
+      if ('readError' in step) {
+        failed.push(asCandidate(step));
+
+        return;
+      }
+
+      if (typeof step.value === 'object' && step.value !== null) {
+        if (visited.has(step.value)) {
+          return;
+        }
+
+        visited.add(step.value);
+      }
+
+      next.push(step);
+    };
 
     for (const step of frontier) {
       const { value } = step;
@@ -197,15 +245,8 @@ export const valuesAtPath = (
       // A numeric segment INDEXES an array rather than flattening it, so
       // `tags.0` names one element.
       if (index !== null && Array.isArray(value)) {
-        if (index < safeLength(value) && hasOwn(value, key)) {
-          const read = safeRead(value, index);
-
-          next.push({
-            path: [...step.path, index],
-            seen: descend(step, value),
-            value: read.ok ? read.value : undefined,
-            ...(read.ok ? {} : { readError: read.error }),
-          });
+        if (hasOwn(value, String(index))) {
+          push(stepFrom(step.path, index, safeRead(value, index)));
         }
 
         continue;
@@ -214,26 +255,25 @@ export const valuesAtPath = (
       const holders: Step[] = Array.isArray(value) ? explode(step) : [step];
 
       for (const holder of holders) {
+        if ('readError' in holder) {
+          failed.push(asCandidate(holder));
+
+          continue;
+        }
+
         if (!isPlainObject(holder.value)) {
           continue;
         }
 
-        // Refuse to re-enter an object already on this branch. Without it a
-        // self-referential array doubles the frontier per segment.
-        if (holder.seen.has(holder.value)) {
-          continue;
-        }
-
-        const read = hasOwn(holder.value, key)
-          ? safeRead(holder.value, key)
-          : ({ ok: true, value: undefined } as ReadResult);
-
-        next.push({
-          path: [...holder.path, key],
-          seen: descend(holder, holder.value),
-          value: read.ok ? read.value : undefined,
-          ...(read.ok ? {} : { readError: read.error }),
-        });
+        push(
+          stepFrom(
+            holder.path,
+            key,
+            hasOwn(holder.value, key)
+              ? safeRead(holder.value, key)
+              : { ok: true, value: undefined },
+          ),
+        );
       }
     }
 
@@ -241,11 +281,14 @@ export const valuesAtPath = (
   }
 
   // Flatten a terminal array so `tags:red` sees each element.
-  return frontier.flatMap((step): Candidate[] =>
-    Array.isArray(step.value)
-      ? explode(step).map((leaf) => asCandidate(leaf))
-      : [asCandidate(step)],
-  );
+  return [
+    ...failed,
+    ...frontier.flatMap((step): Candidate[] =>
+      Array.isArray(step.value)
+        ? explode(step).map((leaf) => asCandidate(leaf))
+        : [asCandidate(step)],
+    ),
+  ];
 };
 
 /**
@@ -253,6 +296,10 @@ export const valuesAtPath = (
  *
  * With `matchKeys`, object keys are emitted as candidates too, which is what
  * lets a bare term find a record by the NAME of a field rather than its value.
+ *
+ * Each object is visited once, so a value reachable by several paths is reported
+ * at the FIRST path that reaches it — see the module header for why that beats
+ * both the alternatives.
  */
 export const allLeafValues = (
   item: unknown,
@@ -261,21 +308,11 @@ export const allLeafValues = (
   const found: Candidate[] = [];
 
   /*
-   * Two things here are chosen to keep the walk LINEAR in the size of the
-   * record, because the first version of this fix was linear in neither and a
-   * 60,000-level record took thirty seconds — a crash traded for a hang, which
-   * is no better.
-   *
-   * 1. ONE mutable ancestor set with explicit exit markers, rather than a fresh
-   *    copy per branch. Copying gave the right per-branch answer at O(depth) per
-   *    node, so O(depth^2) overall. The set holds exactly the ancestors of the
-   *    node being visited: an object is added when entered and removed when its
-   *    subtree is finished, which is the same "is it on MY branch" question a
-   *    copy answered, at O(1).
-   *
-   * 2. Paths as a LINKED LIST, materialised only for values actually emitted.
-   *    `[...path, key]` per node is also O(depth) per node; a deep record has
-   *    one leaf at the bottom and no need for the 59,999 intermediate arrays.
+   * Paths as a LINKED LIST, materialised only for values actually emitted.
+   * Building `[...path, key]` per node is O(depth) per node and therefore
+   * quadratic overall; a 60,000-level record took thirty seconds, which is a
+   * crash traded for a hang. A deep record has one leaf at the bottom and no use
+   * for the 59,999 intermediate arrays.
    */
   interface Trail {
     readonly parent: Trail | null;
@@ -292,17 +329,14 @@ export const allLeafValues = (
     return segments.reverse();
   };
 
-  type Frame =
-    | {
-        readonly kind: 'visit';
-        readonly trail: Trail | null;
-        readonly value: unknown;
-        readonly readError?: unknown;
-      }
-    | { readonly kind: 'leave'; readonly value: object };
+  interface Frame {
+    readonly trail: Trail | null;
+    readonly value: unknown;
+    readonly readError?: unknown;
+  }
 
-  const stack: Frame[] = [{ kind: 'visit', trail: null, value: item }];
-  const ancestors = new Set<object>();
+  const stack: Frame[] = [{ trail: null, value: item }];
+  const visited = new Set<object>();
 
   while (stack.length > 0) {
     const frame = stack.pop();
@@ -311,33 +345,22 @@ export const allLeafValues = (
       break;
     }
 
-    if (frame.kind === 'leave') {
-      ancestors.delete(frame.value);
-      continue;
-    }
-
     const { trail, value } = frame;
+    const isContainer =
+      !('readError' in frame) && (Array.isArray(value) || isPlainObject(value));
 
-    if (Array.isArray(value) || isPlainObject(value)) {
-      // A cycle: this object is an ancestor of itself. Stop, rather than walk
-      // forever. An object reachable by two SEPARATE paths is not a cycle and is
-      // still visited both times, because both are real places it lives.
-      if (ancestors.has(value)) {
+    if (isContainer) {
+      const container = value as object;
+
+      if (visited.has(container)) {
         continue;
       }
 
-      ancestors.add(value);
-      // Popped only after everything below it, which is what makes the set hold
-      // ancestors rather than everything already seen.
-      stack.push({ kind: 'leave', value });
+      visited.add(container);
 
-      const keys = Array.isArray(value)
-        ? Array.from({ length: safeLength(value) }, (_, index) => index).filter(
-            // A hole. Array.prototype.entries() yields [i, undefined] for these
-            // rather than skipping them, so the check is explicit.
-            (index) => hasOwn(value, String(index)),
-          )
-        : safeKeys(value);
+      const keys: (string | number)[] = Array.isArray(container)
+        ? ownIndices(container)
+        : safeKeys(container);
 
       // Reversed so the stack yields children in source order.
       for (let index = keys.length - 1; index >= 0; index -= 1) {
@@ -347,19 +370,20 @@ export const allLeafValues = (
           continue;
         }
 
-        const read = safeRead(value, key);
+        const read = safeRead(container, key);
 
         stack.push({
-          kind: 'visit',
           trail: { key, parent: trail },
           value: read.ok ? read.value : undefined,
           ...(read.ok ? {} : { readError: read.error }),
         });
       }
 
-      if (matchKeys && !Array.isArray(value)) {
+      if (matchKeys && !Array.isArray(container)) {
+        const base = materialise(trail);
+
         for (const key of keys) {
-          found.push([[...materialise(trail), key], key, true]);
+          found.push([[...base, key], key, true]);
         }
       }
 

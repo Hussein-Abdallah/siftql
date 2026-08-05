@@ -17,10 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 18 is EOL but is the floor package.json claims in "engines", so it is
-        # tested to keep that claim honest. 22 is maintenance LTS, 24 is active
-        # LTS. 20 is omitted: EOL as of April 2026 and covered either side.
-        node: [18, 22, 24]
+        # 18 and 20 are both EOL, but 18 is the floor package.json declares in
+        # "engines" and an untested compatibility claim is not a claim. 22 is
+        # maintenance LTS; 24 is active LTS and the development version.
+        # The four jobs run in parallel, so breadth costs wall-clock nothing.
+        node: [18, 20, 22, 24]
     steps:
       - uses: actions/checkout@v5
 

@@ -26,12 +26,20 @@
  *
  * I4. ROUND-TRIP LAW.
  *       deepEqualIgnoring('location', parse(serialize(parse(q))), parse(q))
- *     for every `q` the parser accepts. `serialize()` normalises exactly four
- *     things and nothing else: whitespace runs, redundant escapes, quote style,
- *     and the bracket on an unbounded range end. Each provably carries no
- *     AST-visible information — quote style included, since `'` and `"` are
- *     synonyms and the AST records only THAT a value was quoted, never with
- *     which character.
+ *     for every `q` the parser accepts. `serialize()` normalises exactly five
+ *     things and nothing else:
+ *
+ *       - whitespace runs
+ *       - redundant escapes
+ *       - quote style (`'` and `"` are synonyms; the AST records only THAT a
+ *         value was quoted, never with which character)
+ *       - the bracket on an unbounded range end
+ *       - a space after a `-` that precedes a digit, so `UnaryOperator{-, 3}`
+ *         cannot be re-read as the number minus three
+ *
+ *     Each provably carries no AST-visible information. Runs of `*` are NOT in
+ *     this list: they are collapsed by the PARSER, so `a**b` and `a*b` are the
+ *     same tree before serialize is reached.
  */
 
 /* ------------------------------------------------------------------------- *
@@ -893,8 +901,14 @@ export const OPERATOR_PRECEDENCE: Readonly<Record<string, number>> =
  * ------------------------------------------------------------------------- */
 
 export interface AstBuilders {
-  /** Bare term. Reserved characters are escaped on serialize, never reinterpreted. */
-  readonly term: (value: string) => BareTextLiteral;
+  /**
+   * Bare term. Reserved characters are escaped on serialize, never
+   * reinterpreted.
+   *
+   * Returns a QUOTED literal for the empty string, which has no bare spelling —
+   * so what you get back and what `parse(serialize(...))` returns agree.
+   */
+  readonly term: (value: string) => TextLiteral;
   readonly quoted: (value: string) => QuotedTextLiteral;
   readonly boolean: (value: boolean) => BooleanLiteral;
   readonly null: () => NullLiteral;
@@ -906,7 +920,7 @@ export interface AstBuilders {
   readonly wildcard: (
     pattern: string,
     quoted?: boolean,
-  ) => WildcardExpression | BareTextLiteral;
+  ) => WildcardExpression | TextLiteral;
   readonly regex: (
     pattern: string,
     flags?: readonly RegexFlag[],

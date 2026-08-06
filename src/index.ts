@@ -9,7 +9,12 @@
 export const VERSION = '0.1.0';
 
 export { parse, type ParseOptions } from './parser/parser.js';
-export { MAX_AST_DEPTH, MAX_CLAUSES, MAX_DEPTH } from './limits.js';
+export {
+  MAX_AST_DEPTH,
+  MAX_AST_NODES,
+  MAX_CLAUSES,
+  MAX_DEPTH,
+} from './limits.js';
 export { serialize } from './serialize.js';
 export { builders } from './builders.js';
 export {

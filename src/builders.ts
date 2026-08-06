@@ -35,7 +35,6 @@ import { scanPattern } from './parser/pattern.js';
 import {
   SYNTHETIC_LOCATION as at,
   type AstBuilders,
-  type BareTextLiteral,
   type BooleanLiteral,
   type EmptyExpression,
   type Expression,
@@ -60,13 +59,25 @@ import {
   type WildcardExpression,
 } from './types.js';
 
-const term = (value: string): BareTextLiteral => ({
-  literal: 'text',
-  location: at,
-  quoted: false,
-  type: 'LiteralExpression',
-  value,
-});
+/**
+ * A bare term — except for the empty string, which has no bare spelling.
+ *
+ * `term('')` cannot produce a node that round-trips: an unquoted empty term is
+ * not writable, so `serialize` must emit `""`, and that re-parses as a QUOTED
+ * literal. Returning the quoted node directly means what the builder hands back
+ * and what `parse(serialize(...))` returns are the same thing, which is the
+ * property the builders exist to provide.
+ */
+const term = (value: string): TextLiteral =>
+  value.length === 0
+    ? quoted('')
+    : {
+        literal: 'text',
+        location: at,
+        quoted: false,
+        type: 'LiteralExpression',
+        value,
+      };
 
 const quoted = (value: string): QuotedTextLiteral => ({
   literal: 'text',
@@ -264,13 +275,11 @@ export const builders: AstBuilders = Object.freeze({
   wildcard: (
     pattern: string,
     isQuoted = false,
-  ): BareTextLiteral | WildcardExpression => {
+  ): TextLiteral | WildcardExpression => {
     const scanned = scanPattern(pattern, 0);
 
     if (scanned.kind === 'text') {
-      return isQuoted
-        ? (quoted(scanned.value) as unknown as BareTextLiteral)
-        : term(scanned.value);
+      return isQuoted ? quoted(scanned.value) : term(scanned.value);
     }
 
     return {

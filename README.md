@@ -149,8 +149,9 @@ date:[2020-01-01 TO *]                # half-open temporal
 
 ### Escaping
 
-A backslash protects the next character. Space, `( ) [ ] { } " ' : / ^ ~ * ? < > =`
-and a leading `-` or `+` are structural; everything else is ordinary.
+A backslash protects the next character, and is itself structural. Space,
+`\ ( ) [ ] { } " ' : / ^ ~ * ? < > =` and a leading `-` or `+` are structural;
+everything else is ordinary.
 
 ```rb
 status:in\ progress     # an escaped space, instead of quoting
@@ -446,6 +447,15 @@ refused with a located error and a rewrite hint.
 arbitrary backtracking regex is safe in synchronous JavaScript: there is no
 timeout, no interruption, and no way to bound the engine's work once `test()` is
 running. A pattern that passes this screen can still be slow.
+
+> **Known limitation, being replaced.** The current screen is a structural
+> heuristic and it is bypassable: bounding the outer quantifier
+> (`/^(a+){1,99}$/`) or adding a redundant group (`/^((a|a))*$/`) gets past it,
+> and it refuses some patterns that are provably fast. It is being replaced with
+> a linear-time matcher, which removes the possibility of catastrophic
+> backtracking rather than trying to detect it. Until then, treat a regex from an
+> untrusted author as unscreened and set `regexGuard: false` only where the
+> author is trusted anyway.
 
 What makes backtracking exponential is an **unbounded** repetition over
 something that can match the same input more than one way. The screen refuses

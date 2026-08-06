@@ -1,9 +1,9 @@
 /**
  * The structural limits, in one place because they have to agree.
  *
- * Two of these bound what `parse()` will accept. The third bounds what
- * `serialize()` and the evaluator will accept, and it is DERIVED from the other
- * two rather than chosen independently — that derivation is the point. An AST
+ * Two of these bound what `parse()` will accept. The other two bound what
+ * `serialize()` and the evaluator will accept, and MAX_AST_DEPTH is DERIVED from
+ * the parser's own caps rather than chosen independently — that derivation is the point. An AST
  * limit set below what the parser can emit would make `serialize(parse(q))`
  * throw for a query siftql had just accepted, breaking the round-trip law; set
  * above, and a hand-built tree could still exhaust the call stack, which is what
@@ -59,8 +59,10 @@ export const MAX_AST_DEPTH = MAX_CLAUSES + MAX_DEPTH;
  * quantity that actually hurts.
  *
  * The value is empirical: the largest tree `parse()` can emit — 199 levels of
- * parentheses around a 1,800-clause chain — expands to about 15,000 visits, so
- * 500,000 leaves a factor of thirty for hand-built trees while capping a
+ * parentheses around a 1,800-clause chain — expands to 11,194 visits, and the
+ * true maximum over every paren/clause split is 11,996 (parentheses consume the
+ * clause budget too, so the fully-nested shape is not the largest). 500,000
+ * therefore leaves a factor of forty for hand-built trees, while capping a
  * serialized string at a few megabytes and this check at tens of milliseconds.
  */
 export const MAX_AST_NODES = 500_000;

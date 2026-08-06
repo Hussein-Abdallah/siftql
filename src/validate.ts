@@ -200,6 +200,46 @@ const oneOf =
   (value) =>
     typeof value === 'string' && allowed.includes(value);
 
+/**
+ * A wildcard pattern must be in the ONE representation the contract promises.
+ *
+ * `types.ts` says runs of `*` are collapsed and adjacent literals merged, "so a
+ * given pattern has exactly one representation". `scanPattern` upholds that, so
+ * no parsed tree can violate it — but a hand-built or deserialized one can, and
+ * such a tree does not round-trip: `[Any, Any, Literal('b')]` serializes to
+ * `**b`, which parses back to two segments, not three.
+ *
+ * Refused rather than quietly collapsed on output, because the tree is the thing
+ * that is wrong; printing it as though it were valid would hide a caller's bug
+ * and leave `serialize` disagreeing with the AST it was handed.
+ */
+const isCanonicalPattern: Check = (value) => {
+  if (!safeIsArray(value) || value.length === 0) {
+    return false;
+  }
+
+  let previous: string | null = null;
+
+  for (const segment of value) {
+    const type = peek(segment as object, 'type');
+
+    if (typeof type !== 'string') {
+      return false;
+    }
+
+    if (
+      (type === 'WildcardAny' && previous === 'WildcardAny') ||
+      (type === 'WildcardLiteral' && previous === 'WildcardLiteral')
+    ) {
+      return false;
+    }
+
+    previous = type;
+  }
+
+  return true;
+};
+
 const NODE_SHAPES: Readonly<Record<string, Readonly<Record<string, Check>>>> =
   Object.freeze({
     BooleanOperator: {
@@ -235,7 +275,7 @@ const NODE_SHAPES: Readonly<Record<string, Readonly<Record<string, Check>>>> =
     },
     UnaryOperator: { operand: isObject, operator: oneOf('NOT', '-') },
     WildcardAny: {},
-    WildcardExpression: { pattern: isNonEmptyArray, quoted: isBool },
+    WildcardExpression: { pattern: isCanonicalPattern, quoted: isBool },
     WildcardLiteral: { value: isString },
     WildcardSingle: {},
   });

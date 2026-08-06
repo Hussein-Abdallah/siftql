@@ -19,6 +19,10 @@ Initial release.
 - Hand-written tokenizer and recursive-descent/Pratt parser (`parse`).
 - `serialize` with parse/serialize round-trip guarantees.
 - In-memory engine: `filter`, `test`, `highlight`.
+- Field groups: `status:(open OR closed)` applies one field to a list of values,
+  with dates and times needing no quoting inside them.
+- `builders` for constructing an AST without writing query text, so a value can
+  never inject structure.
 - Extensible value-type registry with built-in `string`, `number`, `boolean`,
   `null`, `regex`, `wildcard`, and `datetime` types.
 - `createEngine({ types })` for per-instance type registries.
@@ -26,7 +30,9 @@ Initial release.
   precision, `dateFormat` declarations, and a pluggable `parseDate` hook.
 - Half-open, inclusive, exclusive, and mixed-inclusivity ranges.
 - Tolerant parsing mode for search-as-you-type.
-- Heuristic guards against catastrophic regex backtracking.
+- A structural screen for catastrophic regex backtracking, plus a pattern-length
+  cap. The screen is a heuristic and is bypassable; see the README for what it
+  does and does not catch.
 - `matchKeys` option to match against object keys.
 
 [unreleased]: https://github.com/Hussein-Abdallah/siftql/compare/v0.1.0...HEAD

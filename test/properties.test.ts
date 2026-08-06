@@ -952,13 +952,19 @@ describe('P5: cost stays bounded', () => {
       return Date.now() - started;
     };
 
-    // Warm, then compare a doubling. Linear is ~2x; quadratic is ~4x.
+    /*
+     * A FOURFOLD size step, not a doubling, so the signal dominates timing
+     * noise: linear predicts ~4x, quadratic ~16x. A doubling put the threshold
+     * within the noise floor and made this flap between runs — which matters
+     * more than usual here, because the assertion is currently expected to fail
+     * and a flake would turn the build red at random.
+     */
     time(1000);
 
     const small = Math.max(time(4000), 1);
-    const large = time(8000);
+    const large = time(16_000);
 
-    expect(large / small).toBeLessThan(3);
+    expect(large / small).toBeLessThan(8);
   });
 
   // DEFERRED, not forgotten: the screen is being replaced with a linear-time

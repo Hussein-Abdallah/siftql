@@ -408,9 +408,14 @@ export interface ValueContext {
  *  equals + compare → `equals` KEPT and required (it is `:=`); `matches` made
  *                     optional and defaulting to it (it is `:`). That single
  *                     distinction is the whole `:` versus `:=` semantics,
- *                     expressed once: `number` omits `matches` so `height:100`
- *                     and `height:=100` agree, `string` implements it so
- *                     `name:foo` and `name:=foo` differ.
+ *                     expressed once. `number` omits `matches`, so `height:100`
+ *                     and `height:=100` agree. `string` implements it — but only
+ *                     to widen an UNFIELDED term to a containment scan, so
+ *                     `name:foo` and `name:=foo` also agree, and it is a bare
+ *                     `foo` that differs. An earlier version of this comment
+ *                     claimed the fielded forms differ; they do not, and the
+ *                     grammar has no unfielded relational operator to compare
+ *                     them with.
  *  compare always   → moved into an OPTIONAL `ordering` sub-object. Its ABSENCE
  *  present            is the sole fact that a type is unordered, which makes
  *                     `name:>="m"` throw structurally: quoted free text resolves
@@ -682,7 +687,13 @@ export type EngineOptions = ParseOptions &
     readonly types?: readonly ValueTypeInput[] | undefined;
     /** Default `'prepend'`: user types outrank built-ins. */
     readonly typeStrategy?: TypeStrategy | undefined;
-    /** Appears in error messages and in {@link TypeEnvironment}. */
+    /**
+     * Names this engine in {@link TypeEnvironment}, so a custom type can tell
+     * which engine it is running inside.
+     *
+     * NOT currently included in any error message, despite an earlier version of
+     * this comment saying so.
+     */
     readonly id?: string | undefined;
   };
 

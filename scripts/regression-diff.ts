@@ -321,8 +321,14 @@ const outcome = (act: () => unknown): string => {
       .map((key) => {
         const own = (error as Record<string, unknown>)[key];
 
+        // Handled before stringify, which returns undefined for both and would
+        // erase the difference between an absent field and a present one.
+        if (own === undefined || typeof own === 'function') {
+          return `${key}=${typeof own}`;
+        }
+
         try {
-          return `${key}=${JSON.stringify(own) ?? String(own)}`;
+          return `${key}=${JSON.stringify(own)}`;
         } catch {
           return `${key}=<unserialisable>`;
         }

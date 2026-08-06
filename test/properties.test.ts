@@ -652,7 +652,21 @@ describe('P3: matching obeys its own algebra', () => {
     expect(violations.slice(0, 5)).toEqual([]);
   });
 
-  it('a highlight implies a match, and its regex terminates', () => {
+  /*
+   * The "and its regex terminates" half of this property was DEAD and is gone.
+   *
+   * It looped `hit.query.exec(...)` behind `if (!hit.query) continue;`, and no
+   * built-in publishes a `query` — a sibling property asserts that none ever
+   * will — so the loop body ran zero times at every sample count while the test
+   * stayed green. That is the vacuity this file exists to catch, in the file
+   * that catches it.
+   *
+   * The contract it meant to cover — a published `Highlight.query` is always
+   * `g`-flagged, so a consumer's `while ((m = q.exec(text)))` terminates —
+   * needs a custom value type that publishes one. It is UNCOVERED today rather
+   * than covered by a loop that does nothing.
+   */
+  it('a highlight implies a match', () => {
     const next = rng(99);
     const violations: string[] = [];
 
@@ -670,25 +684,6 @@ describe('P3: matching obeys its own algebra', () => {
 
       if (hits.length > 0 && !matches(q, item)) {
         violations.push(`highlight without match: ${JSON.stringify(q)}`);
-      }
-
-      for (const hit of hits) {
-        if (!hit.query) {
-          continue;
-        }
-
-        let steps = 0;
-
-        while (hit.query.exec('abcdefghij') !== null) {
-          steps += 1;
-
-          if (steps > 100) {
-            violations.push(
-              `exec loop does not terminate: ${String(hit.query)}`,
-            );
-            break;
-          }
-        }
       }
     }
 
@@ -2382,10 +2377,14 @@ describe('P10: invariants that held only by construction', () => {
     ];
     const violations: string[] = [];
 
+    let attempts = 0;
+
     for (const [name, set] of sets) {
       const before = set.size;
 
       for (const method of ['add', 'delete', 'clear'] as const) {
+        attempts += 1;
+
         try {
           (set as unknown as Record<string, (value?: string) => void>)[
             method
@@ -2401,7 +2400,11 @@ describe('P10: invariants that held only by construction', () => {
       }
     }
 
-    didWork('published sets checked', sets.length, 3);
+    // `sets.length` is a 3-element array literal declared just above, so it is
+    // a compile-time constant: the guard counted the fixture, not the work, and
+    // stayed green with the loop body replaced by `sets.slice(0, 0)`. It counts
+    // mutation attempts actually made.
+    didWork('published set mutations attempted', attempts, 3);
     expect(violations).toEqual([]);
   });
 

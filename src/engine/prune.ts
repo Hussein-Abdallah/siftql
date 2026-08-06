@@ -113,6 +113,10 @@ const prune = (node: Expression): Expression | null => {
   }
 };
 
+/** Does this tree contain any invention at all? Cheap enough to ask first. */
+export const hasRecovery = (node: SiftQLAst): boolean =>
+  findRecovered(node) !== null;
+
 /** Find the first recovered node, for the `throw` policy's error message. */
 const findRecovered = (
   node: SiftQLAst,

@@ -9,7 +9,11 @@ import type {
   ValueTypeRegistry,
 } from '../registry.js';
 import type { SiftQLAst } from '../types.js';
-import { compileExpression, type EvaluationContext } from './evaluate.js';
+import {
+  compileExpression,
+  repairUnresolvableHoles,
+  type EvaluationContext,
+} from './evaluate.js';
 import { applyRecoveryPolicy } from './prune.js';
 import { HighlightSink } from './highlight.js';
 import { createRegistry } from './registry.js';
@@ -171,22 +175,38 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
     query: SiftQLAst | string,
     fn: string,
     overrides: EvaluateOptions,
-  ): SiftQLAst =>
-    applyRecoveryPolicy(
-      // Checked whether it was PARSED or handed to us. The parser's own caps are
-      // supposed to make a parsed tree shallow enough to walk, and a bug that
-      // lets one slip past them must not surface as a raw RangeError from
-      // whichever helper was on the stack — `applyRecoveryPolicy` recurses
-      // before the evaluator's own counter ever runs, so checking only the
-      // hand-built path left that gap open.
-      assertNode(
-        typeof query === 'string'
-          ? parse(query, { tolerant: resolved.tolerant })
-          : query,
-        fn,
-      ),
-      overrides.onRecovered ?? resolved.onRecovered,
+  ): SiftQLAst => {
+    // Checked whether it was PARSED or handed to us. The parser's own caps are
+    // supposed to make a parsed tree shallow enough to walk, and a bug that
+    // lets one slip past them must not surface as a raw RangeError from
+    // whichever helper was on the stack — `applyRecoveryPolicy` recurses
+    // before the evaluator's own counter ever runs, so checking only the
+    // hand-built path left that gap open.
+    const ast = assertNode(
+      typeof query === 'string'
+        ? parse(query, { tolerant: resolved.tolerant })
+        : query,
+      fn,
     );
+    const policy = overrides.onRecovered ?? resolved.onRecovered;
+
+    /*
+     * TOLERANT MODE NEVER THROWS FOR A QUERY. A clause whose operands cannot be
+     * resolved becomes a hole, so the prune below removes it, instead of the
+     * evaluator throwing on something the user is still halfway through typing.
+     *
+     * Only when `tolerant` is on: a caller who did not opt into leniency must
+     * still hear about a broken query. And not under `onRecovered: 'throw'`,
+     * where an incomplete query is refused outright and there is nothing to
+     * repair.
+     */
+    const repaired =
+      resolved.tolerant && policy !== 'throw'
+        ? repairUnresolvableHoles(ast, contextFor(overrides))
+        : ast;
+
+    return applyRecoveryPolicy(repaired, policy);
+  };
 
   return {
     /*

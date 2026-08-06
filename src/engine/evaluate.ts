@@ -580,6 +580,111 @@ const literalOf = (boundary: RangeBoundary): TextLiteral | null =>
   boundary.bounded ? boundary.value : null;
 
 /**
+ * Turn half-typed clauses that cannot be compiled into holes, so `prune` can
+ * remove them.
+ *
+ * Tolerant mode promises that a query being typed does not blow up, and `prune`
+ * delivered that only for `MissingExpression`. A range carries its invention on
+ * itself or its boundaries and fell straight through to the evaluator, where the
+ * INVENTED bound then failed to resolve: the tolerant tokenizer reads a
+ * half-typed `TO` as a literal upper bound, so `n:[1 T` became `n:[1 TO T]` and
+ * threw UNORDERED_TYPE. Typing `d:[2020-01-01 TO 2020-12-31]` one character at a
+ * time threw on 15 of its 28 prefixes — before any record was read, so no data
+ * could avoid it. `parse()` never threw, which is exactly why the property
+ * asserting tolerance at `parse()` stayed green.
+ *
+ * The test is UNRESOLVABLE, not "recovered", and that is deliberately wider
+ * than the defect that prompted it. Being recovered is neither necessary nor
+ * sufficient:
+ *
+ *   - not sufficient — `d:[2020-01-01 TO 2020-12-31`, missing only its `]`, is
+ *     recovered and resolves fine. Dropping it would throw away a working live
+ *     filter at the last keystroke before the user finishes.
+ *   - not necessary — `d:>=2020-` carries no recovery at all. It is a perfectly
+ *     well-formed clause comparing against the string "2020-", which has no
+ *     ordering, so it threw from the middle of an ordinary date being typed.
+ *
+ * So the rule tolerant mode actually needs is the simpler one: A TOLERANT QUERY
+ * NEVER THROWS. What cannot be used is dropped, and a clause that constrains
+ * nothing constrains nothing. Strict mode is unchanged — there, an operand that
+ * cannot resolve is still a hard error, because a caller who did not ask for
+ * leniency should hear about a broken query rather than silently get more rows
+ * than they asked for.
+ *
+ * This is the same lesson `findRecoveredBoundary` learned for the `throw`
+ * policy, which failed OPEN on boundaries for the same reason: the walk stopped
+ * at the node instead of reaching the invention.
+ */
+export const repairUnresolvableHoles = (
+  ast: SiftQLAst,
+  context: EvaluationContext,
+): SiftQLAst => {
+  try {
+    /*
+     * The whole tree first, so a query that compiles — which is nearly all of
+     * them, including most half-typed ones — costs one extra compile and no
+     * walk at all. Only a tree that genuinely fails is taken apart clause by
+     * clause below.
+     */
+    compileExpression(ast, context);
+
+    return ast;
+  } catch (error) {
+    if (!(error instanceof SiftQLOperandError)) {
+      throw error;
+    }
+  }
+
+  const repair = (node: Expression, depth: number): Expression => {
+    if (depth > MAX_AST_DEPTH) {
+      return node;
+    }
+
+    switch (node.type) {
+      case 'LogicalExpression': {
+        const left = repair(node.left, depth + 1);
+        const right = repair(node.right, depth + 1);
+
+        return left === node.left && right === node.right
+          ? node
+          : { ...node, left, right };
+      }
+
+      case 'ParenthesizedExpression': {
+        const inner = repair(node.expression, depth + 1);
+
+        return inner === node.expression ? node : { ...node, expression: inner };
+      }
+
+      case 'UnaryOperator': {
+        const operand = repair(node.operand, depth + 1);
+
+        return operand === node.operand ? node : { ...node, operand };
+      }
+
+      default: {
+        try {
+          // Compilation is pure — it resolves operands and touches no record —
+          // so running it early to ask "would this work?" is safe.
+          compileExpression(node, context);
+
+          return node;
+        } catch (error) {
+          if (error instanceof SiftQLOperandError) {
+            return { location: node.location, type: 'MissingExpression' };
+          }
+
+          throw error;
+        }
+      }
+    }
+  };
+
+  // An empty root has nothing to repair and is not an `Expression`.
+  return ast.type === 'EmptyExpression' ? ast : repair(ast, 0);
+};
+
+/**
  * Compile an AST into a predicate.
  *
  * Operands are resolved ONCE here, not per record, so a filter over 10,000 rows

@@ -770,7 +770,8 @@ export interface Highlight {
    * can state what the built-in types actually match — matching folds case with
    * `toLowerCase`, and a `RegExp` applied by a caller folds under rules that
    * disagree in both directions, so `/s/iu` marks `ſ` where siftql does not
-   * match and `/k/iu` refuses the Kelvin sign where it does.
+   * match, and dropping the `u` to fix that makes `/k/i` refuse the Kelvin
+   * sign where siftql matches it.
    *
    * Every built-in reports spans. `query` remains for custom types.
    *

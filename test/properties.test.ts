@@ -2005,3 +2005,138 @@ describe('P7: a hostile value TYPE cannot escape a non-SiftQLError', () => {
     expect(violations.slice(0, 5)).toEqual([]);
   });
 });
+
+describe('P8: a built tree and a parsed one are the same tree', () => {
+  it('agrees with the parser on every regex flag ordering', () => {
+    /*
+     * `builders.regex` sorted its flags under a comment claiming the parser
+     * sorted them too. It does not — `types.ts` calls the array order-preserving
+     * on purpose — so the sorting was the one thing preventing the equality the
+     * comment promised, and nothing asserted it either way.
+     */
+    const next = rng(4848);
+    const FLAGS = ['d', 'g', 'i', 'm', 's', 'y'] as const;
+    const violations: string[] = [];
+    let compared = 0;
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const chosen: string[] = [];
+
+      for (let at = 0; at < 1 + Math.floor(next() * 4); at += 1) {
+        const flag = pick(next, FLAGS);
+
+        if (!chosen.includes(flag)) {
+          chosen.push(flag);
+        }
+      }
+
+      const source = pick(next, ['a', 'ab', String.raw`\d+`, '[a-z]']);
+      const built = builders.regex(source, chosen as never);
+      const parsed = parse(`/${source}/${chosen.join('')}`) as {
+        flags?: readonly string[];
+      };
+
+      compared += 1;
+
+      if (JSON.stringify(built.flags) !== JSON.stringify(parsed.flags)) {
+        violations.push(
+          `/${source}/${chosen.join('')}: built ${JSON.stringify(built.flags)} vs parsed ${JSON.stringify(parsed.flags)}`,
+        );
+      }
+    }
+
+    didWork('builder/parser flag agreement', compared, RUNS / 2);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+
+  it('serializes to text that is a fixed point', () => {
+    /*
+     * The round-trip law stated from the BUILDER side. I4 is asserted over
+     * queries the parser accepts; a tree assembled by hand never goes through
+     * `parse()` first, so nothing checked that the builders produce trees the
+     * rest of the package agrees with.
+     *
+     * The law here is TEXT idempotence, not node-for-node identity, and the
+     * difference is not a weakening — it is what is actually true. A hand-built
+     * tree can be a shape the parser never emits: `or(a, or(b, c))` is
+     * right-nested where parsing always yields left-nested. `serialize` handles
+     * that correctly by emitting `a OR (b OR c)`, and re-parsing those
+     * parentheses necessarily produces a `ParenthesizedExpression` the built
+     * tree did not contain. The meaning survives, the text survives, one
+     * structural node appears. Demanding deep equality would be demanding that
+     * `serialize` lose the grouping it just added to preserve the shape.
+     */
+    const next = rng(4949);
+    const leaf = (): SiftQLAst => {
+      switch (Math.floor(next() * 6)) {
+        case 0:
+          return builders.term(pick(next, ['ada', 'in progress', '', 'true']));
+        case 1:
+          return builders.quoted(pick(next, ['ada', 'in progress', 'true']));
+        case 2:
+          return builders.boolean(next() < 0.5);
+        case 3:
+          return builders.regex('a+', ['i']);
+        case 4:
+          return builders.wildcard(pick(next, ['a*b', '*x', '?y']));
+        default:
+          return builders.null();
+      }
+    };
+
+    const tree = (depth: number): SiftQLAst => {
+      if (depth === 0) {
+        return leaf();
+      }
+
+      switch (Math.floor(next() * 5)) {
+        case 0:
+          return builders.and(
+            tree(depth - 1) as never,
+            tree(depth - 1) as never,
+          );
+        case 1:
+          return builders.or(
+            tree(depth - 1) as never,
+            tree(depth - 1) as never,
+          );
+        case 2:
+          return builders.not(tree(depth - 1) as never);
+        case 3:
+          return builders.group(tree(depth - 1) as never);
+        default:
+          return builders.tag(
+            builders.field(...(pick(next, [['a'], ['a', 'b'], ['x']]) as [string])),
+            leaf() as never,
+          );
+      }
+    };
+
+    const violations: string[] = [];
+    let checked = 0;
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const built = tree(2);
+      const text = serialize(built);
+
+      checked += 1;
+
+      try {
+        const again = serialize(parse(text));
+
+        if (again !== text) {
+          violations.push(
+            `${JSON.stringify(text)} re-serialized to ${JSON.stringify(again)}`,
+          );
+        }
+      } catch (error) {
+        violations.push(
+          `${JSON.stringify(text)} does not re-parse: ${(error as Error).message.slice(0, 50)}`,
+        );
+      }
+    }
+
+    didWork('builder round-trip', checked, RUNS / 2);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});

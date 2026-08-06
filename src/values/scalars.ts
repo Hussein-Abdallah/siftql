@@ -76,7 +76,7 @@ export const stringType: ValueType<StringOperand, string> = defineValueType<
    *
    *   - `/s/iu` matches `ſ`, which `toLowerCase` leaves alone, so the caller
    *     underlined a character this type does not match.
-   *   - `toLowerCase` maps the Kelvin sign to `k`, which `/k/iu` refuses, so
+   *   - `toLowerCase` maps the Kelvin sign to `k`, which `/k/i` refuses — so
    *     dropping `u` would just trade over-marking for under-marking.
    *
    * Computing the positions here settles it: the search runs on exactly the

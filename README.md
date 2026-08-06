@@ -393,7 +393,7 @@ they are what the built-in types report. That is not only about handing back a
 all. Matching folds case with `toLowerCase`, and a `RegExp` applied by the caller
 folds under its own rules, which disagree in both directions — `/s/iu` matches
 `ſ`, which siftql does not, and `toLowerCase` maps the Kelvin sign `K` to `k`,
-which `/k/iu` refuses. Spans are computed against exactly the string the matcher
+which `/k/i` refuses. Spans are computed against exactly the string the matcher
 compared, so a span is reported if and only if the value really matched there.
 
 Rendering them takes no library:
@@ -478,12 +478,32 @@ that matches nothing; in siftql it is a syntax error, so a `catch` around
 
 User-supplied regexes are matched by a **linear-time automaton**, not by
 JavaScript's `RegExp`. Cost is `O(pattern × input)` for every pattern that
-exists, so there is no such thing as a query that hangs the process.
+exists — no pattern makes it exponential, and there is no catastrophic
+backtracking to trigger.
 
-That matters because `RegExp` backtracks. `/^(a|a)*$/` against 27 characters
-blocks for about eight seconds, a few more make it minutes, and nothing can
-interrupt a running regex in JavaScript. If your search box is open to people you do not
-trust, that is a denial of service with a twelve-character payload.
+**That bounds the shape of the cost, not its size.** Both factors are still
+controlled by whoever types the query, and linear is not free:
+
+```
+pattern of 963 chars (under the 1000 default), value of 4,000 chars:    93 ms per row
+the same pattern against a 20,000-char value:                         480 ms per row
+```
+
+So a hostile query is a slow query rather than a hung process: predictable,
+proportional, and tunable through `maxPatternLength` and the instruction budget —
+where before it was 2ⁿ and unbounded. If your search box is open to people you do
+not trust, lower `maxPatternLength`, cap the size of the fields you search, or
+put the filter behind a worker you can abort. An earlier version of this section
+said "there is no such thing as a query that hangs the process", which is the
+kind of absolute that stops a reader from doing any of that.
+
+That matters because `RegExp` backtracks, and backtracking is exponential.
+`/^(a|a)*$/` against 27 characters blocks for seconds — the measured figure
+swings by 6x between processes on one machine, so the fact to hold onto is that
+it DOUBLES per added character, not any single number — and a few more characters
+make it minutes. Nothing can interrupt a running regex in JavaScript. That is a
+denial of service with a twelve-character payload; the automaton raises the
+payload to roughly a thousand characters and makes the cost proportional.
 
 ```rb
 name:/^(a|a)*$/     # 40,000-character value: 8 ms

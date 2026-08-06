@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { SiftQLSyntaxError } from '../src/errors.js';
 import { parse, type ParseOptions } from '../src/parser/parser.js';
+import { test as matches } from '../src/index.js';
 import type { AstNode, SiftQLAst } from '../src/types.js';
 
 /**
@@ -377,8 +378,31 @@ describe('field groups', () => {
     expect(ast('status:(a OR (b AND c))')).toBe('status:[(OR a [(AND b c)])]');
   });
 
-  it('refuses a nested field, which the AST cannot represent', () => {
-    expect(() => parse('status:(a OR b:c)')).toThrow(SiftQLSyntaxError);
+  it('reads a colon in a group body as part of the value', () => {
+    /*
+     * The grammar has no `Tag` inside a group, so a colon in a body cannot be
+     * starting a field — it is ordinary text, exactly as it is after `:`.
+     *
+     * This test used to assert that `status:(a OR b:c)` THREW. Two attempts at
+     * enforcing that failed for the same reason: `14:30` and `b:c` are the same
+     * shape, so no rule can refuse one without refusing the other. The version
+     * that shipped refused `note:json` and accepted `content-type:json`, making
+     * the diagnostic depend on whether the name contained a hyphen, and refusing
+     * `http://example.com` outright.
+     */
+    const ast = parse('status:(a OR b:c)') as {
+      expression: { expression: unknown };
+    };
+
+    expect(ast.expression).toBeDefined();
+    expect(matches('status:(a OR b:c)', { status: 'b:c' })).toBe(true);
+    expect(matches('status:(a OR b:c)', { status: 'a' })).toBe(true);
+    expect(matches('status:(a OR b:c)', { status: 'zzz' })).toBe(false);
+  });
+
+  it('needs no quoting for a time or a URL in a group body', () => {
+    expect(matches('d:(14:30)', { d: '14:30' })).toBe(true);
+    expect(matches('u:(http://x)', { u: 'http://x' })).toBe(true);
   });
 });
 

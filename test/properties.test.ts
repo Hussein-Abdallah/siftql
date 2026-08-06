@@ -690,6 +690,47 @@ describe('P4: an engine honours its configuration', () => {
     expect('onRecovered' in seen).toBe(false);
   });
 
+  it('never throws in tolerant mode, for any prefix of any query', () => {
+    /*
+     * `parse`'s own docblock promises that in tolerant mode "the result is
+     * always usable". It is not a nice-to-have: a search box parses on every
+     * keystroke, so EVERY PREFIX of a query is an input the package will see,
+     * and a throw there blanks the result list mid-typing.
+     *
+     * Prefixes rather than random strings, because that is what a half-typed
+     * query actually looks like — and it is the generator that found the classes
+     * an enumerated list of cases kept missing.
+     */
+    const next = rng(31_337);
+    const throwing: string[] = [];
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const full = query(next);
+
+      for (let cut = 1; cut <= full.length; cut += 1) {
+        try {
+          parse(full.slice(0, cut), { tolerant: true });
+        } catch (error) {
+          throwing.push(
+            `${JSON.stringify(full.slice(0, cut))}: ${(error as Error).message.slice(0, 50)}`,
+          );
+        }
+      }
+    }
+
+    expect(throwing.slice(0, 5)).toEqual([]);
+  });
+
+  it('keeps every clause a tolerant parse can still see', () => {
+    // Ignoring everything after a stray closer made the result a SUPERSET:
+    // `a:b } zzz` dropped the `zzz` conjunct and matched rows it should not.
+    const engine = createEngine({ tolerant: true });
+    const rows = [{ a: 'b' }, { a: 'b', z: 'zzz' }];
+
+    expect(engine.filter('a:b zzz', rows)).toHaveLength(1);
+    expect(engine.filter('a:b } zzz', rows)).toHaveLength(1);
+  });
+
   it("refuses every recovered tree under onRecovered: 'throw'", () => {
     const strict = createEngine({ onRecovered: 'throw', tolerant: true });
     const next = rng(4242);

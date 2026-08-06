@@ -126,15 +126,31 @@ describe('values inside a field group', () => {
     }
   });
 
-  it('still refuses a nested field, by shape', () => {
-    // A colon is now ordinary in a body, so a nested field arrives as an
-    // ordinary value. It is still refused rather than becoming a silent
-    // non-match — distinguished by shape, since no ISO date-time or 24-hour
-    // time starts with a letter.
-    expect(() => parse('name:(first:ada)')).toThrowError(
-      /may not contain another field/u,
-    );
-    expect(() => parse('name:(first:ada)')).toThrowError(/quote it/u);
+  it('reads a colon in a body as a value, with no exceptions', () => {
+    /*
+     * This test used to assert that `name:(first:ada)` was REFUSED, by a shape
+     * heuristic. The heuristic could not work — `14:30` and `first:ada` are the
+     * same shape — and what shipped refused `note:json` while accepting
+     * `content-type:json`, so whether a mistake was caught depended on the
+     * punctuation in the field name.
+     *
+     * The rule is now the grammar's: a group body is a list of VALUES, so a
+     * colon in one is text. `name:(first:ada)` searches `name` for the literal
+     * `first:ada`, which is what `name:"first:ada"` already meant.
+     */
+    expect(matches('name:(first:ada)', { name: 'first:ada' })).toBe(true);
+    expect(matches('name:(first:ada)', { name: 'ada' })).toBe(false);
+
+    // The same answer for every value, which is what a heuristic could not give.
+    for (const value of ['14:30', 'http://example.com', 'a:b', '2020-06-01']) {
+      expect(matches(`v:(${value})`, { v: value }), value).toBe(true);
+    }
+
+    // A backslash is still an escape inside a group, as everywhere else, so a
+    // Windows path needs one doubled — that is escaping, not the colon rule.
+    expect(
+      matches(String.raw`v:(C:\\Users)`, { v: String.raw`C:\Users` }),
+    ).toBe(true);
   });
 
   it('lets quoting make a field-shaped value into a value', () => {

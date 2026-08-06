@@ -142,21 +142,52 @@ class Parser {
     }
 
     /*
-     * Tolerant mode IGNORES trailing input, marked.
+     * Tolerant mode SKIPS the offending token and keeps going.
      *
      * A stray closer is what you have half way through an edit: `(a:b))` is one
-     * keystroke away from `(a:b)`, and `a:[1 TO 2]]` from a valid range. Throwing
-     * here contradicted the documented promise that a tolerant parse is always
-     * usable, and blanked a result list at exactly the moment the user was still
-     * typing.
+     * keystroke away from `(a:b)`. Discarding everything after it, which is what
+     * this used to do, made the answer a SUPERSET — `a:b } zzz` silently dropped
+     * the `zzz` conjunct and matched rows it should not have, which is worse
+     * than the throw it replaced. The clauses either side are both things the
+     * user typed, so both are kept and joined implicitly.
      */
-    return {
-      ...expression,
-      recovered: {
-        reason: RECOVERY_REASONS.trailingInput,
-        synthetic: false,
-      },
-    };
+    let result = expression;
+
+    while (this.peek().type !== 'eof') {
+      const stray = this.advance();
+
+      if (this.peek().type === 'eof') {
+        break;
+      }
+
+      const right = this.parseAnd();
+
+      result = {
+        left: result,
+        location: span(result.location.start, right.location.end),
+        operator: {
+          location: span(stray.start, stray.end),
+          notation: 'implicit',
+          operator: 'AND',
+          type: 'BooleanOperator',
+        },
+        right,
+        type: 'LogicalExpression',
+      };
+    }
+
+    // Only if nothing deeper already explained itself: a dropped `^2` is a more
+    // useful reason than "there was trailing input", and the spread used to
+    // overwrite it.
+    return result.recovered
+      ? result
+      : {
+          ...result,
+          recovered: {
+            reason: RECOVERY_REASONS.trailingInput,
+            synthetic: false,
+          },
+        };
   }
 
   /* ----------------------------------------------------------------------- *
@@ -245,23 +276,30 @@ class Parser {
    * Precedence climb
    * ----------------------------------------------------------------------- */
 
-  private parseOr(): Expression {
+  /**
+   * Enter one level of nesting, refusing to go past MAX_DEPTH.
+   *
+   * ONE implementation, because there were two and they disagreed. `depth`
+   * counts frames, and the outermost frame is the query itself rather than a
+   * level of nesting — so nesting depth is one less. `parseOr` was corrected to
+   * subtract it and `parseUnary` was not, which left the exported constant
+   * meaning 200 for parentheses and 199 for `NOT`, with the message saying
+   * "more than 200" in both cases.
+   */
+  private enterDepth(at: Token): void {
     this.depth += 1;
 
-    /*
-     * `depth` counts parseOr FRAMES, and the outermost frame is the query itself
-     * rather than a level of nesting — so nesting depth is one less. Comparing the
-     * frame count directly made `MAX_DEPTH = 200` accept only 199 levels while the
-     * message said "more than 200", and the constant is exported, so the
-     * discrepancy was part of the published contract.
-     */
     if (this.depth - 1 > MAX_DEPTH) {
       this.fail(
         `Query is nested too deeply: more than ${String(MAX_DEPTH)} levels`,
-        this.peek(),
+        at,
         ['a flatter query'],
       );
     }
+  }
+
+  private parseOr(): Expression {
+    this.enterDepth(this.peek());
 
     try {
       return this.parseOrInner();
@@ -371,26 +409,24 @@ class Parser {
 
       this.countClause(digits);
 
-      return this.parseLiteralOrWildcard({
-        ...digits,
-        start: sign.start,
-        // Raw source text, sign included: the literal path decodes it.
-        value: `-${digits.value}`,
-      });
+      // Through parseModifiers, like every other primary. Returning directly
+      // left a `^2`/`~2` token in the stream, which the group reader then met
+      // where it expected `)` — so `n:(-3^2)` reported "unclosed field group"
+      // for a group that was closed, instead of the UNSUPPORTED_SYNTAX that
+      // `n:(3^2)` correctly reports.
+      return this.parseModifiers(
+        this.parseLiteralOrWildcard({
+          ...digits,
+          start: sign.start,
+          // Raw source text, sign included: the literal path decodes it.
+          value: `-${digits.value}`,
+        }),
+      );
     }
 
     if (next.type === 'not' || next.type === 'prohibit') {
       this.advance();
-
-      this.depth += 1;
-
-      if (this.depth > MAX_DEPTH) {
-        this.fail(
-          `Query is nested too deeply: more than ${String(MAX_DEPTH)} levels`,
-          next,
-          ['a flatter query'],
-        );
-      }
+      this.enterDepth(next);
 
       const operand = this.parseUnary();
 
@@ -479,35 +515,6 @@ class Parser {
    * produced: the negative fold makes one too, and when it did its own accounting
    * by not doing any, `MAX_CLAUSES` stopped bounding the tree.
    */
-  /**
-   * A group body reads colons as ordinary characters, so a nested field arrives
-   * here as an ordinary value — `d:(a:b)` is the text `a:b`. That is the right
-   * reading for a date-time and the wrong one for a mistake, so the mistake is
-   * still refused, distinguished by SHAPE: a field reference starts with a letter
-   * or underscore, and no ISO date-time or 24-hour time does.
-   *
-   * Without this, `name:(first:ada)` would have become a silent non-match rather
-   * than the clear refusal it used to be — trading one silently wrong answer for
-   * another.
-   */
-  private refuseNestedField(token: Extract<Token, { type: 'literal' }>): void {
-    if (
-      this.fieldGroupDepth === 0 ||
-      token.quote !== 'none' ||
-      !/^[A-Za-z_][A-Za-z0-9_.]*:/u.test(token.value)
-    ) {
-      return;
-    }
-
-    const name = token.value.slice(0, token.value.indexOf(':'));
-
-    this.fail(
-      `A field group may not contain another field: "${name}:" is not allowed inside ( ). If this is a value rather than a field, quote it: "${token.value}"`,
-      token,
-      ['a value'],
-    );
-  }
-
   private countClause(at: Token): void {
     this.clauses += 1;
 
@@ -528,13 +535,10 @@ class Parser {
     switch (next.type) {
       case 'field':
         return this.parseTag();
-      case 'literal': {
-        const token = this.advance() as Extract<Token, { type: 'literal' }>;
-
-        this.refuseNestedField(token);
-
-        return this.parseLiteralOrWildcard(token);
-      }
+      case 'literal':
+        return this.parseLiteralOrWildcard(
+          this.advance() as Extract<Token, { type: 'literal' }>,
+        );
       case 'lparen':
         return this.parseGroup();
       case 'rangeOpen':
@@ -684,13 +688,10 @@ class Parser {
     const next = this.peek();
 
     switch (next.type) {
-      case 'literal': {
-        const token = this.advance() as Extract<Token, { type: 'literal' }>;
-
-        this.refuseNestedField(token);
-
-        return this.parseLiteralOrWildcard(token);
-      }
+      case 'literal':
+        return this.parseLiteralOrWildcard(
+          this.advance() as Extract<Token, { type: 'literal' }>,
+        );
       case 'lparen':
         return this.parseFieldGroup();
       case 'rangeOpen':
@@ -713,6 +714,16 @@ class Parser {
           ['a value', 'a range', 'a regular expression', '"("'],
         );
     }
+  }
+
+  /** The hole a half-typed relational value leaves behind. */
+  private missingValue(
+    operator: Extract<Token, { type: 'comparison' }>,
+  ): Extract<Expression, { type: 'MissingExpression' }> {
+    return this.missing(operator.end, RECOVERY_REASONS.missingValue) as Extract<
+      Expression,
+      { type: 'MissingExpression' }
+    >;
   }
 
   private parseRelationalValue(
@@ -741,11 +752,18 @@ class Parser {
 
     if (parsed.type !== 'LiteralExpression') {
       // name:>foo*bar and the like: a wildcard is a set, not a point.
-      return this.fail(
-        `"${operator.operator}" compares against a single value`,
-        next,
-        ['a value'],
-      );
+      //
+      // Half-typed in tolerant mode this is `n:>a` on its way to `n:>abc`, so it
+      // becomes a hole rather than a throw — the generator found five spellings
+      // of this one branch (`n:<?`, `n:=a*`, `n:>=a*`, …) that an enumerated
+      // list of cases had missed.
+      return this.tolerant
+        ? this.missingValue(operator)
+        : this.fail(
+            `"${operator.operator}" compares against a single value`,
+            next,
+            ['a value'],
+          );
     }
 
     /*
@@ -757,11 +775,13 @@ class Parser {
      * syntax error, because there is no ordering to appeal to.
      */
     if (parsed.literal !== 'text' && operator.operator !== ':=') {
-      return this.fail(
-        `"${operator.operator}" compares against a single text or numeric value`,
-        next,
-        ['a value'],
-      );
+      return this.tolerant
+        ? this.missingValue(operator)
+        : this.fail(
+            `"${operator.operator}" compares against a single text or numeric value`,
+            next,
+            ['a value'],
+          );
     }
 
     return parsed;

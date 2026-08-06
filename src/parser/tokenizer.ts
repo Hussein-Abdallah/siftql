@@ -78,6 +78,19 @@ const VALUE_TERMINATORS = new Set(['(', ')', ']', '}', '"', "'", '^', '~']);
  * both worked. The tokenizer's whole reason for having modes is that a date-time
  * needs no quoting, and this was the one position where that silently failed.
  *
+ * SO A COLON IN A BODY IS ALWAYS PART OF A VALUE, with no exception. An earlier
+ * attempt kept a heuristic in the parser to catch `name:(first:ada)` — a nested
+ * field, which the grammar cannot express — by testing whether the text before
+ * the colon looked like a field name. It could not work: `14:30` and `a:b` are
+ * the same shape, so any rule that refuses one refuses the other. What shipped
+ * refused `note:json` and accepted `content-type:json`, making the diagnostic
+ * depend on whether the name happened to contain a hyphen, and refusing
+ * `http://example.com` outright.
+ *
+ * `name:(first:ada)` is therefore a search for the literal text `first:ada`.
+ * That is what the grammar says, it is what `name:"first:ada"` already meant,
+ * and it is the same answer for every value — which a heuristic could never be.
+ *
  * `[` and `{` ARE terminators here, unlike in a plain value, so a range still
  * works inside a group: `n:([1 TO 9] OR 20)`.
  */
@@ -526,13 +539,32 @@ export class Tokenizer {
      * folded segment, for the same reason.
      */
     if (this.peek() === '.') {
-      // Hand the already-read segment to the bare-term reader as a PREFIX, so the
-      // rest of the path — including any further quoted segments — goes through
-      // exactly one implementation.
-      return this.readBareTerm(
+      /*
+       * MAYBE a dotted path — `'full name'.first:x` — and maybe not.
+       *
+       * The delegation below was unconditional, which was wrong: it fired on
+       * `"foo bar".baz`, where no colon ever arrives, and turned two clauses
+       * into a single BARE literal whose value contained a space. The `quoted`
+       * flag was destroyed with them, and no other code path can produce that
+       * node.
+       *
+       * So it is attempted and BACKTRACKED. Nothing is committed until the
+       * bare-term reader comes back with a `field`, which it only does when it
+       * ends at a colon; `finishField` is the sole place that queues the pending
+       * comparison token or switches mode, so a rejected attempt leaves no trace
+       * to undo beyond the index.
+       */
+      const resume = this.index;
+      const attempt = this.readBareTerm(
         start,
         value.replace(/[\\.]/gu, (character) => `\\${character}`),
       );
+
+      if (attempt.type === 'field') {
+        return attempt;
+      }
+
+      this.index = resume;
     }
 
     return recovered === true

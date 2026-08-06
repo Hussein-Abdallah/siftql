@@ -1442,7 +1442,7 @@ describe('P6: spans say where the match really is', () => {
     for (let run = 0; run < RUNS * 3; run += 1) {
       const value = Array.from(
         { length: 1 + Math.floor(next() * 8) },
-        () => pick(next, [...'abAB sſKkİß']) as string,
+        () => pick(next, Array.from('abAB sſKkİß')),
       ).join('');
       const needle = pick(next, ['a', 'b', 'A', 's', 'k', 'ab']);
       const q = pick(next, [needle, `v:*${needle}*`, `v:${needle}`]);
@@ -1657,7 +1657,7 @@ describe('P6: the round-trip law over raw characters', () => {
      * re-parsed to a tree that was not deep-equal.
      */
     const next = rng(4646);
-    const ALPHABET = [...'ab.:"\\ ()[]{}*?/<>=-!TO019'];
+    const ALPHABET = Array.from('ab.:"\\ ()[]{}*?/<>=-!TO019');
     const strip = (node: SiftQLAst): string =>
       JSON.stringify(node, (key, value: unknown) =>
         key === 'location' ? undefined : value,

@@ -160,10 +160,22 @@ const query = (next: () => number, depth = 3): string => {
 
   const roll = next();
 
-  // A clause that opens with something structural: rare enough not to swamp the
-  // grammar, common enough that every run produces some.
+  /*
+   * A clause that opens with something structural: rare enough not to swamp the
+   * grammar, common enough that every run produces some.
+   *
+   * A RUN, not a single character. The first version emitted one, and the shape
+   * that actually failed was a run — `':'.repeat(5000)` overflowed the stack
+   * because the tolerant skip recursed once per character. One stray exercised
+   * the branch and could never reach the depth that broke it.
+   */
   if (roll < 0.08) {
-    return pick(next, STRAY) + (next() < 0.5 ? pick(next, ATOMS) : '');
+    const run = 1 + Math.floor(next() * 6);
+
+    return (
+      Array.from({ length: run }, () => pick(next, STRAY)).join('') +
+      (next() < 0.5 ? pick(next, ATOMS) : '')
+    );
   }
 
   if (roll < 0.28) {
@@ -2295,9 +2307,33 @@ describe('P10: invariants that held only by construction', () => {
       { 'content-type': 'json', name: 'in progress' },
     ];
 
-    for (let run = 0; run < RUNS * 2; run += 1) {
-      const q = query(next);
-      const item = run % 2 === 0 ? pick(next, LIKELY) : record(next);
+    /*
+     * One query per built-in that CAN report a position, so the claim "no
+     * built-in publishes a RegExp" is exercised against each of them rather
+     * than against whatever the generator happens to produce. The generator got
+     * more hostile when it learned to emit stray runs, and fewer of its queries
+     * match anything — which the vacuity guard caught, correctly.
+     */
+    const PER_TYPE = [
+      'ada',
+      'name:ada',
+      'name::ada',
+      'name:*ad*',
+      'name:/a.a/',
+      'n:3',
+      'n:>1',
+      'n:[1 TO 9]',
+      'd:2020-06-01',
+      'd:>=2020-01-01',
+      'tags:red',
+      'missing:null',
+    ];
+
+    for (let run = 0; run < RUNS * 2 + PER_TYPE.length; run += 1) {
+      const fixed = PER_TYPE[run];
+      const q = fixed ?? query(next);
+      const item =
+        fixed !== undefined || run % 2 === 0 ? pick(next, LIKELY) : record(next);
 
       let hits;
 
@@ -2320,7 +2356,15 @@ describe('P10: invariants that held only by construction', () => {
       }
     }
 
-    didWork('highlights inspected', inspected, RUNS / 10);
+    /*
+     * Floored on the FIXED queries, not on a fraction of RUNS. The generated
+     * half's hit rate is about 0.08 and drifts whenever the generator changes —
+     * flooring on it made this fail at RUNS=3000 while passing at 300, which is
+     * a coin flip dressed as a guard. `PER_TYPE` always produces highlights, so
+     * this still fails the moment the loop body stops running, which is the
+     * only thing it is here to detect.
+     */
+    didWork('highlights inspected', inspected, PER_TYPE.length);
     expect(violations.slice(0, 5)).toEqual([]);
   });
 

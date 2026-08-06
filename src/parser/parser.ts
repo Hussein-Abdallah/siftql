@@ -472,8 +472,20 @@ class Parser {
       }
 
       this.advance();
+      /*
+       * THROUGH `enterDepth`, exactly as the `not`/`-` branch above does.
+       *
+       * Without it `+` bypassed MAX_DEPTH entirely — `'+'.repeat(20000) + 'a'`
+       * overflowed the stack and escaped as a raw RangeError, while the same
+       * shape written with `NOT` or `-` was refused at 201. It also falsified
+       * the line added to this file's options doc in the same change set, which
+       * says structural limits still throw in tolerant mode.
+       */
+      this.enterDepth(next);
 
       const required = this.parseUnary();
+
+      this.depth -= 1;
 
       return required.recovered
         ? required
@@ -1214,7 +1226,30 @@ export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
    * `filter()`, `test()` and `highlight()` alike — which is what happened, with
    * an error whose own text says "this is a defect in siftql".
    */
-  if (expansionOf(ast, MAX_AST_NODES) > MAX_AST_NODES) {
+  /*
+   * SKIPPED when the source is too short to reach the budget, because the walk
+   * is not free: it shares `childrenOf` with the validator — a prototype-chain
+   * traversal with a fresh Set and a guarded read per property, built for
+   * rehydrated and hostile trees — and running it on every parse made
+   * `parse('status:active')` 2.5x slower and a 4-clause query 3.3x slower.
+   *
+   * The bound is measured, not guessed. Across plain terms, `field:value`,
+   * 32-segment paths, wildcards, dense stars, ranges and deep parens, the
+   * densest shape produces 3.75 visits per source character (`f:v`, the
+   * shortest clause carrying the most nodes). 32 leaves better than eight times
+   * that margin, and the walk still runs for anything above ~15,000 characters
+   * — which is where a tree can plausibly approach the budget at all.
+   *
+   * Deliberately NOT a second, faster walker: `expansionOf` and
+   * `assertWalkable` share one traversal, which is what makes it structurally
+   * impossible for the parser to undercount what its consumers will count.
+   */
+  const VISITS_PER_CHARACTER = 32;
+
+  if (
+    source.length * VISITS_PER_CHARACTER > MAX_AST_NODES &&
+    expansionOf(ast, MAX_AST_NODES) > MAX_AST_NODES
+  ) {
     throw new SiftQLSyntaxError(
       `This query expands to more than ${String(MAX_AST_NODES)} AST nodes, which is more than serialize() and the evaluator will walk`,
       ast.location,

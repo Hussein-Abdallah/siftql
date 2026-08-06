@@ -125,18 +125,6 @@ export type QuoteChar = '"' | "'";
 export type RegexFlag = 'd' | 'g' | 'i' | 'm' | 's' | 'u' | 'v' | 'y';
 
 /**
- * Bare words the parser turns into a TYPED literal rather than text. A string
- * carrying one of these cannot be written bare either: `true` would come back
- * as the boolean, not the four-character word.
- */
-export const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
-  'true',
-  'false',
-  'null',
-]);
-
-/** Words that can never be a bare term: they are grammar keywords. */
-/**
  * A set nothing can add to, which `Object.freeze` does NOT give you.
  *
  * `Object.freeze(new Set(…))` freezes the object's own properties and leaves
@@ -160,6 +148,18 @@ const sealedSet = (members: readonly string[]): ReadonlySet<string> => {
   );
 };
 
+/**
+ * Bare words the parser turns into a TYPED literal rather than text. A string
+ * carrying one of these cannot be written bare either: `true` would come back
+ * as the boolean, not the four-character word.
+ */
+export const KEYWORD_LITERALS: ReadonlySet<string> = sealedSet([
+  'true',
+  'false',
+  'null',
+]);
+
+/** Words that can never be a bare term: they are grammar keywords. */
 export const RESERVED_WORDS: ReadonlySet<string> = sealedSet([
   'AND',
   'OR',

@@ -36,14 +36,16 @@ const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
  *
  * Note the law is about the AST, not the text. `serialize` is a CANONICALISER,
  * not an echo: it normalises exactly five things — the same five `types.ts`
- * lists, which this said were four — each of which provably
- * carries no AST-visible information.
+ * lists — each of which provably carries no AST-visible information.
  *
  *   1. Whitespace runs between tokens.
  *   2. Redundant escapes — `\a` inside quotes means `a`, and prints as `a`.
  *   3. Quote style — `'x'` and `"x"` build identical nodes, and `"` is emitted.
  *   4. The bracket on an UNBOUNDED range end, since `{* TO 2]` and `[* TO 2]`
  *      are deep-equal (an unbounded boundary has no inclusivity at all).
+ *   5. The space after a sigil that precedes a digit: `-3` prints as `- 3`, so
+ *      the `-` cannot be re-read as negation. (A previous fix corrected the
+ *      count in the sentence above and left this item out of the list.)
  *
  * Everything else survives, including bare-vs-quoted, which is deliberately NOT
  * normalised because `quoted` is load-bearing: it decides fuzzy-vs-proximity
@@ -501,8 +503,20 @@ const wrap = (
 /**
  * Serialize an AST back to a query string.
  *
- * The result re-parses to a deep-equal AST (locations aside) for every tree
- * `parse()` produces. It is NOT guaranteed to for a hand-built tree using the
+ * The result re-parses to a deep-equal AST (locations aside) for every tree the
+ * STRICT parser produces. It does NOT for tolerant trees, and this used to say
+ * "every tree parse() produces" without that word: measured over 59,888
+ * tolerant trees, 63% differ after a round trip, because `recovered` markers
+ * have no spelling in the query text.
+ *
+ * One of those cases loses more than a marker. A tolerant range boundary keeps
+ * the text it could not interpret — `n:[x* TO z]` records the lower bound as
+ * the literal `x*` with `recovered: 'missing-value'` — and serializing prints
+ * `n:[x\* TO z]`, which the STRICT parser accepts as an ordinary ordered
+ * comparison against the literal `x*`. A boundary tolerant mode explicitly
+ * declined to interpret becomes a confident one. Pass the TREE to
+ * `test`/`filter`/`highlight` rather than round-tripping it through text; they
+ * all accept an AST, and the recovery policy is applied to it directly. It is NOT guaranteed to for a hand-built tree using the
  * forward-compatibility nodes: `BoostModifier` and `RequiredModifier` are
  * printed as `a^2` and `+a`, which the v0.1 parser is required to reject. See
  * the note on `MissingExpression` above, which states the same limit honestly.

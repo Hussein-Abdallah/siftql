@@ -65,7 +65,7 @@ export const MAX_FIELD_SEGMENTS = 32;
  * is counted, so it bounds meaningful alternation points rather than typing.
  *
  * 512 rather than something tighter because the README demonstrates 200 stars
- * against a 5,000-character value — `'*a'.repeat(200)` is 402 segments — and a
+ * against a 5,000-character value — `'*a'.repeat(200)` is 400 segments — and a
  * cap that quietly retired a documented capability would be the narrowing
  * getting ahead of itself.
  *
@@ -103,9 +103,17 @@ export const MAX_WILDCARD_SEGMENTS = 512;
  * split is 11,996 (parentheses consume the clause budget too, so the fully
  * nested shape is not the largest).
  *
- * The real ceiling is a maximal query of maximal clauses — MAX_CLAUSES tags,
- * each with a MAX_FIELD_SEGMENTS path and a MAX_WILDCARD_SEGMENTS value. That
- * is measured, not estimated, by `test/limits.test.ts`, and this constant is
- * asserted there to sit above it with headroom.
+ * THIS CONSTANT DOES NOT SIT ABOVE THE MAXIMAL QUERY, and an earlier version of
+ * this comment claimed it did — citing a `test/limits.test.ts` that has never
+ * existed. A maximal shape (MAX_CLAUSES tags, each with a MAX_FIELD_SEGMENTS
+ * path and a MAX_WILDCARD_SEGMENTS value) is refused at 453 clauses and 499,202
+ * visits, so the budget is roughly a quarter of what the per-clause caps alone
+ * would permit.
+ *
+ * That is not a defect, but it is the whole reason `parse()` checks this at
+ * runtime rather than trusting the caps: what expands is the PRODUCT of clause
+ * count and segments per clause, and no per-clause cap can bound a product.
+ * The invariant that matters — whatever `parse()` accepts, every consumer
+ * accepts — is asserted by P9 in `test/properties.test.ts`.
  */
 export const MAX_AST_NODES = 500_000;

@@ -219,6 +219,8 @@ const chunksToSegments = (
 };
 
 const RECOVERED_QUOTE = 'unterminated-quote';
+/** A stray structural character was discarded in tolerant mode. */
+const STRAY_SKIPPED = 'trailing-input';
 const RECOVERED_REGEX = 'unterminated-regex';
 
 /**
@@ -600,42 +602,57 @@ export class Tokenizer {
     if (word.length === 0) {
       this.index += 1;
 
-      /*
-       * A STRAY STRUCTURAL CHARACTER — `:` with nothing before it, a lone `}`.
-       *
-       * In tolerant mode it is SKIPPED and the scan continues, because this is
-       * the single most common thing a half-typed query contains and throwing
-       * here defeated the whole mode: a leading `:` accounted for roughly half
-       * of the inputs an audit found still escaping tolerance. The parser's own
-       * stray-token recovery already handles the structural characters that
-       * reach IT; this is the same rule one layer down.
-       */
-      if (this.tolerant && this.index < this.source.length) {
-        return this.readBareTerm(this.index, lead);
+      if (!this.tolerant) {
+        return this.fail(
+          `Unexpected character ${JSON.stringify(this.peek(-1))}`,
+          start,
+          this.index,
+        );
       }
 
       /*
-       * At END OF INPUT there is nothing left to skip TO, so tolerant mode
-       * cannot recurse — a bare `:` did exactly that and produced a RangeError,
-       * turning a syntax error into a stack overflow. An empty literal is the
-       * honest answer: the user typed a separator and nothing else.
+       * A STRAY STRUCTURAL CHARACTER — `:` with nothing before it, a lone `}`.
+       * Tolerant mode SKIPS it, because it is the single most common thing a
+       * half-typed query contains.
+       *
+       * SKIPPED IN A LOOP, NOT BY RECURSING. Recursing consumed one stack frame
+       * per character, so `':'.repeat(5000)` overflowed and escaped `parse()`
+       * as a raw RangeError — worse than the located SiftQLSyntaxError it
+       * replaced, and in the mode whose whole job is to survive untrusted paste.
+       * The end-of-input guard that used to sit here caught only the single-
+       * character case; a RUN was the shape that failed.
        */
-      if (this.tolerant) {
+      while (this.index < this.source.length) {
+        const before = this.index;
+        const next = this.readWord(terminators);
+
+        if (next.length > 0) {
+          chunks.push({ kind: 'raw', start: before, text: next });
+          word = next;
+          break;
+        }
+
+        this.index += 1;
+      }
+
+      // Nothing but strays all the way to the end. An empty literal is the
+      // honest answer: the user typed separators and no value.
+      if (word.length === 0) {
         return {
           end: this.index,
           quote: 'none',
-          recovered: 'missing-value',
+          recovered: STRAY_SKIPPED,
           start,
           type: 'literal',
           value: '',
         };
       }
 
-      return this.fail(
-        `Unexpected character ${JSON.stringify(this.peek(-1))}`,
-        start,
-        this.index,
-      );
+      // MARKED, so `onRecovered: 'throw'` can refuse a query whose text was
+      // altered and a UI can grey it out. Skipping silently made `:abc` and
+      // `abc` produce identical trees, with nothing recording the difference —
+      // and the doc line added beside this claimed both were marked.
+      recovered ??= STRAY_SKIPPED;
     }
 
     // Never a field inside a group: the colon was already read as part of `word`.

@@ -383,7 +383,15 @@ class Parser {
      * agrees with.
      */
     if (atom.kind === 'assert') {
-      fail('a quantifier applied to an assertion, which JavaScript rejects');
+      /*
+       * The refusal is right — an assertion body is nullable — but the reason
+       * is only true when the assertion is bare. `(?:^)*` and `(?:\b)*` are
+       * accepted by `RegExp`; `parseGroup` unwraps the non-capturing group
+       * before this runs, so the distinction is gone by the time we look.
+       */
+      fail(
+        'a quantifier applied to an assertion, whose body always matches the empty string',
+      );
     }
 
     /*

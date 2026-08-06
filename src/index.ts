@@ -14,6 +14,8 @@ export {
   MAX_AST_NODES,
   MAX_CLAUSES,
   MAX_DEPTH,
+  MAX_FIELD_SEGMENTS,
+  MAX_WILDCARD_SEGMENTS,
 } from './limits.js';
 export { serialize } from './serialize.js';
 export { builders } from './builders.js';

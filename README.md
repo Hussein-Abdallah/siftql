@@ -311,6 +311,34 @@ key, and posted to a worker.
 | `regexGuard`       | `true`      | refuse regexes the linear matcher cannot take, instead of running them on `RegExp` |
 | `maxPatternLength` | `1000`      | longest accepted regex source                     |
 
+### Limits
+
+A query is refused past any of these, with a located `SiftQLSyntaxError`. They
+exist so that a tree the parser produces is always one the serializer and the
+evaluator can walk — a query that parses and then fails downstream would be the
+worst of both. All are exported.
+
+| Constant                | Value     | What it bounds                                  |
+| ----------------------- | --------- | ----------------------------------------------- |
+| `MAX_CLAUSES`           | `2000`    | clauses in one query                            |
+| `MAX_DEPTH`             | `200`     | nesting depth while parsing                     |
+| `MAX_FIELD_SEGMENTS`    | `32`      | dotted segments in one field path (`a.b.c` = 3) |
+| `MAX_WILDCARD_SEGMENTS` | `512`     | segments in one wildcard pattern                |
+| `MAX_AST_NODES`         | `500000`  | node visits when a tree is expanded             |
+| `MAX_AST_DEPTH`         | `2200`    | depth of a hand-built or deserialized tree      |
+| `maxPatternLength`      | `1000`    | regex source length (an option, not a constant) |
+
+`MAX_AST_NODES` is the one that binds in practice, because what expands is the
+PRODUCT of clause count and segments per clause — per-clause caps alone cannot
+bound a tree. `parse()` checks it directly, so a query is refused where it can
+still be pointed at rather than accepted and then rejected by everything that
+consumes the AST.
+
+Tolerant mode does **not** relax these. It absorbs input that is incomplete or
+malformed; a structural limit is a resource guard, and a search box does not
+reach one by accident.
+
+
 ### Errors: wrong query vs dirty data
 
 These are different failures and are handled differently.

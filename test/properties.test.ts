@@ -1769,3 +1769,214 @@ describe('P6: the walk is linear in record depth for every leaf type', () => {
     expect(violations).toEqual([]);
   });
 });
+
+describe('P7: tolerant mode drops exactly what it cannot use, and no more', () => {
+  it('keeps a resolvable clause when a sibling is unresolvable', () => {
+    /*
+     * The other half of "tolerant never throws", and the half nothing asserted:
+     * a repair that drops too much is worse than one that throws, because it
+     * silently WIDENS the result set. `repairUnresolvableHoles` trial-compiled a
+     * Tag whole, so one bad term inside a field group deleted every sibling with
+     * it — `d:(2020-06-01 OR 2021-02-29)` matched every row, including rows with
+     * no `d` key at all, while the flat form correctly kept the good half.
+     *
+     * `prune` had already learned this exact lesson on its own walk and named
+     * the consequence a false-positive leak. This walk was written without it.
+     */
+    const next = rng(4747);
+    const engine = createEngine({ tolerant: true });
+    const rows = [
+      { d: '2020-06-01', name: 'ada', n: 5 },
+      { d: '2019-01-01', name: 'bob', n: 50 },
+      { unrelated: 1 },
+    ];
+
+    const GOOD = ['name:ada', 'n:>1', 'd:2020-06-01', 'name:*a*'];
+    /*
+     * Every one of these REFUSES in strict mode — verified, not assumed. An
+     * earlier draft of this list included `d:2020-13-01`, which does not refuse:
+     * month 13 is claimed by `string`, so the clause resolves and legitimately
+     * matches nothing. A property whose fixture is wrong reports a defect that
+     * is not there, which wastes exactly as much time as missing one.
+     */
+    const BAD = [
+      'd:2021-02-29',
+      'd:2020-02-30',
+      String.raw`name:/(a+)\1/`,
+      'name:/(?=a)a/',
+      'name:>="m"',
+    ];
+
+    const violations: string[] = [];
+    let compared = 0;
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const good = pick(next, GOOD);
+      const bad = pick(next, BAD);
+      const field = good.split(':')[0] ?? 'name';
+      const bare = bad.slice(bad.indexOf(':') + 1);
+
+      let alone: unknown[];
+
+      try {
+        alone = engine.filter(good, rows);
+      } catch {
+        continue;
+      }
+
+      compared += 1;
+
+      // A dropped clause constrains nothing, so the pair must equal the good
+      // clause alone — under AND, and in either order.
+      for (const q of [`${good} AND ${bad}`, `${bad} AND ${good}`]) {
+        const got = engine.filter(q, rows);
+
+        if (got.length !== alone.length) {
+          violations.push(
+            `${q}: ${String(got.length)} rows, but ${good} alone gives ${String(alone.length)}`,
+          );
+        }
+      }
+
+      // And a field GROUP must agree with the flat form of the same clauses.
+      if (good.startsWith(`${field}:`) && bad.startsWith(`${field}:`)) {
+        const grouped = engine.filter(
+          `${field}:(${good.slice(field.length + 1)} OR ${bare})`,
+          rows,
+        );
+        const flat = engine.filter(`${good} OR ${bad}`, rows);
+
+        if (grouped.length !== flat.length) {
+          violations.push(
+            `group ${field}:(...) gives ${String(grouped.length)} rows where the flat form gives ${String(flat.length)}`,
+          );
+        }
+      }
+    }
+
+    didWork('tolerant over-drop', compared, RUNS / 2);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P7: a hostile value TYPE cannot escape a non-SiftQLError', () => {
+  it('survives a throwing accessor anywhere on the type or on what it returns', () => {
+    /*
+     * P1 covers hostile records, option objects and hand-built ASTs — but not
+     * hostile value TYPES, which is the channel the contract calls out and the
+     * blind spot behind three separate findings: `type.name` read raw in sixteen
+     * places, `type.ordering` read raw on the per-record path, and every field
+     * of a returned result object except `.ok` read outside the guard.
+     */
+    const throwing = (label: string): PropertyDescriptor => ({
+      configurable: true,
+      enumerable: true,
+      get() {
+        throw new Error(`${label} threw`);
+      },
+    });
+
+    const base = (): Record<string, unknown> => ({
+      coerceValue: (value: unknown) =>
+        typeof value === 'string'
+          ? { ok: true, value }
+          : { kind: 'miss', ok: false },
+      equals: () => true,
+      name: 'hostile',
+      ordering: { compare: (a: number, b: number) => a - b },
+      parseOperand: (token: { kind: string; text?: string }) =>
+        token.kind === 'text'
+          ? { ok: true, operand: token.text ?? '' }
+          : { kind: 'declined', ok: false },
+    });
+
+    const MEMBERS = [
+      'name',
+      'parseOperand',
+      'coerceValue',
+      'equals',
+      'matches',
+      'ordering',
+      'highlight',
+      'highlightSpans',
+    ];
+    const RESULT_FIELDS = ['ok', 'operand', 'value', 'kind', 'reason', 'code'];
+    const QUERIES = ['a', 'n:>5', 'n:[1 TO 9]', 'n:x', 'v:*a*', 'v:/a/'];
+
+    const violations: string[] = [];
+    let attempted = 0;
+
+    const check = (type: unknown): void => {
+      for (const q of QUERIES) {
+        for (const act of [
+          () => createEngine({ types: [type] as never }).test(q, { n: 5, v: 'a' }),
+          () =>
+            createEngine({ types: [type] as never }).filter(q, [{ n: 5, v: 'a' }]),
+          () =>
+            createEngine({ types: [type] as never }).highlight(q, {
+              n: 5,
+              v: 'a',
+            }),
+          () => createEngine({ types: [type] as never }).types.describe(),
+        ]) {
+          attempted += 1;
+
+          try {
+            act();
+          } catch (error) {
+            if (!isSiftQLError(error)) {
+              violations.push(
+                `${q}: ${(error as Error).name}: ${(error as Error).message.slice(0, 40)}`,
+              );
+            }
+          }
+        }
+      }
+    };
+
+    // A throwing accessor on each member of the type itself...
+    for (const member of MEMBERS) {
+      const type = base();
+
+      Object.defineProperty(type, member, throwing(member));
+      check(type);
+    }
+
+    // ...on a member that survives its first read and throws later...
+    for (const member of ['name', 'ordering']) {
+      const type = base();
+      let reads = 0;
+
+      Object.defineProperty(type, member, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          reads += 1;
+
+          if (reads > 1) {
+            throw new Error(`${member} threw on read ${String(reads)}`);
+          }
+
+          return member === 'name'
+            ? 'hostile'
+            : { compare: (a: number, b: number) => a - b };
+        },
+      });
+      check(type);
+    }
+
+    // ...and on each field of what the callbacks hand back.
+    for (const field of RESULT_FIELDS) {
+      for (const method of ['parseOperand', 'coerceValue']) {
+        const type = base();
+
+        type[method] = () =>
+          Object.defineProperty({ ok: true }, field, throwing(field));
+        check(type);
+      }
+    }
+
+    didWork('hostile value types', attempted, MEMBERS.length * QUERIES.length);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});

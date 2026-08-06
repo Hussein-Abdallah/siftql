@@ -68,6 +68,38 @@ const describe = (type: AnyValueType, method: string): string => {
   return `${typeof name === 'string' ? name : '<unnamed>'}.${method}()`;
 };
 
+const NAMES = new WeakMap<object, string>();
+
+/**
+ * The type's name, without running consumer code.
+ *
+ * `type.name` is a property of an object the CALLER wrote, so reading it runs
+ * their code — it can be a getter, or a Proxy trap. It was read raw in sixteen
+ * places, including once per registered type per operand, so a throwing `name`
+ * escaped a plain Error from `createEngine()`, `types.describe()` and `test()`.
+ *
+ * The registry validates and remembers the name once, at registration; every
+ * later read is a WeakMap hit and cannot throw. The guarded fallback covers a
+ * type that reaches a helper without having been registered.
+ */
+export const rememberName = (type: object, name: string): void => {
+  NAMES.set(type, name);
+};
+
+export const nameOf = (type: AnyValueType): string => {
+  const known = NAMES.get(type);
+
+  if (known !== undefined) {
+    return known;
+  }
+
+  try {
+    return typeof type.name === 'string' ? type.name : '<unnamed>';
+  } catch {
+    return '<unnamed>';
+  }
+};
+
 const brokenType = (
   type: AnyValueType,
   method: string,
@@ -134,6 +166,43 @@ export const readOrdering = (
   }
 
   return ordering as { compare(a: unknown, b: unknown): number | null };
+};
+
+/**
+ * Copy a callback's result into an object we own, reading each field once.
+ *
+ * `isResult` guards the `.ok` read and explains why — an accessor that throws is
+ * consumer code, and the check written to catch a bad return value must not be
+ * the thing that escapes. That reasoning was never applied to the SIBLING
+ * fields: `operand`, `value`, `kind`, `reason`, `code` and `hint` were all read
+ * raw by the evaluator, so a type returning `{ ok: true, get value() { throw } }`
+ * escaped a plain Error from `test()`.
+ *
+ * Snapshotting here means everything downstream reads OUR object, so there is
+ * exactly one place a hostile accessor can fire and it is inside a try.
+ */
+const snapshot = (
+  result: unknown,
+  type: AnyValueType,
+  method: string,
+  fields: readonly string[],
+): Record<string, unknown> => {
+  const copy: Record<string, unknown> = {};
+
+  try {
+    for (const field of fields) {
+      copy[field] = (result as Record<string, unknown>)[field];
+    }
+  } catch (error) {
+    brokenType(
+      type,
+      method,
+      `returned an object whose "${method}" result has a property that threw when it was read.`,
+      error,
+    );
+  }
+
+  return copy;
 };
 
 /* ------------------------------------------------------------------------- *
@@ -244,7 +313,14 @@ export const callParseOperand = (
     );
   }
 
-  return result as OperandResult<unknown>;
+  return snapshot(result, type, 'parseOperand', [
+    'ok',
+    'operand',
+    'kind',
+    'reason',
+    'code',
+    'hint',
+  ]) as unknown as OperandResult<unknown>;
 };
 
 /* ------------------------------------------------------------------------- *
@@ -306,7 +382,12 @@ export const callCoerceValue = (
     );
   }
 
-  return result as ValueResult<unknown>;
+  return snapshot(result, type, 'coerceValue', [
+    'ok',
+    'value',
+    'kind',
+    'reason',
+  ]) as unknown as ValueResult<unknown>;
 };
 
 /**

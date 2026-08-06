@@ -1,5 +1,5 @@
 import { withoutFailurePolicy } from '../registry.js';
-import { readOrdering, resolveTypeInput } from './consumer.js';
+import { nameOf, readOrdering, rememberName, resolveTypeInput } from './consumer.js';
 import { SiftQLConfigError } from '../errors.js';
 import type {
   AnyValueType,
@@ -38,17 +38,32 @@ const assertUniqueNames = (types: readonly AnyValueType[]): void => {
   const seen = new Set<string>();
 
   for (const type of types) {
-    if (typeof type.name !== 'string' || type.name.length === 0) {
-      throw new SiftQLConfigError('Every value type must have a name');
-    }
+    // Read ONCE, inside a guard, and remembered — every later read of this
+    // type's name anywhere in the package is then a WeakMap hit that cannot run
+    // consumer code. Reading it raw here would defeat the point.
+    let name: unknown;
 
-    if (seen.has(type.name)) {
+    try {
+      name = type.name;
+    } catch (error) {
       throw new SiftQLConfigError(
-        `Duplicate value type name "${type.name}". Names must be unique within an engine; use \`typeStrategy: 'replace'\` to substitute a built-in.`,
+        'Reading a value type\'s name threw. A name must be a plain string.',
+        { cause: error },
       );
     }
 
-    seen.add(type.name);
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new SiftQLConfigError('Every value type must have a name');
+    }
+
+    if (seen.has(name)) {
+      throw new SiftQLConfigError(
+        `Duplicate value type name "${name}". Names must be unique within an engine; use \`typeStrategy: 'replace'\` to substitute a built-in.`,
+      );
+    }
+
+    seen.add(name);
+    rememberName(type, name);
   }
 };
 
@@ -74,7 +89,7 @@ class Registry implements ValueTypeRegistry {
     assertUniqueNames(types);
 
     this.types = Object.freeze([...types]);
-    this.byName = new Map(types.map((type) => [type.name, type]));
+    this.byName = new Map(types.map((type) => [nameOf(type), type]));
     this.options = options;
     this.builtins = builtins;
   }
@@ -86,7 +101,7 @@ class Registry implements ValueTypeRegistry {
   public describe(): readonly TypeDescriptor[] {
     return this.types.map((type) => ({
       builtin: this.builtins.has(type),
-      name: type.name,
+      name: nameOf(type),
       // A type is ordered if and only if it has an `ordering` object. That
       // absence is the single fact behind `name:>="m"` throwing.
       ordered: readOrdering(type) !== undefined,

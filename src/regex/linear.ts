@@ -760,45 +760,7 @@ type Inst =
   | { readonly op: 'split'; x: number; y: number }
   | { readonly op: 'jmp'; to: number }
   | { readonly op: 'assert'; readonly at: 'start' | 'end' | 'word' | 'nonword' }
-  /**
-   * Remember where this iteration of a loop began, and refuse to leave it
-   * having consumed nothing.
-   *
-   * JavaScript's RepeatMatcher fails an iteration that matches the empty string
-   * once `min` is satisfied, and without that rule a nullable body can take the
-   * loop for free. That does not change the accepted LANGUAGE — `test()` agreed
-   * throughout — but it changes match EXTENTS, because the empty path wins on
-   * priority: `/(?:.*?)?\w+/` over "a,b,,c" reported [0,1] [1,3] [3,6] where
-   * RegExp reports [0,3] [3,6].
-   *
-   * Emitted ONLY around a nullable loop body, so a pattern without one carries
-   * no slots and the VM below runs exactly as it did before.
-   */
-  | { readonly op: 'mark'; readonly slot: number }
-  | { readonly op: 'progress'; readonly slot: number }
   | { readonly op: 'match' };
-
-/**
- * Can this match without consuming anything?
- *
- * Assertions count as nullable — they are width-zero — which is why `(?:^)*`
- * needs the check as much as `(?:a?)*` does.
- */
-const nullable = (node: Node): boolean => {
-  switch (node.kind) {
-    case 'empty':
-    case 'assert':
-      return true;
-    case 'char':
-      return false;
-    case 'concat':
-      return node.parts.every((part) => nullable(part));
-    case 'alt':
-      return node.options.some((option) => nullable(option));
-    default:
-      return node.min === 0 || nullable(node.body);
-  }
-};
 
 interface Options {
   readonly ignoreCase: boolean;
@@ -990,10 +952,7 @@ const buildPredicate = (
   };
 };
 
-const PREDICATES = new WeakMap<
-  CharSet,
-  Map<string, (code: number) => boolean>
->();
+const PREDICATES = new WeakMap<CharSet, Map<string, (code: number) => boolean>>();
 
 /**
  * {@link buildPredicate}, but built once per distinct set.
@@ -1043,17 +1002,6 @@ class Program {
    * remove from match time to COMPILE time.
    */
   public steps = 0;
-
-  /** One per nullable loop body; zero for every pattern without one. */
-  public slots = 0;
-
-  public claimSlot(): number {
-    const slot = this.slots;
-
-    this.slots += 1;
-
-    return slot;
-  }
 
   public step(): void {
     this.steps += 1;
@@ -1140,24 +1088,11 @@ const compileNode = (node: Node, program: Program, options: Options): void => {
         compileNode(node.body, program, options);
       }
 
-      // Only a nullable body can take an iteration for free, so only that case
-      // pays for a slot and the two extra epsilon steps.
-      const guard = nullable(node.body) ? program.claimSlot() : null;
-
       if (node.max === Infinity) {
         const split = program.emit({ op: 'split', x: 0, y: 0 });
         const body = program.code.length;
 
-        if (guard !== null) {
-          program.emit({ op: 'mark', slot: guard });
-        }
-
         compileNode(node.body, program, options);
-
-        if (guard !== null) {
-          program.emit({ op: 'progress', slot: guard });
-        }
-
         program.emit({ op: 'jmp', to: split });
 
         const after = program.code.length;
@@ -1181,15 +1116,7 @@ const compileNode = (node: Node, program: Program, options: Options): void => {
         const body = program.code.length;
         const frame = program.code[split] as { x: number; y: number };
 
-        if (guard !== null) {
-          program.emit({ op: 'mark', slot: guard });
-        }
-
         compileNode(node.body, program, options);
-
-        if (guard !== null) {
-          program.emit({ op: 'progress', slot: guard });
-        }
 
         if (node.lazy) {
           frame.y = body;
@@ -1239,7 +1166,6 @@ const run = (
   options: Options,
   wantSpan: boolean,
   begin = 0,
-  slotCount = 0,
 ): { readonly start: number; readonly end: number } | boolean | null => {
   let clist: number[] = [];
   let nlist: number[] = [];
@@ -1249,22 +1175,6 @@ const run = (
   // the first to claim a pc keeps it, so this holds the LEFTMOST start.
   let from = new Int32Array(code.length);
   let nextFrom = new Int32Array(code.length);
-  /*
-   * Where the current iteration of each nullable loop began, indexed by pc — the
-   * same shape as `from`, and dedup'd the same way, so a thread still carries no
-   * state of its own and the linear-time bound is untouched. `slotCount` is 0
-   * for every pattern without a nullable loop, and then these are empty and no
-   * branch below ever runs.
-   */
-  const NO_SLOTS: Int32Array[] = [];
-  const board = (): Int32Array[] =>
-    slotCount === 0
-      ? NO_SLOTS
-      : Array.from({ length: slotCount }, () =>
-          new Int32Array(code.length).fill(-1),
-        );
-  let slotAt = board();
-  let nextSlotAt = board();
 
   const holds = (at: Inst & { op: 'assert' }, position: number): boolean => {
     const before = position > 0 ? input.charCodeAt(position - 1) : undefined;
@@ -1293,18 +1203,6 @@ const run = (
     }
   };
 
-  /**
-   * The epsilon closure, in the form used by every pattern WITHOUT a nullable
-   * loop — which is nearly all of them.
-   *
-   * Kept as a separate, untouched function from the slot-aware version below.
-   * Threading the loop-progress state through this one instead cost 1.7x on
-   * ordinary regex filtering (46ms -> 81ms over 20,000 rows) even when the
-   * pattern had no nullable loop and the state was never used: extra parameters,
-   * a branch per pending pop, and a per-step call. Paying that on every query to
-   * fix match extents for a rare pattern shape is the same bad trade as building
-   * a path eagerly for every candidate, and it is refused for the same reason.
-   */
   const add = (
     list: number[],
     marks: Uint8Array,
@@ -1344,93 +1242,10 @@ const run = (
           pending.push(at + 1);
         }
       } else {
-        // `char` and `match`. `mark`/`progress` cannot reach here: they are only
-        // emitted when a slot was claimed, and a claimed slot selects
-        // `addTracking` instead. Testing for them anyway cost two string
-        // comparisons per instruction per character in the hottest loop there is.
         list.push(at);
       }
     }
   };
-
-  /**
-   * The same closure, carrying where each nullable loop's current iteration
-   * began — used only when the pattern actually contains one.
-   *
-   * The value rides `pending` per entry rather than living per thread, because
-   * two epsilon paths reaching the same instruction can disagree about it. Dedup
-   * is still by pc, so the linear-time bound is untouched.
-   */
-  const addTracking = (
-    list: number[],
-    marks: Uint8Array,
-    starts: Int32Array,
-    slots: Int32Array[],
-    pc: number,
-    position: number,
-    origin: number,
-    carried: readonly number[],
-  ): void => {
-    const pending: number[] = [pc];
-    const values: (readonly number[])[] = [carried];
-
-    while (pending.length > 0) {
-      const at = pending.pop();
-      const here = values.pop() ?? carried;
-
-      if (at === undefined || marks[at] === 1) {
-        continue;
-      }
-
-      marks[at] = 1;
-      starts[at] = origin;
-
-      for (let slot = 0; slot < slotCount; slot += 1) {
-        const lane = slots[slot];
-
-        if (lane) {
-          lane[at] = here[slot] ?? -1;
-        }
-      }
-
-      const instruction = code[at];
-
-      if (!instruction) {
-        continue;
-      }
-
-      if (instruction.op === 'jmp') {
-        pending.push(instruction.to);
-        values.push(here);
-      } else if (instruction.op === 'split') {
-        pending.push(instruction.y, instruction.x);
-        values.push(here, here);
-      } else if (instruction.op === 'assert') {
-        if (holds(instruction, position)) {
-          pending.push(at + 1);
-          values.push(here);
-        }
-      } else if (instruction.op === 'mark') {
-        const updated = [...here];
-
-        updated[instruction.slot] = position;
-        pending.push(at + 1);
-        values.push(updated);
-      } else if (instruction.op === 'progress') {
-        // The iteration consumed nothing, so JavaScript fails it rather than
-        // letting the loop turn for free. Dropping the thread IS that failure.
-        if (here[instruction.slot] !== position) {
-          pending.push(at + 1);
-          values.push(here);
-        }
-      } else {
-        list.push(at);
-      }
-    }
-  };
-
-  const EMPTY: readonly number[] = [];
-  const tracking = slotCount > 0;
 
   let matched: { readonly start: number; readonly end: number } | null = null;
 
@@ -1442,11 +1257,7 @@ const run = (
      * the work.
      */
     if (matched === null) {
-      if (tracking) {
-        addTracking(clist, seen, from, slotAt, 0, position, position, EMPTY);
-      } else {
-        add(clist, seen, from, 0, position, position);
-      }
+      add(clist, seen, from, 0, position, position);
     }
 
     for (const pc of clist) {
@@ -1480,38 +1291,23 @@ const run = (
         position < input.length &&
         instruction.test(input.charCodeAt(position))
       ) {
-        if (tracking) {
-          addTracking(
-            nlist,
-            nextSeen,
-            nextFrom,
-            nextSlotAt,
-            pc + 1,
-            position + 1,
-            from[pc] ?? position,
-            slotAt.map((values) => values[pc] ?? -1),
-          );
-        } else {
-          add(
-            nlist,
-            nextSeen,
-            nextFrom,
-            pc + 1,
-            position + 1,
-            from[pc] ?? position,
-          );
-        }
+        add(
+          nlist,
+          nextSeen,
+          nextFrom,
+          pc + 1,
+          position + 1,
+          from[pc] ?? position,
+        );
       }
     }
 
     clist = nlist;
     seen = nextSeen;
     from = nextFrom;
-    slotAt = nextSlotAt;
     nlist = [];
     nextSeen = new Uint8Array(code.length);
     nextFrom = new Int32Array(code.length);
-    nextSlotAt = tracking ? board() : NO_SLOTS;
 
     // Nothing left that could extend the match, and nothing new may start.
     if (clist.length === 0 && matched !== null) {
@@ -1591,7 +1387,6 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
     program.emit({ op: 'match' });
 
     const code = program.code;
-    const { slots } = program;
 
     return {
       matcher: {
@@ -1603,7 +1398,7 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
           let at = 0;
 
           while (at <= input.length) {
-            const hit = run(code, input, options, true, at, slots);
+            const hit = run(code, input, options, true, at);
 
             if (hit === null || typeof hit === 'boolean') {
               break;
@@ -1628,7 +1423,7 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
           return found;
         },
         test: (input: string): boolean =>
-          run(code, input, options, false, 0, slots) === true,
+          run(code, input, options, false) === true,
       },
       ok: true,
     };

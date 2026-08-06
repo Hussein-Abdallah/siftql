@@ -11,6 +11,7 @@ import {
   callHighlightSpans,
   callParseOperand,
   callPredicate,
+  nameOf,
   readOrdering,
 } from './consumer.js';
 import type {
@@ -153,7 +154,7 @@ const resolveOperand = (
       raw,
     );
 
-    candidates.push(type.name);
+    candidates.push(nameOf(type));
 
     if (result.ok) {
       // An ordered site needs an ordered type. `string` has no `ordering`, which
@@ -163,7 +164,7 @@ const resolveOperand = (
         readOrdering(type) === undefined
       ) {
         throw new SiftQLOperandError(
-          `Type "${type.name}" has no ordering, so it cannot be compared with ${
+          `Type "${nameOf(type)}" has no ordering, so it cannot be compared with ${
             site.kind === 'ordered' ? site.operator : 'a range'
           }`,
           {
@@ -181,7 +182,7 @@ const resolveOperand = (
     }
 
     if (result.kind === 'invalid') {
-      throw new SiftQLOperandError(`${type.name}: ${result.reason}`, {
+      throw new SiftQLOperandError(`${nameOf(type)}: ${result.reason}`, {
         candidates,
         code: result.code ?? 'OPERAND',
         hint: result.hint,
@@ -435,7 +436,7 @@ const failureSite = (
 ): LazyFailure =>
   new LazyFailure(
     site.kind,
-    bound.type.name,
+    nameOf(bound.type),
     location,
     context.options.onValueError,
     value,
@@ -498,7 +499,13 @@ const compareOne = (
   location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
 ): number | null => {
-  const { ordering } = bound.type;
+  /*
+   * Through the guard, not destructured. `readOrdering` runs once at BIND time,
+   * so an accessor that survives its first read and throws on a later one
+   * escaped raw from here — which is the per-record path. `type.matches` a few
+   * lines up is guarded for exactly this reason.
+   */
+  const ordering = readOrdering(bound.type);
 
   if (ordering === undefined) {
     return null;
@@ -530,7 +537,7 @@ const compareOperands = (
     );
   } catch (error) {
     throw new SiftQLOperandError(
-      `Value type ${lower.type.name}.ordering.compare() threw while checking the range boundaries against each other: ${
+      `Value type ${nameOf(lower.type)}.ordering.compare() threw while checking the range boundaries against each other: ${
         error instanceof Error ? error.message : String(error)
       }`,
       {
@@ -665,21 +672,58 @@ export const repairUnresolvableHoles = (
         return operand === node.operand ? node : { ...node, operand };
       }
 
-      default: {
-        try {
-          // Compilation is pure — it resolves operands and touches no record —
-          // so running it early to ask "would this work?" is safe.
-          compileExpression(node, context);
+      case 'Tag': {
+        /*
+         * A FIELD GROUP IS A TREE, and trial-compiling the Tag whole made one
+         * unresolvable term delete every sibling with it: `d:(2020-06-01 OR
+         * 2021-02-29)` pruned to nothing and matched EVERY row, including rows
+         * with no `d` key — while the flat `d:2020-06-01 OR d:2021-02-29`
+         * correctly kept the good half. That is a permissive leak, not just a
+         * blank list.
+         *
+         * `prune` learned this same lesson on its own walk and says so at
+         * length; this walk was written without it. Only a match tag can hold a
+         * group — a relational one compares against a single scalar.
+         */
+        if (
+          node.kind === 'match' &&
+          node.expression.type === 'ParenthesizedExpression'
+        ) {
+          const group = node.expression;
+          const body = repair(group.expression, depth + 1);
 
-          return node;
-        } catch (error) {
-          if (error instanceof SiftQLOperandError) {
-            return { location: node.location, type: 'MissingExpression' };
+          if (body !== group.expression) {
+            return {
+              ...node,
+              expression: {
+                ...group,
+                expression: body as typeof group.expression,
+              },
+            };
           }
-
-          throw error;
         }
+
+        return repairLeaf(node);
       }
+
+      default:
+        return repairLeaf(node);
+    }
+  };
+
+  const repairLeaf = (node: Expression): Expression => {
+    try {
+      // Compilation is pure — it resolves operands and touches no record — so
+      // running it early to ask "would this work?" is safe.
+      compileExpression(node, context);
+
+      return node;
+    } catch (error) {
+      if (error instanceof SiftQLOperandError) {
+        return { location: node.location, type: 'MissingExpression' };
+      }
+
+      throw error;
     }
   };
 
@@ -1179,7 +1223,7 @@ const compileClause = (
                 path: pathOf(candidate[0]),
                 reason: null,
                 site: 'ordered',
-                typeName: bound.type.name,
+                typeName: nameOf(bound.type),
                 value: candidate[1],
               });
             }
@@ -1432,7 +1476,7 @@ const compileRange = (
   // spans both calendar instants and wall-clock times, and
   // `[2020-06-01 TO 14:30]` is as incoherent as mixing a date with a number.
   // Only the name was checked, so that one slipped through as an empty result.
-  if (lower?.type.name === upper?.type.name && lower && upper) {
+  if (lower && upper && nameOf(lower.type) === nameOf(upper.type)) {
     // QUERY-side, not value-side: both sides here are operands from the query
     // text, so a type throwing while comparing them is a broken query rather
     // than dirty data, and `onValueError` must not be able to swallow it.
@@ -1451,9 +1495,9 @@ const compileRange = (
     }
   }
 
-  if (lower && upper && lower.type.name !== upper.type.name) {
+  if (lower && upper && nameOf(lower.type) !== nameOf(upper.type)) {
     throw new SiftQLOperandError(
-      `Range boundaries resolved to different types: "${lower.type.name}" and "${upper.type.name}"`,
+      `Range boundaries resolved to different types: "${nameOf(lower.type)}" and "${nameOf(upper.type)}"`,
       {
         code: 'MIXED_RANGE_TYPES',
         location: range.location,
@@ -1519,7 +1563,7 @@ const compileRange = (
             path: pathOf(candidate[0]),
             reason: null,
             site: 'range',
-            typeName: reference.type.name,
+            typeName: nameOf(reference.type),
             value: candidate[1],
           });
         }

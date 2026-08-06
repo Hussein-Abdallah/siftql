@@ -155,6 +155,16 @@ export interface OperandInvalid {
   readonly kind: 'invalid';
   readonly reason: string;
   readonly hint: string | null;
+  /**
+   * Error code to report, defaulting to `OPERAND`.
+   *
+   * Exists so the regex type can raise the `UNSAFE_PATTERN` code that
+   * `errors.ts` documents. Without it that code was declared, described and
+   * completely unreachable — both rejection paths reported `OPERAND`, so a
+   * consumer branching on it to say "that pattern was refused as unsafe" could
+   * never distinguish it from a malformed operand.
+   */
+  readonly code?: 'OPERAND' | 'UNSAFE_PATTERN';
 }
 
 /**
@@ -205,7 +215,8 @@ export const claimed = <T>(operand: T): OperandResult<T> => ({
 export const malformedOperand = (
   reason: string,
   hint: string | null = null,
-): OperandInvalid => ({ ok: false, kind: 'invalid', reason, hint });
+  code: 'OPERAND' | 'UNSAFE_PATTERN' = 'OPERAND',
+): OperandInvalid => ({ code, ok: false, kind: 'invalid', reason, hint });
 
 export const resolved = <T>(value: T): ValueResult<T> => ({ ok: true, value });
 

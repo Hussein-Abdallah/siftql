@@ -248,7 +248,11 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
       if (risk) {
         // A refused pattern stops resolution and is reported. Falling through
         // to `string` would silently turn a regex query into a literal one.
-        return malformedOperand(risk.reason, risk.hint);
+        //
+        // Reported under UNSAFE_PATTERN, the code errors.ts documents for
+        // exactly this, so a consumer can tell "refused as unsafe" from "not a
+        // valid operand" — they call for different messages in a UI.
+        return malformedOperand(risk.reason, risk.hint, 'UNSAFE_PATTERN');
       }
     }
 

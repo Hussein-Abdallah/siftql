@@ -174,6 +174,7 @@ const resolveOperand = (
     if (result.kind === 'invalid') {
       throw new SiftQLOperandError(`${type.name}: ${result.reason}`, {
         candidates,
+        code: result.code ?? 'OPERAND',
         hint: result.hint,
         location,
         raw,

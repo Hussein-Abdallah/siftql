@@ -87,14 +87,18 @@ describe('through the engine', () => {
     expect(() => filter('v:/^(a+)+$/', ROWS)).toThrow(SiftQLOperandError);
   });
 
-  it('reports it as an operand failure with a usable hint', () => {
+  it('reports it under the documented UNSAFE_PATTERN code, with a usable hint', () => {
+    // It used to report OPERAND, leaving `UNSAFE_PATTERN` declared, described in
+    // errors.ts, and completely unreachable — so a consumer could not tell "that
+    // pattern was refused as unsafe" from "that is not a valid operand", which
+    // call for different messages in a UI.
     try {
       filter('v:/^(a+)+$/', ROWS);
       expect.unreachable('should have thrown');
     } catch (error) {
       const failure = error as SiftQLOperandError;
 
-      expect(failure.code).toBe('OPERAND');
+      expect(failure.code).toBe('UNSAFE_PATTERN');
       expect(failure.message).toContain('nested quantifier');
       expect(failure.hint).toContain('a+');
     }

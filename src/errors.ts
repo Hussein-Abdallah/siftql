@@ -160,7 +160,11 @@ export class SiftQLSyntaxError extends SiftQLError {
 
 export interface OperandErrorDetails {
   readonly code?:
-    'OPERAND' | 'UNORDERED_TYPE' | 'MIXED_RANGE_TYPES' | undefined;
+    | 'OPERAND'
+    | 'UNORDERED_TYPE'
+    | 'MIXED_RANGE_TYPES'
+    | 'UNSAFE_PATTERN'
+    | undefined;
   readonly location: SourceLocation;
   /** Where the operand sat, and against which field. */
   readonly site: OperandSite;

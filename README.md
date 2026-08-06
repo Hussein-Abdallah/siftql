@@ -149,7 +149,7 @@ date:[2020-01-01 TO *]                # half-open temporal
 
 ### Escaping
 
-A backslash protects the next character. Space, `( ) [ ] { } " ' : / ^ ~ * ?`
+A backslash protects the next character. Space, `( ) [ ] { } " ' : / ^ ~ * ? < > =`
 and a leading `-` or `+` are structural; everything else is ordinary.
 
 ```rb
@@ -447,26 +447,28 @@ arbitrary backtracking regex is safe in synchronous JavaScript: there is no
 timeout, no interruption, and no way to bound the engine's work once `test()` is
 running. A pattern that passes this screen can still be slow.
 
-It catches the shape behind essentially every real report — a quantified group
-that itself contains a quantifier — plus a length cap. Precision is weighted over
-recall, so `(a|b)*` and `(abc)*` are allowed. Turn it off with
+What makes backtracking exponential is an **unbounded** repetition over
+something that can match the same input more than one way. The screen refuses
+three forms of that, plus a length cap:
+
+```rb
+/(a+)+/        # nested unbounded quantifier
+/(a?)*/        # a repeated group that can match nothing
+/(a|a)*/       # two identical alternatives, so two ways to match at every position
+```
+
+A **bounded** outer quantifier is not screened, because bounded repetition of a
+finite body is finite work — so `/^([A-Z]{3}-){1,4}[0-9]{2}$/`, the ordinary way
+to write a SKU or a number plate, is allowed. Precision is weighted over recall:
+`(a|b)*`, `(cat|car)*` and `(abc)*` all pass. Turn the screen off with
 `regexGuard: false` where the query author is trusted.
 
-**Wildcards are not exempt either.** They compile to `[\s\S]*` and `[\s\S]`
-with no nested quantifier, but several stars separated by literals still
-partition the input exponentially when the match _fails_ — every star must try
-every split before the engine can conclude there is none:
-
-```
-value: 40 "a"s     name:*a*a*a*b          2.5ms
-                   name:*a*a*a*a*a*b       36ms
-                   name:*a*a*a*a*a*a*a*b  852ms     ~6x per star
-```
-
-Nesting is not the only route to catastrophic backtracking, and a benchmark
-that only measures _matching_ patterns misses this — `*a*a*a*a*` succeeds
-greedily on the first attempt and never backtracks. Treat a query box that
-accepts unbounded stars from untrusted users as a denial-of-service surface.
+**Wildcards are not regexes and cannot backtrack.** `name:*a*a*a*b` is matched by
+a two-pointer glob, not compiled to `[\s\S]*`, so it is O(n×m) with no
+exponential path: 200 stars against a 5,000-character value takes under a
+millisecond. An earlier version of this document warned that unbounded stars were
+a denial-of-service surface. They were, and then the matcher was rewritten and
+the warning was not.
 
 ## Development
 

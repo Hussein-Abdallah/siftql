@@ -202,11 +202,17 @@ describe('result constructors', () => {
   it('builds operand outcomes', () => {
     expect(claimed(42)).toEqual({ ok: true, operand: 42 });
     expect(DECLINED).toEqual({ kind: 'declined', ok: false });
+    // `code` defaults to OPERAND and can be raised to UNSAFE_PATTERN, which is
+    // how errors.ts's documented code for a refused regex became reachable.
     expect(malformedOperand('bad', 'try a date')).toEqual({
+      code: 'OPERAND',
       hint: 'try a date',
       kind: 'invalid',
       ok: false,
       reason: 'bad',
+    });
+    expect(malformedOperand('bad', null, 'UNSAFE_PATTERN')).toMatchObject({
+      code: 'UNSAFE_PATTERN',
     });
   });
 

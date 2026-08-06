@@ -614,17 +614,50 @@ describe('a discarded stray is not reported as trailing input', () => {
     return seen;
   };
 
-  it('calls a stray at index 0 a stray, not trailing input', () => {
-    // The tokenizer reused the parser's `trailing-input` for any discarded
-    // stray, so `:abc` — where the discarded `:` is the FIRST character and
-    // nothing trails anything — told a consumer branching on the reason that
-    // text after the end of the query had been ignored.
-    expect(reasons(':abc')).toContain('stray-input');
-    expect(reasons(':abc')).not.toContain('trailing-input');
+  // Asserting only `:abc` was confirmatory: it is the one index-0 case the
+  // tokenizer handles, and the parser's own path was still mislabelling. The
+  // split is by what FOLLOWS the discarded run, so both directions need a case
+  // from each component.
+  it.each([':abc', 'a ) b', 'a:b } zzz', ')a'])(
+    'calls %s a stray, because query text follows the discard',
+    (query) => {
+      expect(reasons(query)).toContain('stray-input');
+      expect(reasons(query)).not.toContain('trailing-input');
+    },
+  );
+
+  it.each(['a AND b )', 'abc :', ':', 'a )'])(
+    'calls %s trailing, because nothing follows the discard',
+    (query) => {
+      expect(reasons(query)).toContain('trailing-input');
+      expect(reasons(query)).not.toContain('stray-input');
+    },
+  );
+});
+
+describe('a discarded stray does not rewrite OR into AND', () => {
+  it('keeps the operator the user typed', () => {
+    // The tolerant loop rejoined with parseAnd, which stops at `or`, so the
+    // next iteration ate the OR as the next stray: `a ) b OR c` became
+    // `a AND b AND c`. AND is strictly narrower than OR, so the tree matched a
+    // SUBSET of what was asked for — a silently wrong answer from the mode
+    // whose whole purpose is keeping a half-typed query usable.
+    const tolerant = createEngine({ tolerant: true });
+
+    for (const stray of [')', '}', ']']) {
+      expect(serialize(tolerant.parse(`a ${stray} b OR c`))).toBe(
+        serialize(parse('a b OR c')),
+      );
+    }
   });
 
-  it('still calls genuine trailing text trailing input', () => {
-    expect(reasons('a AND b )')).toContain('trailing-input');
+  it('agrees with the strict parser on which rows match', () => {
+    const rows = [{ v: 'a' }, { v: 'b' }, { v: 'c' }, { v: 'd' }];
+    const tolerant = createEngine({ onRecovered: 'prune', tolerant: true });
+
+    expect(tolerant.filter('v:a ) v:b OR v:c', rows)).toEqual(
+      filter('v:a v:b OR v:c', rows),
+    );
   });
 });
 

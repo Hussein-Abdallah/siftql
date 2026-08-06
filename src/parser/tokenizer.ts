@@ -219,8 +219,15 @@ const chunksToSegments = (
 };
 
 const RECOVERED_QUOTE = 'unterminated-quote';
-/** A stray structural character was discarded in tolerant mode. */
+/**
+ * A stray structural character was discarded in tolerant mode.
+ *
+ * Which of the two reasons applies is decided by what FOLLOWS the discarded
+ * run, not by which component discarded it: more query text after it makes it
+ * a stray, and nothing after it makes it trailing.
+ */
 const STRAY_SKIPPED = 'stray-input';
+const TRAILING_SKIPPED = 'trailing-input';
 const RECOVERED_REGEX = 'unterminated-regex';
 
 /**
@@ -656,7 +663,7 @@ export class Tokenizer {
         return {
           end: this.index,
           quote: 'none',
-          recovered: STRAY_SKIPPED,
+          recovered: TRAILING_SKIPPED,
           start,
           type: 'literal',
           value: '',

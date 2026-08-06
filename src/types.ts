@@ -79,8 +79,31 @@ export interface RecoveryInfo {
   readonly synthetic: boolean;
 }
 
-/** The recovery reasons the v0.1 parser produces. Deliberately not a closed set. */
-export const RECOVERY_REASONS = Object.freeze({
+/**
+ * The recovery reasons the v0.1 parser produces. Deliberately not a closed set.
+ *
+ * The annotation is what makes that true. Without it `Object.freeze` on a
+ * literal gives literal-typed values, so the derived union
+ * `(typeof RECOVERY_REASONS)[keyof typeof RECOVERY_REASONS]` is closed — and
+ * adding `stray-input` broke every exhaustive `switch` written against it,
+ * which is exactly what I3 exists to prevent. Widening the values to `string`
+ * makes the promise structural rather than merely intended, and matches
+ * `RecoveryInfo.reason`, which is a plain `string` for the same reason.
+ */
+export const RECOVERY_REASONS: Readonly<
+  Record<
+    | 'unterminatedQuote'
+    | 'unterminatedRegex'
+    | 'unclosedGroup'
+    | 'unclosedRange'
+    | 'missingValue'
+    | 'missingOperand'
+    | 'unsupportedModifier'
+    | 'trailingInput'
+    | 'strayInput',
+    string
+  >
+> = Object.freeze({
   unterminatedQuote: 'unterminated-quote',
   unterminatedRegex: 'unterminated-regex',
   unclosedGroup: 'unclosed-group',
@@ -89,12 +112,15 @@ export const RECOVERY_REASONS = Object.freeze({
   missingOperand: 'missing-operand',
   /** A `^boost` or `~fuzzy` modifier was dropped; both are reserved for v0.2. */
   unsupportedModifier: 'unsupported-modifier',
-  /** Text after a complete expression was ignored, as in `a AND b )`. */
+  /**
+   * Discarded text with nothing after it, as in `a AND b )` or `abc :`. The
+   * query was already complete, so the ignored text trails it.
+   */
   trailingInput: 'trailing-input',
   /**
-   * A stray structural character was discarded from inside the query, as in
-   * `:abc`. Distinct from `trailingInput`, which means the query had already
-   * finished: a stray can sit at index 0, where nothing trails anything.
+   * Discarded text with more query AFTER it, as in `:abc` or `a ) b`. The two
+   * are split by what follows the discarded run, not by where it sits: a stray
+   * can be the first character typed, where nothing trails anything.
    */
   strayInput: 'stray-input',
 });

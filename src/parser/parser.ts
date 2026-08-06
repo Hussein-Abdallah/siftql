@@ -156,19 +156,56 @@ class Parser {
      * Tolerant mode SKIPS the offending token and keeps going.
      *
      * A stray closer is what you have half way through an edit: `(a:b))` is one
-     * keystroke away from `(a:b)`. Discarding everything after it, which is what
-     * Discarding everything after it makes the answer a SUPERSET — `a:b } zzz`
-     * would silently drop the `zzz` conjunct and match rows it should not. The clauses either side are both things the
+     * keystroke away from `(a:b)`. Discarding everything after it makes the
+     * answer a SUPERSET — `a:b } zzz` would silently drop the `zzz` conjunct
+     * and match rows it should not. The clauses either side are both things the
      * user typed, so both are kept and joined implicitly.
      */
     let result = expression;
+    // Set when a discarded stray had more query after it, which is what
+    // separates the two reasons — see RECOVERY_REASONS.
+    let midQuery = false;
 
     while (this.peek().type !== 'eof') {
-      const stray = this.advance();
+      const next = this.peek();
+
+      /*
+       * An operator the user TYPED is not a stray.
+       *
+       * Rejoining with `parseAnd` alone let the next iteration eat the `OR` as
+       * the next stray, so `a ) b OR c` became `a AND b AND c`. `AND` is
+       * strictly narrower than `OR`, so the tree matched a subset of what was
+       * asked for — a silently wrong answer, from a mode whose whole purpose is
+       * to keep a half-typed query usable.
+       */
+      if (next.type === 'or' || next.type === 'and') {
+        this.advance();
+
+        const operand = this.parseAnd();
+
+        result = {
+          left: result,
+          location: span(result.location.start, operand.location.end),
+          operator: {
+            location: span(next.start, next.end),
+            notation: 'explicit',
+            operator: next.type === 'or' ? 'OR' : 'AND',
+            type: 'BooleanOperator',
+          },
+          right: operand,
+          type: 'LogicalExpression',
+        };
+
+        continue;
+      }
+
+      this.advance();
 
       if (this.peek().type === 'eof') {
         break;
       }
+
+      midQuery = true;
 
       const right = this.parseAnd();
 
@@ -176,7 +213,9 @@ class Parser {
         left: result,
         location: span(result.location.start, right.location.end),
         operator: {
-          location: span(stray.start, stray.end),
+          // Zero-width at the start of the right operand, as every implicit
+          // operator is: the only text here was the stray, and it is gone.
+          location: span(right.location.start, right.location.start),
           notation: 'implicit',
           operator: 'AND',
           type: 'BooleanOperator',
@@ -194,7 +233,9 @@ class Parser {
       : {
           ...result,
           recovered: {
-            reason: RECOVERY_REASONS.trailingInput,
+            reason: midQuery
+              ? RECOVERY_REASONS.strayInput
+              : RECOVERY_REASONS.trailingInput,
             synthetic: false,
           },
         };

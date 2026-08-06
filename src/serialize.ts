@@ -10,6 +10,7 @@ import type {
   WildcardExpression,
 } from './types.js';
 import {
+  KEYWORD_LITERALS,
   OPERATOR_PRECEDENCE,
   RESERVED_CHARACTERS,
   RESERVED_WORDS,
@@ -21,11 +22,14 @@ import {
  * TextLiteral carrying one of these must be escaped or it changes type on the
  * way back in.
  */
-const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
-  'true',
-  'false',
-  'null',
-]);
+/*
+ * IMPORTED, not duplicated. This was a private `new Set` with the same three
+ * members, and it is the copy `escapeBareTerm` actually consults — so when the
+ * `types.ts` set was sealed against process-wide mutation, this one was left
+ * open, and adding a keyword to the public set would not have made the
+ * serializer escape it. Two sources of truth for the same rule is the defect;
+ * sealing only one of them made it look fixed.
+ */
 
 /**
  * AST → query string.

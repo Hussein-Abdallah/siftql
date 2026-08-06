@@ -1233,12 +1233,17 @@ export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
    * rehydrated and hostile trees — and running it on every parse made
    * `parse('status:active')` 2.5x slower and a 4-clause query 3.3x slower.
    *
-   * The bound is measured, not guessed. Across plain terms, `field:value`,
-   * 32-segment paths, wildcards, dense stars, ranges and deep parens, the
-   * densest shape produces 3.75 visits per source character (`f:v`, the
-   * shortest clause carrying the most nodes). 32 leaves better than eight times
-   * that margin, and the walk still runs for anything above ~15,000 characters
-   * — which is where a tree can plausibly approach the budget at all.
+   * The bound is measured. My own first measurement was not the worst case: I
+   * swept seven ordinary shapes, found `f:v` at 3.75 visits per source
+   * character, and wrote that down as the maximum. An exhaustive search over
+   * short inputs found `[(` at 9.5 and `'][('` repeated at 7.68 sustained, so
+   * the real margin here is 3.4x rather than the eight I claimed.
+   *
+   * 32 is still sound, and by a wider margin than the ratio suggests: at the
+   * skip boundary (15,625 characters) the largest constructible tree is 46,877
+   * visits against a 500,000 budget — 10.7x — because MAX_CLAUSES binds long
+   * before per-character density does. The walk still runs above that length,
+   * which is where a tree can plausibly approach the budget at all.
    *
    * Deliberately NOT a second, faster walker: `expansionOf` and
    * `assertWalkable` share one traversal, which is what makes it structurally

@@ -578,28 +578,45 @@ export class Tokenizer {
     // scan for the literal `name.first:ada`.
     let recovered: string | undefined;
 
-    while (word.endsWith('.') && (this.peek() === '"' || this.peek() === "'")) {
-      const from = this.index;
-      const segment = this.readQuoted(this.index, this.peek());
+    /*
+     * Outer loop so a SKIPPED STRAY re-enters the folding below.
+     *
+     * The recursion this replaced re-ran the folding pass by construction; a
+     * plain skip did not, so a dotted-quoted path preceded by a stray came out
+     * as two clauses: `a.'b':c` is a Tag on the path a.b, and `:a.'b':c` became
+     * the literal `a.` AND a Tag on `b` — matching nothing where the first
+     * matches. That is the same "silently became two clauses" defect the
+     * folding loop exists to prevent.
+     */
+    for (;;) {
+      while (
+        word.endsWith('.') &&
+        (this.peek() === '"' || this.peek() === "'")
+      ) {
+        const from = this.index;
+        const segment = this.readQuoted(this.index, this.peek());
 
-      recovered ??= segment.recovered === true ? RECOVERED_QUOTE : undefined;
+        recovered ??= segment.recovered === true ? RECOVERED_QUOTE : undefined;
 
-      const decoded = decodeEscapes(segment.value);
+        const decoded = decodeEscapes(segment.value);
 
-      chunks.push({
-        end: this.index,
-        kind: 'quoted',
-        name: decoded,
-        start: from,
-      });
+        chunks.push({
+          end: this.index,
+          kind: 'quoted',
+          name: decoded,
+          start: from,
+        });
 
-      // `word` still drives the AND/OR/NOT check and the literal fallback, so it
-      // keeps the escaped spelling; the SEGMENTS are what the parser reads.
-      word += decoded.replace(/[\\.]/gu, (character) => `\\${character}`);
-      word += readRaw();
-    }
+        // `word` still drives the AND/OR/NOT check and the literal fallback, so
+        // it keeps the escaped spelling; the SEGMENTS are what the parser reads.
+        word += decoded.replace(/[\\.]/gu, (character) => `\\${character}`);
+        word += readRaw();
+      }
 
-    if (word.length === 0) {
+      if (word.length > 0) {
+        break;
+      }
+
       this.index += 1;
 
       if (!this.tolerant) {

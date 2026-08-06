@@ -2314,28 +2314,35 @@ describe('P10: invariants that held only by construction', () => {
      * more hostile when it learned to emit stray runs, and fewer of its queries
      * match anything — which the vacuity guard caught, correctly.
      */
-    const PER_TYPE = [
-      'ada',
-      'name:ada',
-      'name::ada',
-      'name:*ad*',
-      'name:/a.a/',
-      'n:3',
-      'n:>1',
-      'n:[1 TO 9]',
-      'd:2020-06-01',
-      'd:>=2020-01-01',
-      'tags:red',
-      'missing:null',
+    const PER_TYPE: readonly (readonly [string, unknown])[] = [
+      ['ada', { name: 'ada' }],
+      ['name:ada', { name: 'ada' }],
+      ['name::ada', { name: 'ada' }],
+      ['name:*ad*', { name: 'ada' }],
+      ['name:/a.a/', { name: 'ada' }],
+      ['n:3', { n: 3 }],
+      ['n:>1', { n: 3 }],
+      ['n:[1 TO 9]', { n: 3 }],
+      ['d:2020-06-01', { d: '2020-06-01' }],
+      ['d:>=2020-01-01', { d: '2020-06-01' }],
+      ['tags:red', { tags: ['red', 'blue'] }],
+      ['missing:null', { name: 'bob' }],
     ];
 
+    /*
+     * Each fixed query is PAIRED with an item it matches. The first version
+     * paired it with a random one of three, so five of the twelve — the
+     * case-sensitive, wildcard, ordered, range and date-comparison built-ins —
+     * produced no highlight at all and were never checked against the claim
+     * this block exists to enforce. The comment saying "PER_TYPE always
+     * produces highlights" was false, and the floor of twelve was still leaning
+     * on the generated half's hit rate to be met.
+     */
     for (let run = 0; run < RUNS * 2 + PER_TYPE.length; run += 1) {
       const fixed = PER_TYPE[run];
-      const q = fixed ?? query(next);
+      const q = fixed?.[0] ?? query(next);
       const item =
-        fixed !== undefined || run % 2 === 0
-          ? pick(next, LIKELY)
-          : record(next);
+        fixed?.[1] ?? (run % 2 === 0 ? pick(next, LIKELY) : record(next));
 
       let hits;
 

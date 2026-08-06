@@ -138,6 +138,17 @@ const FIELDS = [
   'content-type:',
 ];
 
+/**
+ * Structural characters that can appear where a clause is expected.
+ *
+ * The generator below always started a clause with a field or an atom, so it
+ * could never emit a leading `:` or `+` — and an audit found roughly half the
+ * inputs still escaping tolerant mode began with exactly those. A property that
+ * cannot generate the failing shape is a property that passes for the wrong
+ * reason, so the alphabet now includes them.
+ */
+const STRAY = [':', '+', '}', ']', ')', '~', '^', '=', '<', '>', '*', '?', '/'];
+
 /** A query built from the grammar, biased toward the shapes that broke before. */
 const query = (next: () => number, depth = 3): string => {
   if (depth === 0) {
@@ -145,6 +156,12 @@ const query = (next: () => number, depth = 3): string => {
   }
 
   const roll = next();
+
+  // A clause that opens with something structural: rare enough not to swamp the
+  // grammar, common enough that every run produces some.
+  if (roll < 0.08) {
+    return pick(next, STRAY) + (next() < 0.5 ? pick(next, ATOMS) : '');
+  }
 
   if (roll < 0.28) {
     const field = pick(next, FIELDS);

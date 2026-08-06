@@ -510,5 +510,31 @@ const wrap = (
  * guaranteed to be byte-identical to the text originally parsed — see the
  * normalisation list above.
  */
-export const serialize = (ast: SiftQLAst): string =>
-  serializeNode(assertNode(ast, 'serialize'));
+export const serialize = (ast: SiftQLAst): string => {
+  const checked = assertNode(ast, 'serialize');
+
+  try {
+    return serializeNode(checked);
+  } catch (error) {
+    /*
+     * A RangeError HERE means the stack ran out inside the declared depth
+     * budget, and it must not leave as one — `errors.ts` says catching
+     * `SiftQLError` catches them all, and a hand-built or JSON-deserialized
+     * tree is the supported transport, so this is reachable without a bug.
+     *
+     * MAX_AST_DEPTH was chosen so the failure would be a located error rather
+     * than a raw overflow, and at the boundary it was not: a NOT-chain one
+     * level under the cap threw RangeError on a cold stack and serialized fine
+     * once the JIT had warmed up. Non-determinism is exactly why the limit is
+     * declared, and exactly why the last few frames cannot be relied on.
+     */
+    if (error instanceof RangeError) {
+      throw new SiftQLArgumentError(
+        `serialize() ran out of stack on a tree ${String(MAX_AST_DEPTH)} levels deep or close to it. The declared depth limit is the most this can print reliably; the exact point varies with the JavaScript engine's state.`,
+        { argument: 'node', received: checked.type },
+      );
+    }
+
+    throw error;
+  }
+};

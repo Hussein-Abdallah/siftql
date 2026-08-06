@@ -191,9 +191,14 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
     const policy = overrides.onRecovered ?? resolved.onRecovered;
 
     /*
-     * TOLERANT MODE NEVER THROWS FOR A QUERY. A clause whose operands cannot be
-     * resolved becomes a hole, so the prune below removes it, instead of the
-     * evaluator throwing on something the user is still halfway through typing.
+     * TOLERANT MODE NEVER THROWS FOR AN INCOMPLETE OR MALFORMED QUERY. A clause
+     * whose operands cannot be resolved becomes a hole, so the prune below
+     * removes it, instead of the evaluator throwing on something the user is
+     * still halfway through typing.
+     *
+     * Structural limits — nesting depth, clause count, the node budget — still
+     * throw. Those are resource guards, not things anyone is part-way through
+     * typing, and a search box does not reach them by accident.
      *
      * Only when `tolerant` is on: a caller who did not opt into leniency must
      * still hear about a broken query. And not under `onRecovered: 'throw'`,

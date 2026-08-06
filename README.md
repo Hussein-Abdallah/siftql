@@ -357,10 +357,10 @@ does not blank out mid-keystroke. Recovered nodes are flagged in the AST, so a U
 can grey out the clause in flight. Set `onRecovered: 'throw'` where acting on a
 guess is unacceptable.
 
-A tolerant engine also never throws for the query itself. A half-typed clause is
-often well-formed but meaningless — `d:>=2020-` compares against the string
-`"2020-"`, which has no ordering — so a clause whose operands cannot be resolved
-is dropped along with the incomplete ones:
+A tolerant engine also never throws for a query that is merely incomplete or
+malformed. A half-typed clause is often well-formed but meaningless — `d:>=2020-`
+compares against the string `"2020-"`, which has no ordering — so a clause whose
+operands cannot be resolved is dropped along with the incomplete ones:
 
 ```ts
 engine.filter('name:ada AND d:>=2020-', rows); // → the rows matching name:ada

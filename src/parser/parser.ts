@@ -57,7 +57,12 @@ export interface ParseOptions extends TokenizerOptions {
   /**
    * Best-effort parsing for incomplete input. Instead of throwing, holes become
    * `MissingExpression` nodes stamped with `recovered`, which `compile()` then
-   * prunes or refuses. For search-as-you-type.
+   * prunes or refuses. Stray structural characters are skipped and a half-typed
+   * modifier or regex flag is dropped, both marked. For search-as-you-type.
+   *
+   * STRUCTURAL LIMITS STILL THROW — nesting depth, clause count, node budget.
+   * Those guard resources rather than describing something half-typed, and a
+   * search box does not reach them by accident.
    */
   readonly tolerant?: boolean | undefined;
 }
@@ -1123,10 +1128,37 @@ class Parser {
     const scanned = scanPattern(token.value, contentStart);
 
     if (scanned.kind === 'wildcard') {
-      return this.fail('A range boundary cannot contain wildcards', token, [
-        'a value',
-        '"*"',
-      ]);
+      /*
+       * `a:[?` and `a:[x*` are what a range looks like part-way through being
+       * typed, so tolerant mode takes the text LITERALLY and marks the boundary
+       * rather than throwing. Strict mode still refuses: a wildcard has no
+       * position on an ordered line, so a range built from one would be a guess
+       * about ordering rather than about typing.
+       */
+      if (!this.tolerant) {
+        return this.fail('A range boundary cannot contain wildcards', token, [
+          'a value',
+          '"*"',
+        ]);
+      }
+
+      return {
+        bounded: true,
+        inclusive,
+        location,
+        recovered: {
+          reason: RECOVERY_REASONS.missingValue,
+          synthetic: false,
+        },
+        type: 'RangeBoundary',
+        value: {
+          literal: 'text',
+          location,
+          quoted,
+          type: 'LiteralExpression',
+          value: token.value,
+        },
+      };
     }
 
     return {
@@ -1158,7 +1190,9 @@ class Parser {
  *
  * Throws {@link SiftQLSyntaxError} on malformed input, carrying the offending
  * span and a caret excerpt — unless `tolerant` is set, in which case holes
- * become `MissingExpression` nodes and the result is always usable.
+ * become `MissingExpression` nodes and the result is usable for any input
+ * that is merely incomplete or malformed. The structural limits above still
+ * throw: they guard resources rather than describing a half-typed query.
  */
 export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
   const source = assertQuery(query, 'parse');

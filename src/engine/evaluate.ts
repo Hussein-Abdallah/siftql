@@ -615,8 +615,9 @@ const literalOf = (boundary: RangeBoundary): TextLiteral | null =>
  *     ordering, so it threw from the middle of an ordinary date being typed.
  *
  * So the rule tolerant mode actually needs is the simpler one: A TOLERANT QUERY
- * NEVER THROWS. What cannot be used is dropped, and a clause that constrains
- * nothing constrains nothing. Strict mode is unchanged — there, an operand that
+ * NEVER THROWS FOR BEING INCOMPLETE OR MALFORMED. What cannot be used is
+ * dropped, and a clause that constrains nothing constrains nothing. Structural
+ * limits still throw — they guard resources, not syntax. Strict mode is unchanged — there, an operand that
  * cannot resolve is still a hard error, because a caller who did not ask for
  * leniency should hear about a broken query rather than silently get more rows
  * than they asked for.

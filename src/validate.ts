@@ -702,9 +702,27 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
     );
   }
 
-  // Read through `peek`: an option may be an accessor, and a throwing one must
-  // produce a config error rather than escape from the validator.
-  const read = (key: string): unknown => peek(value, key);
+  /*
+   * An option may be an accessor, and a throwing one must produce a CONFIG
+   * ERROR — not escape raw, and not silently vanish.
+   *
+   * This used to route through `peek`, which swallows and returns `undefined`.
+   * Nothing escaped, so half the promise held; but `supplied()` then read
+   * false, the default won, and an engine built from a lazily-computed or
+   * proxy-backed config object silently got default policy — including
+   * `onValueError`. A silent default for the FAILURE policy is exactly the
+   * quiet wrongness this validator exists to prevent.
+   */
+  const read = (key: string): unknown => {
+    try {
+      return (value as Record<string, unknown>)[key];
+    } catch (error) {
+      throw new SiftQLConfigError(
+        `${fn}() could not read the "${key}" option: reading it threw. An option must be a plain value, not an accessor that fails.`,
+        { cause: error },
+      );
+    }
+  };
 
   /**
    * Was this option supplied at all?

@@ -600,6 +600,37 @@ export class Tokenizer {
     if (word.length === 0) {
       this.index += 1;
 
+      /*
+       * A STRAY STRUCTURAL CHARACTER — `:` with nothing before it, a lone `}`.
+       *
+       * In tolerant mode it is SKIPPED and the scan continues, because this is
+       * the single most common thing a half-typed query contains and throwing
+       * here defeated the whole mode: a leading `:` accounted for roughly half
+       * of the inputs an audit found still escaping tolerance. The parser's own
+       * stray-token recovery already handles the structural characters that
+       * reach IT; this is the same rule one layer down.
+       */
+      if (this.tolerant && this.index < this.source.length) {
+        return this.readBareTerm(this.index, lead);
+      }
+
+      /*
+       * At END OF INPUT there is nothing left to skip TO, so tolerant mode
+       * cannot recurse — a bare `:` did exactly that and produced a RangeError,
+       * turning a syntax error into a stack overflow. An empty literal is the
+       * honest answer: the user typed a separator and nothing else.
+       */
+      if (this.tolerant) {
+        return {
+          end: this.index,
+          quote: 'none',
+          recovered: 'missing-value',
+          start,
+          type: 'literal',
+          value: '',
+        };
+      }
+
       return this.fail(
         `Unexpected character ${JSON.stringify(this.peek(-1))}`,
         start,

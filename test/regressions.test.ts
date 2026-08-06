@@ -583,3 +583,45 @@ describe('second audit', () => {
     ).toBe('+foo');
   });
 });
+
+describe('a discarded stray is not reported as trailing input', () => {
+  const reasons = (query: string): string[] => {
+    const seen: string[] = [];
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== 'object') {
+        return;
+      }
+
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+
+        return;
+      }
+
+      const info = (node as { recovered?: { reason?: string } }).recovered;
+
+      if (info?.reason !== undefined) {
+        seen.push(info.reason);
+      }
+
+      Object.values(node).forEach(walk);
+    };
+
+    walk(parse(query, { tolerant: true }));
+
+    return seen;
+  };
+
+  it('calls a stray at index 0 a stray, not trailing input', () => {
+    // The tokenizer reused the parser's `trailing-input` for any discarded
+    // stray, so `:abc` — where the discarded `:` is the FIRST character and
+    // nothing trails anything — told a consumer branching on the reason that
+    // text after the end of the query had been ignored.
+    expect(reasons(':abc')).toContain('stray-input');
+    expect(reasons(':abc')).not.toContain('trailing-input');
+  });
+
+  it('still calls genuine trailing text trailing input', () => {
+    expect(reasons('a AND b )')).toContain('trailing-input');
+  });
+});

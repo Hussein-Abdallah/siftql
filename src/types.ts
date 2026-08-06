@@ -89,8 +89,14 @@ export const RECOVERY_REASONS = Object.freeze({
   missingOperand: 'missing-operand',
   /** A `^boost` or `~fuzzy` modifier was dropped; both are reserved for v0.2. */
   unsupportedModifier: 'unsupported-modifier',
-  /** Text after the end of the query was ignored — a stray `)` or `]`. */
+  /** Text after a complete expression was ignored, as in `a AND b )`. */
   trailingInput: 'trailing-input',
+  /**
+   * A stray structural character was discarded from inside the query, as in
+   * `:abc`. Distinct from `trailingInput`, which means the query had already
+   * finished: a stray can sit at index 0, where nothing trails anything.
+   */
+  strayInput: 'stray-input',
 });
 
 /**

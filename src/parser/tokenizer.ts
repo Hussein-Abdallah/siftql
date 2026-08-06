@@ -220,7 +220,7 @@ const chunksToSegments = (
 
 const RECOVERED_QUOTE = 'unterminated-quote';
 /** A stray structural character was discarded in tolerant mode. */
-const STRAY_SKIPPED = 'trailing-input';
+const STRAY_SKIPPED = 'stray-input';
 const RECOVERED_REGEX = 'unterminated-regex';
 
 /**

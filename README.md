@@ -357,25 +357,61 @@ does not blank out mid-keystroke. Recovered nodes are flagged in the AST, so a U
 can grey out the clause in flight. Set `onRecovered: 'throw'` where acting on a
 guess is unacceptable.
 
+A tolerant engine also never throws for the query itself. A half-typed clause is
+often well-formed but meaningless — `d:>=2020-` compares against the string
+`"2020-"`, which has no ordering — so a clause whose operands cannot be resolved
+is dropped along with the incomplete ones:
+
+```ts
+engine.filter('name:ada AND d:>=2020-', rows); // → the rows matching name:ada
+```
+
+This is the trade `tolerant: true` exists to make, and it is confined to it. A
+default engine still refuses the same query, because a caller who did not ask
+for leniency should hear about a broken query rather than quietly receive more
+rows than they asked for:
+
+```ts
+filter('d:>=2020-', rows); // throws SiftQLOperandError
+```
+
 ### Highlighting
 
 ```ts
 highlight('status:active OR status:done', row);
-// [{ path: 'status', segments: ['status'], query: /^active$/giu }]
+// [{ path: 'status', segments: ['status'], ranges: [{ start: 0, end: 6 }] }]
 ```
 
 Only clauses that actually contributed are reported: the losing branch of an
-`OR`, and everything under a satisfied `NOT`, contribute nothing. `query` is
-absent when the whole value is the match (a range, a comparison, a boolean).
+`OR`, and everything under a satisfied `NOT`, contribute nothing. `ranges` is
+absent when the whole value is the match with no textual footprint to point at —
+a range, a comparison, a boolean.
 
-It plugs straight into a highlighter component, since `query` is a `RegExp`:
+**Positions, not patterns.** `ranges` are half-open offsets into the value, and
+they are what the built-in types report. That is not only about handing back a
+`RegExp` a caller then has to run; it is about being able to state the answer at
+all. Matching folds case with `toLowerCase`, and a `RegExp` applied by the caller
+folds under its own rules, which disagree in both directions — `/s/iu` matches
+`ſ`, which siftql does not, and `toLowerCase` maps the Kelvin sign `K` to `k`,
+which `/k/iu` refuses. Spans are computed against exactly the string the matcher
+compared, so a span is reported if and only if the value really matched there.
+
+Rendering them takes no library:
 
 ```tsx
-<Highlighter
-  searchWords={highlights.map((h) => h.query)}
-  textToHighlight={value}
-/>
+const parts = [];
+let at = 0;
+
+for (const { start, end } of hit.ranges ?? []) {
+  parts.push(value.slice(at, start), <mark>{value.slice(start, end)}</mark>);
+  at = end;
+}
+
+parts.push(value.slice(at));
 ```
+
+A custom value type may still report a `query` instead, and `Highlight.query` is
+kept for that. Prefer `ranges` when both are present.
 
 ## Comparison
 

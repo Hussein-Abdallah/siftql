@@ -11,6 +11,7 @@ import {
   callHighlightSpans,
   callParseOperand,
   callPredicate,
+  readOrdering,
 } from './consumer.js';
 import type {
   AnyValueType,
@@ -159,7 +160,7 @@ const resolveOperand = (
       // is exactly why `name:>="m"` throws instead of inventing an answer.
       if (
         (site.kind === 'ordered' || site.kind === 'range') &&
-        type.ordering === undefined
+        readOrdering(type) === undefined
       ) {
         throw new SiftQLOperandError(
           `Type "${type.name}" has no ordering, so it cannot be compared with ${
@@ -524,7 +525,9 @@ const compareOperands = (
   field: Field,
 ): number | null => {
   try {
-    return lower.type.ordering?.compare(upper.operand, lower.operand) ?? null;
+    return (
+      readOrdering(lower.type)?.compare(upper.operand, lower.operand) ?? null
+    );
   } catch (error) {
     throw new SiftQLOperandError(
       `Value type ${lower.type.name}.ordering.compare() threw while checking the range boundaries against each other: ${

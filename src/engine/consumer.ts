@@ -80,6 +80,62 @@ const brokenType = (
   );
 };
 
+/**
+ * Read `type.ordering`, guarded and shape-checked.
+ *
+ * Reading a member of consumer code is itself running consumer code — that is
+ * why `matches` goes through a guard and says so — and `ordering` did not. A
+ * type whose `ordering` is a throwing accessor escaped a raw `Error` from
+ * `test()`, from `filter()` and from `types.describe()`, straight past the
+ * promise that every error siftql throws is a `SiftQLError`.
+ *
+ * The shape is checked here too. `ordering: {}` and `ordering: null` were
+ * reported as `ordered: true` by `describe()` and then made `n:>5` quietly
+ * return `false`, where the same clause against a genuinely unordered type
+ * raises UNORDERED_TYPE. A confident wrong answer is the worse of the two.
+ */
+export const readOrdering = (
+  type: AnyValueType,
+): { compare(a: unknown, b: unknown): number | null } | undefined => {
+  let ordering: unknown;
+
+  try {
+    ordering = type.ordering;
+  } catch (error) {
+    brokenType(type, 'ordering', 'threw when it was read.', error);
+  }
+
+  if (ordering === undefined || ordering === null) {
+    return undefined;
+  }
+
+  if (typeof ordering !== 'object') {
+    brokenType(
+      type,
+      'ordering',
+      `must be an object with a compare(a, b) method, or absent; it is ${typeof ordering}.`,
+    );
+  }
+
+  let compare: unknown;
+
+  try {
+    compare = (ordering as { compare?: unknown }).compare;
+  } catch (error) {
+    brokenType(type, 'ordering.compare', 'threw when it was read.', error);
+  }
+
+  if (typeof compare !== 'function') {
+    brokenType(
+      type,
+      'ordering',
+      'is present but has no compare(a, b) function, so the type claims an ordering it cannot perform.',
+    );
+  }
+
+  return ordering as { compare(a: unknown, b: unknown): number | null };
+};
+
 /* ------------------------------------------------------------------------- *
  * Shape checks for what a callback hands back.
  * ------------------------------------------------------------------------- */
@@ -359,7 +415,50 @@ export const callHighlightSpans = (
   try {
     const spans = type.highlightSpans?.(value, operand, ctx);
 
-    return Array.isArray(spans) ? spans : null;
+    if (!Array.isArray(spans)) {
+      return null;
+    }
+
+    /*
+     * VALIDATED and COPIED, neither of which it used to be.
+     *
+     * `Array.isArray` was the whole check, so `[{ start: 999, end: -5 }]` and
+     * `[null, { start: 'a' }]` were published verbatim and a consumer slicing by
+     * them got nonsense or a crash. And the array came straight back from the
+     * type, which caches it per operand — so one caller mutating
+     * `highlight()[0].ranges` corrupted every later hit. `query` is already
+     * re-instantiated per hit for exactly that reason.
+     *
+     * A malformed span is dropped rather than raised: this is the highlight
+     * path, and a record that genuinely matched must not fail to be reported
+     * because a type miscounted where inside it the match was.
+     */
+    const width = typeof value === 'string' ? value.length : 0;
+    const clean: { readonly end: number; readonly start: number }[] = [];
+
+    for (const span of spans as readonly unknown[]) {
+      if (typeof span !== 'object' || span === null) {
+        continue;
+      }
+
+      const { end, start } = span as { end?: unknown; start?: unknown };
+
+      if (
+        typeof start !== 'number' ||
+        typeof end !== 'number' ||
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start < 0 ||
+        end > width ||
+        start >= end
+      ) {
+        continue;
+      }
+
+      clean.push({ end, start });
+    }
+
+    return clean.length > 0 ? clean : null;
   } catch {
     return null;
   }

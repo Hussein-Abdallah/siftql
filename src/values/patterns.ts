@@ -9,7 +9,7 @@ import {
   type ValueType,
 } from '../registry.js';
 import type { NonEmptyArray, WildcardSegment } from '../types.js';
-import { escapeRegExp, fold } from './scalars.js';
+import { fold } from './scalars.js';
 
 /**
  * The two pattern types. Both are token-gated — they claim only their own AST
@@ -23,7 +23,8 @@ import { escapeRegExp, fold } from './scalars.js';
 export interface CompiledWildcard {
   /** Linear-time glob; see {@link matchGlob}. */
   readonly glob: Glob;
-  readonly highlighter: RegExp | null;
+  /** The literal segments to underline; see {@link wildcardLiterals}. */
+  readonly literals: readonly string[];
   readonly caseSensitive: boolean;
 }
 
@@ -174,37 +175,30 @@ export const matchGlob = (value: string, glob: Glob): boolean => {
 };
 
 /**
- * A pattern that finds the parts the user actually typed.
+ * The parts the user actually typed, longest first.
  *
  * The whole-value matcher is the wrong thing to underline: `*smith*` against
  * "Smithers" would light up the entire cell, telling the reader nothing about
  * WHY it matched. The literal segments are what they searched for, so those are
  * what gets highlighted.
  *
- * Returns `null` for a pattern with no literal segments at all (`*`, `??`):
- * everything matched, so there is no particular part to point at.
+ * Empty for a pattern with no literal segments at all (`*`, `??`): everything
+ * matched, so there is no particular part to point at.
+ *
+ * Folded when the clause is case-insensitive, because these are searched
+ * against the folded value — the same string {@link matchGlob} is given.
  */
-export const compileWildcardHighlighter = (
+export const wildcardLiterals = (
   pattern: NonEmptyArray<WildcardSegment>,
   caseSensitive: boolean,
-): RegExp | null => {
-  const literals = pattern
+): readonly string[] =>
+  pattern
     .filter((segment) => segment.type === 'WildcardLiteral')
-    .map((segment) => segment.value)
-    .filter((value) => value.length > 0);
-
-  if (literals.length === 0) {
-    return null;
-  }
-
-  // Longest first, so `ab|a` cannot match the short alternative and stop early.
-  const alternatives = [...literals]
-    .sort((left, right) => right.length - left.length)
-    .map((value) => escapeRegExp(value))
-    .join('|');
-
-  return new RegExp(`(?:${alternatives})`, caseSensitive ? 'gu' : 'giu');
-};
+    .map((segment) => (caseSensitive ? segment.value : fold(segment.value)))
+    .filter((value) => value.length > 0)
+    // Longest first, so a short literal cannot claim a position a longer one
+    // covers — the same reason the alternation this replaced was sorted.
+    .sort((left, right) => right.length - left.length);
 
 export const wildcardType: ValueType<CompiledWildcard, string> =
   defineValueType<CompiledWildcard, string>({
@@ -215,20 +209,42 @@ export const wildcardType: ValueType<CompiledWildcard, string> =
       matchGlob(operand.caseSensitive ? value : fold(value), operand.glob),
 
     /*
-     * A wildcard's highlighter is built from ESCAPED LITERAL text, so it has no
-     * quantified group to backtrack over and is safe to hand out.
+     * SPANS, for the reason `stringType` gives at length: a `RegExp` applied by
+     * the caller folds differently from `toLowerCase` in both directions, so it
+     * underlines characters this type does not match and misses ones it does.
+     * Searching the folded value directly makes the two agree by construction.
      *
-     * The length-changing fold is the same trap `stringType.highlight` documents,
-     * and this type ignored it: matching folds with `toLowerCase`, while the
-     * emitted pattern is applied by the CALLER to the raw value under RegExp's
-     * own `i`. Those disagree exactly when folding changes length, so
-     * `name:*i*` matched "İstanbul" and then handed back a pattern that
-     * highlighted nothing in it.
+     * The length guard is what makes the indices addressable at all — `name:*i*`
+     * matched "İstanbul" and then pointed at positions that do not exist in it.
      */
-    highlight: (value, operand) =>
-      !operand.caseSensitive && fold(value).length !== value.length
-        ? null
-        : operand.highlighter,
+    highlightSpans: (value, operand) => {
+      const haystack = operand.caseSensitive ? value : fold(value);
+
+      if (haystack.length !== value.length || operand.literals.length === 0) {
+        return null;
+      }
+
+      const found: { end: number; start: number }[] = [];
+
+      // Longest-literal-first at each position, then skip past it: exactly the
+      // non-overlapping, longest-alternative-wins walk the old `(?:ab|a)g`
+      // pattern performed.
+      for (let at = 0; at < haystack.length; ) {
+        const hit = operand.literals.find((literal) =>
+          haystack.startsWith(literal, at),
+        );
+
+        if (hit === undefined) {
+          at += 1;
+          continue;
+        }
+
+        found.push({ end: at + hit.length, start: at });
+        at += hit.length;
+      }
+
+      return found.length > 0 ? found : null;
+    },
 
     name: 'wildcard',
 
@@ -240,10 +256,7 @@ export const wildcardType: ValueType<CompiledWildcard, string> =
       return claimed({
         caseSensitive: ctx.caseSensitive,
         glob: compileWildcard(operand.pattern, ctx.caseSensitive),
-        highlighter: compileWildcardHighlighter(
-          operand.pattern,
-          ctx.caseSensitive,
-        ),
+        literals: wildcardLiterals(operand.pattern, ctx.caseSensitive),
       });
     },
   });

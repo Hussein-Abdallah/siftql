@@ -16,12 +16,12 @@ const paths = (query: string): string[] =>
   highlight(query, ROW).map((entry) => entry.path);
 
 describe('what matched', () => {
-  it('names the field and supplies a pattern to light up', () => {
+  it('names the field and says where inside it to light up', () => {
     const [entry] = highlight('status:active', ROW);
 
     expect(entry?.path).toBe('status');
     expect(entry?.segments).toEqual(['status']);
-    expect(entry?.query?.test('active')).toBe(true);
+    expect(entry?.ranges).toEqual([{ end: 'active'.length, start: 0 }]);
   });
 
   it('reports the array element that matched, not the array', () => {
@@ -46,11 +46,21 @@ describe('what matched', () => {
     expect(entry?.query).toBeUndefined();
   });
 
-  it('anchors a fielded pattern but not a scan', () => {
-    // A fielded match is whole-value, so its pattern is anchored; an unfielded
-    // one is containment, so the pattern finds the substring inside the value.
-    expect(highlight('status:active', ROW)[0]?.query?.source).toContain('^');
-    expect(highlight('lovelace', ROW)[0]?.query?.source).not.toContain('^');
+  it('spans the whole value for a fielded match, and only the term for a scan', () => {
+    // A fielded match is whole-value; an unfielded one is containment, so it
+    // points at the substring rather than the field.
+    const [fielded] = highlight('status:active', ROW);
+    const [scan] = highlight('lovelace', ROW);
+
+    expect(fielded?.ranges).toEqual([{ end: 6, start: 0 }]);
+
+    const name = ROW.name;
+    const hit = scan?.ranges?.[0];
+
+    // The span addresses the ORIGINAL value, so it keeps its own casing even
+    // though the search that found it ran on the folded text.
+    expect(name.slice(hit?.start, hit?.end)).toBe('Lovelace');
+    expect(hit?.start).toBeGreaterThan(0);
   });
 });
 
@@ -168,11 +178,13 @@ describe('a highlight points at what was searched for, not the whole value', () 
   const underlined = (query: string, field: 'notes' | 'surname'): string[] => {
     const entry = highlight(query, person).find((h) => h.path === field);
 
-    if (!entry?.query) {
+    if (!entry?.ranges) {
       return [];
     }
 
-    return [...person[field].matchAll(entry.query)].map((match) => match[0]);
+    return entry.ranges.map((range) =>
+      person[field].slice(range.start, range.end),
+    );
   };
 
   it('underlines only the literal part of a wildcard pattern', () => {
@@ -203,7 +215,30 @@ describe('a highlight points at what was searched for, not the whole value', () 
     const [entry] = highlight('surname:*', person);
 
     expect(entry?.path).toBe('surname');
+    expect(entry?.ranges).toBeUndefined();
     expect(entry?.query).toBeUndefined();
+  });
+
+  it('folds case exactly as matching does, in both directions', () => {
+    /*
+     * The reason these are spans and not a RegExp. Matching folds with
+     * toLowerCase; a caller applying an `iu` pattern to the raw value folds
+     * differently, and disagrees BOTH ways — `/s/iu` marks `ſ`, which this does
+     * not match, and `/k/iu` refuses the Kelvin sign, which it does.
+     */
+    const marked = (query: string, value: string): string[] => {
+      const [entry] = highlight(query, { v: value });
+
+      return (entry?.ranges ?? []).map((range) =>
+        value.slice(range.start, range.end),
+      );
+    };
+
+    expect(marked('s', 'aſb s')).toEqual(['s']);
+    expect(marked('v:*s*', 'aſb s')).toEqual(['s']);
+    expect(marked('k', 'aKb k')).toEqual(['K', 'k']);
+    // A length-changing fold has no addressable span, so none is offered.
+    expect(marked('i', 'İstanbul')).toEqual([]);
   });
 
   it('respects case sensitivity in the pattern it hands back', () => {

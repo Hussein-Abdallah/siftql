@@ -400,10 +400,25 @@ const serializeBody = (
     }
 
     case 'MissingExpression':
-      // A hole has no text. Serializing a tolerant-mode AST therefore yields the
-      // incomplete query the user was typing, which only re-parses in tolerant
-      // mode -- the round-trip law is stated over queries the STRICT parser
-      // accepts, and those never contain holes.
+      /*
+       * A hole has no text, so serializing a tolerant AST yields the incomplete
+       * query the user was typing. That output is a BEST-EFFORT RENDERING and is
+       * not guaranteed to re-parse in either mode.
+       *
+       * This used to claim it "only re-parses in tolerant mode", which was
+       * simply untrue: a Tag with a hole prints as `field:` with nothing after
+       * it, so when the next sibling is parenthesized the two run together and
+       * `!:}""O:` serializes to `!: ("" O:)`, which strict rejects as a field
+       * group containing a field and tolerant rejects for the same reason.
+       * Fixing that in the serializer would mean inventing text the user never
+       * typed, which is worse than saying what this does.
+       *
+       * The round-trip law (I4) is unaffected: it is stated over queries the
+       * STRICT parser accepts, and those never contain holes. To evaluate a
+       * tolerant tree, pass the tree itself — `engine.test`/`filter`/`highlight`
+       * all take an AST, and apply the recovery policy to it directly. Round-
+       * tripping it through text is the thing that has no defined answer.
+       */
       return '';
 
     case 'ParenthesizedExpression':

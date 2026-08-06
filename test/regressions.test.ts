@@ -354,17 +354,27 @@ describe('dates', () => {
 });
 
 describe('highlight', () => {
-  it('gives every entry its own RegExp instance', () => {
-    // The type compiles one highlighter and handed back the same object, so a
-    // caller iterating the results got alternating answers from `g` state.
+  it('gives every entry its own spans, with no shared state to advance', () => {
+    /*
+     * This began as a `g`-flag bug: the type compiled ONE highlighter and handed
+     * back the same object, so a caller iterating the results got alternating
+     * answers from shared `lastIndex`. Spans cannot have that failure — they
+     * carry no cursor — but they must still not be a shared array, or a consumer
+     * mutating one entry would corrupt every later hit from the same operand.
+     */
     const entries = highlight('a:*foo* AND b:*foo*', {
       a: 'foofoo',
       b: 'foofoo',
     });
 
     expect(entries).toHaveLength(2);
-    expect(entries[0]?.query).not.toBe(entries[1]?.query);
-    expect(entries.every((entry) => entry.query?.lastIndex === 0)).toBe(true);
+    expect(entries.every((entry) => entry.query === undefined)).toBe(true);
+    expect(entries[0]?.ranges).toEqual([
+      { end: 3, start: 0 },
+      { end: 6, start: 3 },
+    ]);
+    expect(entries[0]?.ranges).toEqual(entries[1]?.ranges);
+    expect(entries[0]?.ranges).not.toBe(entries[1]?.ranges);
   });
 
   it('reports a matchKeys hit without a pattern that cannot match the value', () => {

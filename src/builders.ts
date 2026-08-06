@@ -165,7 +165,10 @@ export const builders: AstBuilders = Object.freeze({
     segments: path.map((name) => ({
       location: at,
       name,
-      quoted: false,
+      // An empty segment can only be written `""`, so it is quoted whatever the
+      // caller passed — the same normalisation `term('')` makes, and what keeps
+      // `field('a', '')` round-tripping through serialize and parse.
+      quoted: name.length === 0,
       type: 'FieldSegment' as const,
     })) as unknown as Field['segments'],
     type: 'Field',

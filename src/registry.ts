@@ -766,14 +766,32 @@ export interface Highlight {
    * Exactly where the matches are, when the type could compute them.
    *
    * PREFER THIS OVER `query`. It is data rather than a program: nothing the
-   * consumer runs, so nothing that can backtrack. `query` remains for types
-   * whose pattern is built from escaped literal text — a wildcard or a plain
-   * term — where the regex provably cannot blow up.
+   * consumer runs, so nothing that can backtrack. It is also the only form that
+   * can state what the built-in types actually match — matching folds case with
+   * `toLowerCase`, and a `RegExp` applied by a caller folds under rules that
+   * disagree in both directions, so `/s/iu` marks `ſ` where siftql does not
+   * match and `/k/iu` refuses the Kelvin sign where it does.
+   *
+   * Every built-in reports spans. `query` remains for custom types.
+   *
+   * Absent when the whole value is the match and there is no substring to point
+   * at — a range, a comparison, a boolean — and when case folding CHANGES THE
+   * LENGTH of the value (`'İ'.toLowerCase()` is two code points), because then
+   * no offset into the original value is meaningful.
    */
   readonly ranges?: readonly HighlightSpan[];
   /** Dotted path for display: `name.first`, `tags.3`. Lossy if a key has a dot. */
   readonly path: string;
-  /** Unambiguous form of `path`; prefer it for programmatic lookup. */
+  /**
+   * Unambiguous form of `path`; prefer it for programmatic lookup.
+   *
+   * May address a key the item does NOT have, in one case: when the absence is
+   * itself the match. `membership:null` matches `{ name: 'bob' }` — a missing
+   * key reads as null — and reports `['membership']`, which resolves to
+   * `undefined`. The clause did match, and naming it is the useful answer; there
+   * is simply nothing there to underline. Treat a lookup that yields `undefined`
+   * as "matched by absence", not as a malformed highlight.
+   */
   readonly segments: readonly (string | number)[];
   /**
    * Where inside the value to underline. Absent when the whole value is the

@@ -671,7 +671,17 @@ class Parser {
     const segments = token.segments.map((segment): FieldSegment => ({
       location: span(segment.start, segment.end),
       name: segment.name,
-      quoted: segment.quoted,
+      /*
+       * An EMPTY segment is always reported as quoted, because `""` is the only
+       * way to write one. `serializeField` already prints it that way, but the
+       * parser reported `quoted: false`, so `a.:1` serialized to `a."":1` and
+       * re-parsed to a tree that was not deep-equal to the first — breaking the
+       * round-trip law over `a.:1`, `.a:1`, `a..b:1` and `.:1`.
+       *
+       * `builders.term('')` normalises for exactly this reason; this is the same
+       * rule, applied to the other place a name can be empty.
+       */
+      quoted: segment.quoted || segment.name.length === 0,
       type: 'FieldSegment',
     })) as unknown as NonEmptyArray<FieldSegment>;
 

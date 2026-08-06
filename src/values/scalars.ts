@@ -67,29 +67,58 @@ export const stringType: ValueType<StringOperand, string> = defineValueType<
   equals: (value, operand) =>
     (operand.caseSensitive ? value : value.toLowerCase()) === operand.needle,
 
-  highlight: (value, operand, ctx) => {
-    /*
-     * Matching folds with toLowerCase; a highlight pattern is applied by the
-     * CALLER to the raw, unfolded value. Those only agree while folding
-     * preserves length -- and it does not always: `'İ'.toLowerCase()` is TWO
-     * code points (i + combining dot above), so `test()` matched while the
-     * emitted pattern matched nothing, and a caller got a highlight that
-     * highlighted nothing.
-     *
-     * When the fold changes length there is no span to point at that is both
-     * correct and expressible, so no pattern is offered. The path is still
-     * reported -- the field DID match -- exactly as for a range or a boolean.
-     */
-    if (!operand.caseSensitive && fold(value).length !== value.length) {
+  /*
+   * SPANS, not a pattern, because no `RegExp` expresses what this type matches.
+   *
+   * Matching folds with `toLowerCase`. A highlight `RegExp` is applied by the
+   * CALLER to the raw value under RegExp's own case rules, and those two fold
+   * differently in BOTH directions:
+   *
+   *   - `/s/iu` matches `ſ`, which `toLowerCase` leaves alone, so the caller
+   *     underlined a character this type does not match.
+   *   - `toLowerCase` maps the Kelvin sign to `k`, which `/k/iu` refuses, so
+   *     dropping `u` would just trade over-marking for under-marking.
+   *
+   * Computing the positions here settles it: the search runs on exactly the
+   * folded string `matches` compares, so a span is reported if and only if this
+   * type says the value matched there.
+   *
+   * The length guard remains, and is why the indices are meaningful at all:
+   * `'İ'.toLowerCase()` is TWO code points, so positions in the folded string
+   * would not address the original. There is then no span that is both correct
+   * and expressible, so none is offered — the path is still reported, the field
+   * DID match, exactly as for a range or a boolean.
+   */
+  highlightSpans: (value, operand, ctx) => {
+    const haystack = operand.caseSensitive ? value : fold(value);
+
+    if (haystack.length !== value.length) {
       return null;
     }
 
-    return new RegExp(
-      ctx.site.kind === 'scan'
-        ? escapeRegExp(operand.needle)
-        : `^${escapeRegExp(operand.needle)}$`,
-      operand.caseSensitive ? 'gu' : 'giu',
-    );
+    // Not a scan: `:` on a fielded clause and `:=` are both whole-value equality,
+    // so the span is the whole value or there is none.
+    if (ctx.site.kind !== 'scan') {
+      return haystack === operand.needle
+        ? [{ end: value.length, start: 0 }]
+        : null;
+    }
+
+    if (operand.needle.length === 0) {
+      return null;
+    }
+
+    const found: { end: number; start: number }[] = [];
+
+    for (
+      let at = haystack.indexOf(operand.needle);
+      at !== -1;
+      at = haystack.indexOf(operand.needle, at + operand.needle.length)
+    ) {
+      found.push({ end: at + operand.needle.length, start: at });
+    }
+
+    return found.length > 0 ? found : null;
   },
 
   /**

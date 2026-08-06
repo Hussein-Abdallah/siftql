@@ -1,5 +1,5 @@
 import { withoutFailurePolicy } from '../registry.js';
-import { resolveTypeInput } from './consumer.js';
+import { readOrdering, resolveTypeInput } from './consumer.js';
 import { SiftQLConfigError } from '../errors.js';
 import type {
   AnyValueType,
@@ -89,7 +89,7 @@ class Registry implements ValueTypeRegistry {
       name: type.name,
       // A type is ordered if and only if it has an `ordering` object. That
       // absence is the single fact behind `name:>="m"` throwing.
-      ordered: type.ordering !== undefined,
+      ordered: readOrdering(type) !== undefined,
     }));
   }
 

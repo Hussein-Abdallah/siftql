@@ -199,24 +199,6 @@ describe("onRecovered: 'throw' fails closed", () => {
 });
 
 describe('a highlight can always be iterated', () => {
-  /** The loop the contract tells consumers to write. */
-  const countMatches = (pattern: RegExp, text: string): number => {
-    let count = 0;
-    let match = pattern.exec(text);
-
-    while (match !== null) {
-      count += 1;
-
-      if (count > 500) {
-        throw new Error('exec loop did not terminate');
-      }
-
-      match = pattern.exec(text);
-    }
-
-    return count;
-  };
-
   it('reports no pattern when the match is zero-width', () => {
     // Global `a*` matches "a" at 0, then the empty string at 1, and lastIndex
     // never advances again — so the documented loop spins forever. Checking only
@@ -251,13 +233,13 @@ describe('a highlight can always be iterated', () => {
     ]);
   });
 
-  it('still hands back a RegExp for a wildcard, which cannot backtrack', () => {
-    // A wildcard highlighter is built from escaped literal text, so it has no
-    // quantified group to blow up on and stays a convenience for consumers.
+  it('reports a wildcard hit as spans, so there is nothing to run', () => {
+    // No RegExp is handed out for a wildcard either: spans are data, and they
+    // say exactly what matching said, which an `iu` pattern cannot.
     const [hit] = highlight('v:*ab*', { v: 'aabca' });
 
-    expect(hit?.query).toBeDefined();
-    expect(countMatches(hit!.query!, 'aabca')).toBe(1);
+    expect(hit?.query).toBeUndefined();
+    expect(hit?.ranges).toEqual([{ end: 3, start: 1 }]);
   });
 
   it('reports the whole value as the match when there is no pattern', () => {

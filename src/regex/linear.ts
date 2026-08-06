@@ -363,6 +363,30 @@ class Parser {
       return { at: character === 'b' ? 'word' : 'nonword', kind: 'assert' };
     }
 
+    if (character === 'k' && this.peek(2) === '<') {
+      /*
+       * A NAMED backreference. `\1` was refused and this was not, so it decoded
+       * as the literal characters `k<name>` — wrong in both directions:
+       * `/^(?<w>a+)\k<w>$/` stopped matching "aaaa", and started matching the
+       * text "xk<w>y". Same impossibility as `\1`, same refusal.
+       */
+      fail(
+        'a named backreference, which cannot be matched in guaranteed linear time',
+      );
+    }
+
+    if (character === 'c') {
+      const letter = this.peek(2);
+
+      if (/^[A-Za-z]$/u.test(letter)) {
+        this.index += 3;
+
+        const code = letter.toUpperCase().charCodeAt(0) - 64;
+
+        return { kind: 'char', set: set([[code, code]]) };
+      }
+    }
+
     this.index += 2;
 
     return { kind: 'char', set: this.escapeSet(character) };
@@ -414,6 +438,54 @@ class Parser {
     }
   }
 
+  /**
+   * One item inside `[...]`: a single character, or a shorthand set like `\d`.
+   *
+   * Separated from range-forming because conflating them was two defects. The
+   * old loop pushed an escape's ranges and `continue`d, so it never looked for
+   * the `-` that followed: `[\x41-\x43]` became the three literals `A`, `-`,
+   * `C` and `[\x00-\x1f]` — the ordinary "control characters" idiom — silently
+   * matched almost nothing. And when an escape appeared on the RIGHT of a dash,
+   * the endpoint was taken as the first code of its set, so `[1-\d]` compiled to
+   * the inverted range [49,48] and `[a-\w]` matched nothing at all.
+   */
+  private parseClassAtom():
+    | { readonly kind: 'char'; readonly code: number }
+    | { readonly kind: 'set'; readonly set: CharSet } {
+    if (this.peek() !== '\\') {
+      const code = this.peek().charCodeAt(0);
+
+      this.index += 1;
+
+      return { code, kind: 'char' };
+    }
+
+    const escaped = this.peek(1);
+
+    // Inside a class `\b` is BACKSPACE, not a word boundary. Outside one it is
+    // the assertion; the same two characters mean different things by position.
+    if (escaped === 'b') {
+      this.index += 2;
+
+      return { code: 0x08, kind: 'char' };
+    }
+
+    this.index += 2;
+
+    const inner = this.escapeSet(escaped);
+
+    // A shorthand covers many characters, so it cannot be a range endpoint.
+    if (inner.classes.length > 0 || inner.negate || inner.ranges.length !== 1) {
+      return { kind: 'set', set: inner };
+    }
+
+    const [only] = inner.ranges;
+
+    return only && only[0] === only[1]
+      ? { code: only[0], kind: 'char' }
+      : { kind: 'set', set: inner };
+  }
+
   private parseClass(): CharSet {
     this.index += 1;
 
@@ -426,67 +498,59 @@ class Parser {
     const ranges: (readonly [number, number])[] = [];
     const classes: string[] = [];
 
+    const absorb = (item: ReturnType<Parser['parseClassAtom']>): void => {
+      if (item.kind === 'char') {
+        ranges.push([item.code, item.code]);
+
+        return;
+      }
+
+      if (item.set.negate) {
+        // `[\D]` needs set subtraction to express exactly; refusing is honest.
+        fail('a negated shorthand inside a character class');
+      }
+
+      ranges.push(...item.set.ranges);
+      classes.push(...item.set.classes);
+    };
+
     while (this.index < this.source.length && this.peek() !== ']') {
-      if (this.peek() === '\\') {
-        const escaped = this.peek(1);
+      const left = this.parseClassAtom();
 
-        this.index += 2;
+      // A `-` forms a range only between two single characters, and only when
+      // something other than `]` follows. Otherwise it is a literal dash, which
+      // is what makes `[a-]`, `[-a]` and `[\d-z]` all read correctly.
+      if (
+        left.kind === 'char' &&
+        this.peek() === '-' &&
+        this.peek(1) !== ']' &&
+        this.peek(1) !== ''
+      ) {
+        const dashAt = this.index;
 
-        if ('dDwWsS'.includes(escaped)) {
-          const inner = this.escapeSet(escaped);
+        this.index += 1;
 
-          if (inner.negate) {
-            // `[\D]` inside a class needs set subtraction to express exactly;
-            // refusing is honest and this is rare.
-            fail(`\\${escaped} inside a character class`);
+        const right = this.parseClassAtom();
+
+        if (right.kind === 'char') {
+          if (right.code < left.code) {
+            fail('a character class range whose end is below its start');
           }
 
-          ranges.push(...inner.ranges);
-          classes.push(...inner.classes);
+          ranges.push([left.code, right.code]);
           continue;
         }
 
-        // Step back so escapeSet sees the same position an outside escape would.
-        this.index -= 2;
-        this.index += 2;
-
-        const inner = this.escapeSet(escaped);
-
-        ranges.push(...inner.ranges);
+        // `[1-\d]`: JavaScript reads this as three items, not a range.
+        ranges.push([left.code, left.code]);
+        ranges.push([0x2d, 0x2d]);
+        absorb(right);
+        // The dash was consumed as a literal; nothing to rewind.
+        void dashAt;
         continue;
       }
 
-      const from = this.peek().charCodeAt(0);
-
-      this.index += 1;
-
-      if (this.peek() === '-' && this.peek(1) !== ']' && this.peek(1) !== '') {
-        this.index += 1;
-
-        const to =
-          this.peek() === '\\'
-            ? (() => {
-                const escaped = this.peek(1);
-
-                this.index += 2;
-
-                const inner = this.escapeSet(escaped);
-
-                return inner.ranges[0]?.[0] ?? 0;
-              })()
-            : (() => {
-                const code = this.peek().charCodeAt(0);
-
-                this.index += 1;
-
-                return code;
-              })();
-
-        ranges.push([from, to]);
-        continue;
-      }
-
-      ranges.push([from, from]);
+      absorb(left);
     }
 
     if (this.peek() !== ']') {
@@ -529,27 +593,112 @@ const inRanges = (
   return false;
 };
 
+/**
+ * JavaScript's `Canonicalize`, which is not `toUpperCase`.
+ *
+ * Two rules matter and the first version had neither:
+ *
+ *  - A character whose uppercase is MULTIPLE characters does not fold. `ß`
+ *    uppercases to `SS`, so `/S/i` must not match it.
+ *  - A NON-ASCII character whose uppercase is ASCII does not fold. Otherwise
+ *    `/k/i` matches the Kelvin sign `K`, `/S/i` matches `ſ`, and `/I/i` matches
+ *    the dotless `ı` — all of which `RegExp` refuses.
+ *
+ * Folding with a bare `toUpperCase` produced exactly those over-matches.
+ */
+const canonicalize = (code: number): number => {
+  const upper = String.fromCharCode(code).toUpperCase();
+
+  if (upper.length !== 1) {
+    return code;
+  }
+
+  const upperCode = upper.charCodeAt(0);
+
+  return code >= 128 && upperCode < 128 ? code : upperCode;
+};
+
+/**
+ * Every character that canonicalizes the same way this one does.
+ *
+ * Needed because folding only the INPUT is not enough: `/σ/i` must match `ς`,
+ * and neither is the other's `toUpperCase`. Both reach `Σ`, so the closure runs
+ * twice — `ς` → `Σ` → `σ` — and then keeps only the members that really share a
+ * canonical form, which is what keeps `ß`, `ı` and the Kelvin sign out.
+ */
+const foldCandidates = (code: number): number[] => {
+  const canonical = canonicalize(code);
+  const found = new Set<number>([code]);
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (const member of [...found]) {
+      const character = String.fromCharCode(member);
+
+      for (const variant of [
+        character.toLowerCase(),
+        character.toUpperCase(),
+      ]) {
+        if (variant.length === 1) {
+          found.add(variant.charCodeAt(0));
+        }
+      }
+    }
+  }
+
+  return [...found].filter((member) => canonicalize(member) === canonical);
+};
+
 /** Turn a set into a predicate, folding case and widening `.` under `s`. */
+
 const predicate = (
   source: CharSet,
   options: Options,
 ): ((code: number) => boolean) => {
   const isDot = source.classes.includes('.');
 
+  /*
+   * Under `i`, the PATTERN side is canonicalized too, once, here.
+   *
+   * Folding only the input is not enough when two lowercase forms share one
+   * uppercase: `Σ.toLowerCase()` is always `σ`, never `ς`, so no amount of
+   * case-flipping the input reaches `ς` from `σ`. `/σ/i` therefore missed `ς`
+   * and Greek search was wrong.
+   *
+   * Adding each single character's canonical form to the set makes both
+   * directions meet in the middle: `{ς}` becomes `{ς, Σ}`, and an input of `σ`
+   * canonicalizes to `Σ` and is found. Multi-character ranges are left alone —
+   * `[a-z]` cannot be expanded cheaply — and are covered by testing the input's
+   * fold candidates below.
+   */
+  const ranges = options.ignoreCase
+    ? [
+        ...source.ranges,
+        ...source.ranges
+          .filter(([from, to]) => from === to)
+          .map(([from]) => [canonicalize(from), canonicalize(from)] as const),
+      ]
+    : source.ranges;
+
   return (code: number): boolean => {
     if (isDot) {
       return options.dotAll || !LINE_TERMINATORS.has(code);
     }
 
-    let hit = inRanges(code, source.ranges);
+    let hit = inRanges(code, ranges);
 
     if (!hit && options.ignoreCase) {
-      // Simple case folding, which covers the alphabets a search box sees.
-      const character = String.fromCharCode(code);
-      const upper = character.toUpperCase().charCodeAt(0);
-      const lower = character.toLowerCase().charCodeAt(0);
+      // The input's own canonical form, then the handful of characters sharing
+      // it — which is what covers a multi-character range like `[a-z]`.
+      hit = inRanges(canonicalize(code), ranges);
 
-      hit = inRanges(upper, source.ranges) || inRanges(lower, source.ranges);
+      if (!hit) {
+        for (const candidate of foldCandidates(code)) {
+          if (inRanges(candidate, ranges)) {
+            hit = true;
+            break;
+          }
+        }
+      }
     }
 
     return source.negate ? !hit : hit;
@@ -558,6 +707,28 @@ const predicate = (
 
 class Program {
   public readonly code: Inst[] = [];
+
+  /**
+   * Compilation steps taken, which is NOT the same as instructions emitted.
+   *
+   * The budget used to live only in `emit`, so a body that compiles to ZERO
+   * instructions — `()`, `(?:)` — could be repeated for free: `{1000}` spun the
+   * duplication loop a thousand times without emitting anything, and nesting
+   * multiplied it. `((((){1000}){1000}){1000}){1000}` is 32 characters and took
+   * over 75 seconds, which moved the uninterruptible hang this engine exists to
+   * remove from match time to COMPILE time.
+   */
+  public steps = 0;
+
+  public step(): void {
+    this.steps += 1;
+
+    if (this.steps > MAX_PROGRAM) {
+      fail(
+        `more than ${String(MAX_PROGRAM)} compilation steps once counted repetitions are expanded`,
+      );
+    }
+  }
 
   public emit(instruction: Inst): number {
     if (this.code.length >= MAX_PROGRAM) {
@@ -573,6 +744,9 @@ class Program {
 }
 
 const compileNode = (node: Node, program: Program, options: Options): void => {
+  // Counted before the switch, so a node that emits NOTHING still costs budget.
+  program.step();
+
   switch (node.kind) {
     case 'empty':
       return;
@@ -700,11 +874,16 @@ const run = (
   code: readonly Inst[],
   input: string,
   options: Options,
-): boolean => {
+  wantSpan: boolean,
+): { readonly start: number; readonly end: number } | boolean | null => {
   let clist: number[] = [];
   let nlist: number[] = [];
   let seen = new Uint8Array(code.length);
   let nextSeen = new Uint8Array(code.length);
+  // Where the thread at each pc began. Threads are added in priority order and
+  // the first to claim a pc keeps it, so this holds the LEFTMOST start.
+  let from = new Int32Array(code.length);
+  let nextFrom = new Int32Array(code.length);
 
   const holds = (at: Inst & { op: 'assert' }, position: number): boolean => {
     const before = position > 0 ? input.charCodeAt(position - 1) : undefined;
@@ -736,8 +915,10 @@ const run = (
   const add = (
     list: number[],
     marks: Uint8Array,
+    starts: Int32Array,
     pc: number,
     position: number,
+    origin: number,
   ): void => {
     // An explicit stack: the epsilon closure can be deep, and recursion here
     // would reintroduce a stack overflow on exactly the patterns this exists to
@@ -752,6 +933,7 @@ const run = (
       }
 
       marks[at] = 1;
+      starts[at] = origin;
 
       const instruction = code[at];
 
@@ -774,10 +956,18 @@ const run = (
     }
   };
 
+  let matched: { readonly start: number; readonly end: number } | null = null;
+
   for (let position = 0; position <= input.length; position += 1) {
-    // Unanchored: a fresh attempt may start at any position. Deduplication keeps
-    // this from multiplying the work.
-    add(clist, seen, 0, position);
+    /*
+     * Unanchored: a fresh attempt may start at any position — but only until
+     * something matches, or a later start could win over an earlier one and the
+     * result would not be leftmost. Deduplication keeps this from multiplying
+     * the work.
+     */
+    if (matched === null) {
+      add(clist, seen, from, 0, position, position);
+    }
 
     for (const pc of clist) {
       const instruction = code[pc];
@@ -787,7 +977,22 @@ const run = (
       }
 
       if (instruction.op === 'match') {
-        return true;
+        if (!wantSpan) {
+          return true;
+        }
+
+        /*
+         * Record it and CUT every lower-priority thread — that is what makes
+         * this leftmost-FIRST, the same answer a backtracking engine gives.
+         *
+         * Higher-priority threads were already advanced earlier in this loop, so
+         * they survive and may match again further right; a greedy `a+` reaches
+         * `match` only after the threads that keep consuming, so breaking here
+         * lets it extend. Returning immediately instead reported the SHORTEST
+         * match: `a+` over "baaanaa" gave 1-2, 2-3, 3-4 where `RegExp` gives 1-4.
+         */
+        matched = { end: position, start: from[pc] ?? position };
+        break;
       }
 
       if (
@@ -795,17 +1000,31 @@ const run = (
         position < input.length &&
         instruction.test(input.charCodeAt(position))
       ) {
-        add(nlist, nextSeen, pc + 1, position + 1);
+        add(
+          nlist,
+          nextSeen,
+          nextFrom,
+          pc + 1,
+          position + 1,
+          from[pc] ?? position,
+        );
       }
     }
 
     clist = nlist;
     seen = nextSeen;
+    from = nextFrom;
     nlist = [];
     nextSeen = new Uint8Array(code.length);
+    nextFrom = new Int32Array(code.length);
+
+    // Nothing left that could extend the match, and nothing new may start.
+    if (clist.length === 0 && matched !== null) {
+      break;
+    }
   }
 
-  return clist.some((pc) => code[pc]?.op === 'match');
+  return wantSpan ? matched : false;
 };
 
 /* ------------------------------------------------------------------------- *
@@ -815,6 +1034,20 @@ const run = (
 export interface LinearMatcher {
   /** Does the pattern match anywhere in `input`? Always O(pattern × input). */
   test(input: string): boolean;
+  /**
+   * Every non-overlapping match, as half-open spans.
+   *
+   * This is what lets `highlight()` report WHERE a regex matched without handing
+   * a `RegExp` to the caller. Doing that was a real hole: a pattern this matcher
+   * runs in 3 ms — `^.|(.+)+;` — took a consumer's `exec` loop 8.8 seconds on a
+   * 30-character value, because their loop runs on the backtracking engine even
+   * though ours does not.
+   *
+   * A zero-length match advances by one, so the walk always terminates.
+   */
+  spans(
+    input: string,
+  ): readonly { readonly start: number; readonly end: number }[];
   readonly source: string;
   readonly flags: string;
 }
@@ -838,6 +1071,24 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
   };
 
   try {
+    /*
+     * `u` and `v` are REFUSED, not ignored.
+     *
+     * This matcher works on UTF-16 code units. Under `u`, `.` matches a whole
+     * code POINT and a class may span astral characters, so accepting the flag
+     * and carrying on gave silently different answers: `/^.$/u` matched an emoji
+     * in `RegExp` and not here. That is the exact "trade a hang for wrong
+     * results" outcome this engine exists to avoid, so it is refused with a
+     * message rather than honoured in name only.
+     *
+     * `v` is the same story with more syntax on top.
+     */
+    if (flags.includes('u') || flags.includes('v')) {
+      fail(
+        'the u or v flag, which needs code-point semantics this matcher does not implement',
+      );
+    }
+
     const tree = new Parser(source).parse();
     const program = new Program();
 
@@ -850,7 +1101,36 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
       matcher: {
         flags,
         source,
-        test: (input: string): boolean => run(code, input, options),
+        spans: (input: string) => {
+          const found: { start: number; end: number }[] = [];
+
+          let at = 0;
+
+          while (at <= input.length) {
+            const hit = run(code, input.slice(at), options, true);
+
+            if (hit === null || typeof hit === 'boolean') {
+              break;
+            }
+
+            const start = at + hit.start;
+            const end = at + hit.end;
+
+            found.push({ end, start });
+
+            // A zero-length match would otherwise pin the cursor forever — the
+            // same trap `matchesEmpty` exists to keep out of a caller's loop.
+            at = end > start ? end : start + 1;
+
+            if (found.length > 10_000) {
+              break;
+            }
+          }
+
+          return found;
+        },
+        test: (input: string): boolean =>
+          run(code, input, options, false) === true,
       },
       ok: true,
     };

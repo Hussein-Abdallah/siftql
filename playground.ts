@@ -310,14 +310,16 @@ for (const partial of [
   );
 }
 
-console.log('\n--- ReDoS screening: a heuristic, not a guarantee ---');
-run('v:/^(a+)+$/'); //      refused: nested quantifier -- this pattern hangs
-run('v:/(a*)*/'); //        refused
-run('v:/((a+))+/'); //      refused through an extra layer of grouping
-run('title:/(a|b)*/'); //   allowed: disjoint alternation is fine
-run('title:/^Wr.+e/'); //   allowed: an ordinary pattern
-run('title:*i*t*h*e*s*e*'); // allowed: siftql's own wildcards cannot nest
-// Turn it off for trusted authors: createEngine({ regexGuard: false }).
+console.log('\n--- regexes cannot backtrack: they run on an automaton ---');
+run('v:/^(a+)+$/'); //      runs in linear time; RegExp would take seconds
+run('v:/(a*)*/'); //        same
+run('v:/((a+))+/'); //      same, however it is grouped
+run('title:/(a|b)*/'); //   an ordinary pattern
+run('title:/^Wr.+e/'); //   an ordinary pattern
+run('title:*i*t*h*e*s*e*'); // wildcards use a two-pointer glob, not a regex
+// Backreferences and lookaround are REFUSED -- no engine matches them in
+// guaranteed linear time. createEngine({ regexGuard: false }) runs them on
+// RegExp, and the risk is then yours.
 
 console.log('\n--- highlight: which fields matched, and what to light up ---');
 const hl = (query: string) => {

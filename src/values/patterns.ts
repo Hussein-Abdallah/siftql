@@ -30,6 +30,16 @@ export interface CompiledWildcard {
 /** Anything that can answer "does this value match", statelessly. */
 export interface PatternMatcher {
   test(input: string): boolean;
+  /**
+   * Where the matches are, when the matcher can say.
+   *
+   * Absent on the `RegExp` fallback used under `regexGuard: false` — there the
+   * caller has already accepted the backtracking engine, so the old highlighter
+   * is what they get.
+   */
+  spans?(
+    input: string,
+  ): readonly { readonly start: number; readonly end: number }[];
 }
 
 export interface CompiledPattern {
@@ -202,6 +212,10 @@ export const wildcardType: ValueType<CompiledWildcard, string> =
     equals: (value, operand) =>
       matchGlob(operand.caseSensitive ? value : fold(value), operand.glob),
 
+    /*
+     * A wildcard's highlighter is built from ESCAPED LITERAL text, so it has no
+     * quantified group to backtrack over and is safe to hand out.
+     */
     highlight: (_value, operand) => operand.highlighter,
 
     name: 'wildcard',
@@ -243,7 +257,16 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
   // regex engine. Anchoring is the author's job with ^ and $.
   equals: (value, operand) => operand.matcher.test(value),
 
-  highlight: (_value, operand) => operand.highlighter,
+  /*
+   * No `highlight` hook: a user's own regex is never handed back as a `RegExp`.
+   *
+   * That was a real hole. Once the automaton accepted patterns the old screen
+   * had refused, their highlighters were built and published — and
+   * `bio:/^.|(.+)+;/`, nine characters, filtered in 3 ms while taking the
+   * consumer's `exec` loop 8.8 seconds on a 30-character value. Spans are data;
+   * there is nothing in them to run.
+   */
+  highlightSpans: (value, operand) => operand.matcher.spans?.(value) ?? null,
 
   name: 'regex',
 

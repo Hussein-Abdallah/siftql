@@ -505,6 +505,22 @@ export interface ValueType<TOperand = unknown, TValue = TOperand> {
     ctx: ValueContext,
   ): RegExp | null;
 
+  /**
+   * The spans to light up, when a RegExp would be unsafe to hand out.
+   *
+   * Preferred over {@link ValueType.highlight} when both are present. It exists
+   * because a `RegExp` is not just data — the consumer RUNS it, on the
+   * backtracking engine, in the `exec` loop this package's own docs tell them to
+   * write. A pattern siftql matches in 3 ms via its automaton took a caller 8.8
+   * seconds that way, so the safe thing to publish is where the matches ARE, not
+   * a program for finding them again.
+   */
+  highlightSpans?(
+    value: TValue,
+    operand: TOperand,
+    ctx: ValueContext,
+  ): readonly HighlightSpan[] | null;
+
   /*
    * NOTE FOR v0.2: the SQL/Mongo/Elasticsearch lowering hooks (`portable`,
    * `compile`) are deliberately NOT published in v0.1. They were designed and
@@ -656,12 +672,18 @@ export interface EvaluateOptions {
   /** Also test object KEYS, not only values. */
   readonly matchKeys?: boolean | undefined;
   /**
-   * Screen user-supplied regular expressions for shapes that can backtrack
-   * exponentially. Default `true`.
+   * Refuse a regex the linear matcher cannot take, instead of running it on
+   * JavaScript's backtracking engine. Default `true`.
    *
-   * It is a heuristic, not a guarantee: JavaScript offers no way to bound a
-   * regex engine's work once `test()` is running, so a pattern that passes can
-   * still be slow. Set `false` only where the query author is trusted.
+   * User patterns are matched by an automaton (`src/regex/linear.ts`), so
+   * catastrophic backtracking is not possible for anything it accepts. Two
+   * features it cannot express — backreferences and lookaround — are refused
+   * under this setting, because neither can be matched in guaranteed linear
+   * time by any engine.
+   *
+   * Set `false` to run those on `RegExp` instead. The risk is then yours: a
+   * pattern like `(a+)+` from an untrusted author can block the process for
+   * minutes, and nothing in JavaScript can interrupt it.
    */
   readonly regexGuard?: boolean | undefined;
   /** Longest accepted regex source. Default 1000. */
@@ -724,8 +746,23 @@ export interface ResolvedEngineOptions {
  * nothing in v0.1 could exercise any of it. Adding them later is additive.
  * ========================================================================= */
 
+/** A half-open range inside a matched value. */
+export interface HighlightSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
 /** One field that made a record match, and what to light up inside it. */
 export interface Highlight {
+  /**
+   * Exactly where the matches are, when the type could compute them.
+   *
+   * PREFER THIS OVER `query`. It is data rather than a program: nothing the
+   * consumer runs, so nothing that can backtrack. `query` remains for types
+   * whose pattern is built from escaped literal text — a wildcard or a plain
+   * term — where the regex provably cannot blow up.
+   */
+  readonly ranges?: readonly HighlightSpan[];
   /** Dotted path for display: `name.first`, `tags.3`. Lossy if a key has a dot. */
   readonly path: string;
   /** Unambiguous form of `path`; prefer it for programmatic lookup. */

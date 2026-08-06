@@ -177,6 +177,121 @@ describe('a regex the matcher cannot take is refused, not run', () => {
   });
 });
 
+describe('the cases an audit found after the fuzz reported none', () => {
+  /*
+   * Every one of these was found by an auditor writing their OWN generator after
+   * the author's reported 320,000 comparisons with zero mismatches. The author's
+   * generator was atom-first over eleven simple atoms; an escape-first one over
+   * control characters and non-ASCII found 244 distinct disagreements.
+   *
+   * They are pinned individually because that is the point: the fuzz now
+   * generates these shapes, but a regression should name itself rather than
+   * appear as one line in a counterexample list.
+   */
+  const agrees = (source: string, flags: string, subject: string): void => {
+    const compiled = compileLinear(source, flags);
+
+    expect(compiled.ok, `/${source}/${flags} should compile`).toBe(true);
+
+    if (compiled.ok) {
+      expect(
+        compiled.matcher.test(subject),
+        `/${source}/${flags} vs ${JSON.stringify(subject)}`,
+      ).toBe(new RegExp(source, flags).test(subject));
+    }
+  };
+
+  it('reads a class range whose LEFT endpoint is escaped', () => {
+    // `[\x00-\x1f]` — the ordinary "control characters" idiom — matched only
+    // NUL, `-` and US, because the `-` was never examined after the escape.
+    agrees(String.raw`[\x41-\x43]`, '', 'B');
+    agrees(String.raw`[\x41-\x43]`, '', '-');
+    agrees(String.raw`[\x00-\x1f]`, '', String.fromCharCode(10));
+    agrees(String.raw`[A-Z]`, '', 'M');
+  });
+
+  it('reads a class range whose RIGHT endpoint is a shorthand', () => {
+    // `[1-\d]` built the inverted range [49,48] and `[a-\w]` matched nothing.
+    agrees(String.raw`[1-\d]`, '', '5');
+    agrees(String.raw`[1-\d]`, '', '-');
+    agrees(String.raw`[a-\w]`, '', 'a');
+  });
+
+  it('folds case the way JavaScript does, in both directions', () => {
+    // Over-match: a bare toUpperCase mapped non-ASCII onto ASCII.
+    agrees('k', 'i', 'K');
+    agrees('S', 'i', 'ſ');
+    agrees('S', 'i', 'ß');
+    agrees('I', 'i', 'ı');
+    // Under-match: folding only the input never reaches a second lowercase form.
+    agrees('σ', 'i', 'ς');
+    agrees('ς', 'i', 'σ');
+    agrees('[σ]', 'i', 'ς');
+  });
+
+  it('treats [\\b] as backspace, not the letter b', () => {
+    agrees(String.raw`[\b]`, '', 'b');
+    agrees(String.raw`[\b]`, '', String.fromCharCode(8));
+  });
+
+  it('understands control escapes', () => {
+    agrees(String.raw`\cA`, '', String.fromCharCode(1));
+    agrees(String.raw`\cA`, '', 'cA');
+  });
+
+  it('bounds COMPILATION, not just emitted instructions', () => {
+    /*
+     * A body that compiles to zero instructions — `()`, `(?:)` — could be
+     * repeated for free, so `((((){1000}){1000}){1000}){1000}` was 32 characters
+     * and over 75 seconds. That moved the uninterruptible hang this engine
+     * exists to remove from match time to COMPILE time.
+     */
+    const started = Date.now();
+
+    expect(compileLinear('(?:(?:(?:(?:){1000}){1000}){1000})', '').ok).toBe(
+      false,
+    );
+    expect(compileLinear('((((){1000}){1000}){1000}){1000}', '').ok).toBe(
+      false,
+    );
+    expect(Date.now() - started).toBeLessThan(1000);
+
+    // And an ordinary counted repetition still compiles.
+    expect(compileLinear('(ab){3}', '').ok).toBe(true);
+    expect(compileLinear('^([A-Z]{3}-){1,4}[0-9]{2}$', '').ok).toBe(true);
+  });
+
+  it('refuses a NAMED backreference, as it refuses a numbered one', () => {
+    // `\1` was refused and `\k<w>` was not, so it decoded as the literal
+    // characters `k<w>` — wrong in both directions.
+    expect(compileLinear(String.raw`^(?<w>a+)\k<w>$`, '').ok).toBe(false);
+    // A named GROUP is still fine; only the back-reference is not.
+    agrees(String.raw`^(?<y>\d{4})-(?<m>\d{2})$`, '', '2020-06');
+  });
+
+  it('refuses the u and v flags rather than ignoring them', () => {
+    // Accepting `u` and matching per code UNIT gave silently different answers:
+    // `/^.$/u` matched an emoji in RegExp and not here.
+    expect(compileLinear('^.$', 'u').ok).toBe(false);
+    expect(compileLinear('a', 'v').ok).toBe(false);
+  });
+
+  it('reports spans that agree with RegExp, including greedy ones', () => {
+    // Returning at the first thread to reach `match` reported the SHORTEST
+    // match: `a+` over "baaanaa" gave 1-2, 2-3, 3-4 where RegExp gives 1-4.
+    const compiled = compileLinear('a+', '');
+
+    expect(compiled.ok).toBe(true);
+
+    if (compiled.ok) {
+      expect(compiled.matcher.spans('baaanaa')).toEqual([
+        { end: 4, start: 1 },
+        { end: 7, start: 5 },
+      ]);
+    }
+  });
+});
+
 describe('wildcards are not regexes and cannot backtrack', () => {
   it('is flat in the number of stars', () => {
     // The README warned that unbounded stars were a denial-of-service surface,

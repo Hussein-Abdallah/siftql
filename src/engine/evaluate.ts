@@ -8,6 +8,7 @@ import {
   callCompare,
   callCoerceValue,
   callHighlight,
+  callHighlightSpans,
   callParseOperand,
   callPredicate,
 } from './consumer.js';
@@ -748,12 +749,26 @@ const emit = (
     return;
   }
 
-  const query = callHighlight(
-    bound.type,
-    value,
-    bound.operand,
-    valueContext(site, caseSensitive, segments, isKey, context),
-  );
+  const ctx = valueContext(site, caseSensitive, segments, isKey, context);
+
+  /*
+   * SPANS FIRST. A type that can say where the matches are is preferred over one
+   * that hands back a pattern, because a pattern is something the CONSUMER runs
+   * — on the backtracking engine, in the loop the contract tells them to write.
+   */
+  const spans = callHighlightSpans(bound.type, value, bound.operand, ctx);
+
+  if (spans) {
+    sink.add({
+      path: formatPath(segments),
+      ranges: spans,
+      segments,
+    });
+
+    return;
+  }
+
+  const query = callHighlight(bound.type, value, bound.operand, ctx);
 
   // A pattern that can match ZERO CHARACTERS inside this value cannot be looped
   // over. Global `a*` matches "a" at 0, then matches the empty string at 1, and

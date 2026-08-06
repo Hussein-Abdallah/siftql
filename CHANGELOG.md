@@ -32,8 +32,15 @@ Initial release.
 - Tolerant parsing mode for search-as-you-type.
 - A linear-time regex matcher (Thompson NFA + Pike VM), so a user-supplied
   pattern can never backtrack catastrophically. Backreferences and lookaround
-  are refused, since neither can be matched in guaranteed linear time;
-  `regexGuard: false` runs them on `RegExp` for callers who accept the risk.
+  are refused, since neither can be matched in guaranteed linear time, as are
+  the `u` and `v` flags, whose code-point semantics this matcher does not
+  implement; `regexGuard: false` runs the first two on `RegExp` for callers who
+  accept the risk.
+- `Highlight.ranges` — exact spans for a matched value. A user regex is reported
+  this way rather than as a `RegExp`, because a `RegExp` is something the
+  CONSUMER runs, on the backtracking engine, in the `exec` loop the contract
+  tells them to write. Wildcards and plain terms still carry `query`, since
+  their patterns are built from escaped literal text and cannot blow up.
 - `matchKeys` option to match against object keys.
 
 [unreleased]: https://github.com/Hussein-Abdallah/siftql/compare/v0.1.0...HEAD

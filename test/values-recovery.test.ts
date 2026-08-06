@@ -235,11 +235,29 @@ describe('a highlight can always be iterated', () => {
     }
   });
 
-  it('keeps the pattern when it does advance', () => {
+  it('reports a user regex as RANGES, never as a RegExp', () => {
+    /*
+     * This used to assert `hit.query` was a usable `RegExp`. Handing one out was
+     * the defect: the consumer runs it, on the backtracking engine, in the
+     * `exec` loop the contract tells them to write — so a pattern siftql matched
+     * in 3 ms could take them 8.8 seconds. Spans are data; nothing to run.
+     */
     const [hit] = highlight('v:/a+/', { v: 'aabca' });
 
+    expect(hit?.query ?? null).toBeNull();
+    expect(hit?.ranges).toEqual([
+      { end: 2, start: 0 },
+      { end: 5, start: 4 },
+    ]);
+  });
+
+  it('still hands back a RegExp for a wildcard, which cannot backtrack', () => {
+    // A wildcard highlighter is built from escaped literal text, so it has no
+    // quantified group to blow up on and stays a convenience for consumers.
+    const [hit] = highlight('v:*ab*', { v: 'aabca' });
+
     expect(hit?.query).toBeDefined();
-    expect(countMatches(hit!.query!, 'aabca')).toBe(2);
+    expect(countMatches(hit!.query!, 'aabca')).toBe(1);
   });
 
   it('reports the whole value as the match when there is no pattern', () => {

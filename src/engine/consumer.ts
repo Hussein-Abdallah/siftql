@@ -329,6 +329,25 @@ export const callCompare = (
  * cosmetic failure into an exception — or into a non-match — would let a
  * decorative hook change the answer to the query.
  */
+/**
+ * `highlightSpans`. Same contract as {@link callHighlight}: cosmetic, so a
+ * failure costs the highlight and never the answer.
+ */
+export const callHighlightSpans = (
+  type: AnyValueType,
+  value: unknown,
+  operand: unknown,
+  ctx: ValueContext,
+): readonly { readonly start: number; readonly end: number }[] | null => {
+  try {
+    const spans = type.highlightSpans?.(value, operand, ctx);
+
+    return Array.isArray(spans) ? spans : null;
+  } catch {
+    return null;
+  }
+};
+
 export const callHighlight = (
   type: AnyValueType,
   value: unknown,

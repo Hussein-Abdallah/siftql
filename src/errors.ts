@@ -56,7 +56,10 @@ export type SiftQLErrorCode =
   | 'RECOVERED'
   /** Duplicate type name, unknown built-in, malformed `dateFormat`. */
   | 'CONFIG'
-  /** A user-supplied regex was refused by the backtracking screen. */
+  /**
+   * A user-supplied regex was refused: too long, or using a feature the
+   * linear-time matcher cannot express (a backreference or lookaround).
+   */
   | 'UNSAFE_PATTERN'
   /** A public function was called with an argument of the wrong shape. */
   | 'ARGUMENT';

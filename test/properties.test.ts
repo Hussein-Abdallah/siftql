@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   builders,
   createEngine,
-  resolveTemporal,
   filter,
   highlight,
   isSiftQLError,
   parse,
+  resolveTemporal,
   serialize,
   test as matches,
   type SiftQLAst,
@@ -969,13 +969,18 @@ describe('P5: cost stays bounded', () => {
 
   it('never accepts a regex that then runs away', () => {
     /*
-     * THE PROPERTY THE MATCHER OWES, and the one no version of the SCREEN could
-     * keep: whatever is accepted must not hang.
+     * MEASURED AS A RATIO, at lengths chosen so a regression cannot hang.
      *
-     * Every pattern below was found by an auditor rather than by this suite, and
-     * every one of them defeated the screen — two are its own commit message's
-     * headline examples with one parenthesis added. They are all accepted now,
-     * because an automaton makes them linear.
+     * The first version timed one 41-character subject. When an auditor broke
+     * the matcher to check this property was not vacuous, `vitest` produced no
+     * output for ten minutes — `^(a+)+$` on 41 characters is 2^40 steps and a
+     * synchronous regex cannot be interrupted, so the property was real and
+     * structurally unable to REPORT. A test that hangs instead of failing is
+     * worse than no test: CI stalls and nobody learns why.
+     *
+     * 16 and 22 characters instead. Linear predicts a ratio near 1.4; anything
+     * backtracking predicts about 64, and the worst case is 2^22 steps — tens of
+     * milliseconds, not geological time.
      */
     const suspects = [
       '^(a+)+$',
@@ -995,23 +1000,80 @@ describe('P5: cost stays bounded', () => {
       '^(x+x+){1,99}y$',
     ];
 
-    const slow: string[] = [];
+    const runaway: string[] = [];
 
     for (const pattern of suspects) {
       const compiled = compileLinear(pattern, '');
+
+      expect(compiled.ok, `${pattern} should compile`).toBe(true);
 
       if (!compiled.ok) {
         continue;
       }
 
-      const started = Date.now();
+      const time = (length: number): number => {
+        const started = Date.now();
 
-      compiled.matcher.test(`${'a'.repeat(40)}!`);
+        compiled.matcher.test(`${'a'.repeat(length)}!`);
+
+        return Date.now() - started;
+      };
+
+      time(16);
+
+      const short = Math.max(time(16), 1);
+      const long = Math.max(time(22), 1);
+
+      if (long / short > 8) {
+        runaway.push(`${pattern}: ${String(short)}ms -> ${String(long)}ms`);
+      }
+    }
+
+    expect(runaway).toEqual([]);
+  });
+
+  it('never hands a consumer a pattern that can hang them', () => {
+    /*
+     * `filter` and `test` being safe is only half the promise. `highlight`
+     * publishes what to underline, and a consumer acts on it — so anything that
+     * leaves this package has to be safe in THEIR loop too, not just in ours.
+     *
+     * This is pinned because a previous change broke exactly this: replacing the
+     * matcher with the automaton meant patterns the old screen had REFUSED now
+     * compiled, and their highlighters were handed out. `bio:/^.|(.+)+;/` — nine
+     * characters — filtered in 3 ms and took the consumer 8.8 seconds on a
+     * 30-character value.
+     */
+    const hostile = [
+      'v:/^.|(.+)+;/',
+      'v:/^.|(a+)+$/',
+      'v:/^.|(a|a)*b/',
+      String.raw`v:/^.|(\d+)*x/`,
+      'v:/^.|([a-z]|[a-c])*z/',
+    ];
+    const value = 'Lorem ipsum dolor sit amet xy';
+    const slow: string[] = [];
+
+    for (const query of hostile) {
+      const [hit] = highlight(query, { v: value });
+
+      if (!hit?.query) {
+        continue;
+      }
+
+      const started = Date.now();
+      let count = 0;
+      let match = hit.query.exec(value);
+
+      while (match !== null && count < 20) {
+        count += 1;
+        match = hit.query.exec(value);
+      }
 
       const elapsed = Date.now() - started;
 
       if (elapsed > 100) {
-        slow.push(`${pattern} accepted, ${String(elapsed)}ms`);
+        slow.push(`${query}: consumer loop ${String(elapsed)}ms`);
       }
     }
 
@@ -1020,25 +1082,72 @@ describe('P5: cost stays bounded', () => {
 
   it('agrees with RegExp on patterns RegExp can safely run', () => {
     /*
-     * The other half of replacing an engine: it has to give the SAME ANSWERS.
-     * A fast matcher that disagrees with `RegExp` would trade a denial of
-     * service for silently wrong results, which is the worse bargain.
+     * The other half of replacing an engine: it has to give the SAME ANSWERS. A
+     * fast matcher that disagrees would trade a denial of service for silently
+     * wrong search results, which is the worse bargain.
+     *
+     * THE GENERATOR IS ESCAPE-FIRST, and that is the whole lesson here. The
+     * version this replaces was atom-first over eleven simple atoms against nine
+     * lowercase-ASCII subjects, reported ZERO mismatches, and was quoted in a
+     * commit message as evidence the engine was correct. An auditor wrote an
+     * escape-first generator with control characters, non-ASCII and astral
+     * subjects and found 244 distinct disagreements — every one of them in escape
+     * and character-class handling, which is exactly what the old generator could
+     * not emit.
+     *
+     * It also generates what the README claims to support and the old one never
+     * produced: `\b`, non-capturing and named groups, `{n,}`, and subjects
+     * containing newlines, so the `m` and `s` flags are not inert.
      */
     const next = rng(90_210);
-    const atoms = [
-      'a',
-      'b',
-      '1',
-      '.',
+
+    const escapes = [
       String.raw`\d`,
+      String.raw`\D`,
       String.raw`\w`,
+      String.raw`\W`,
       String.raw`\s`,
+      String.raw`\S`,
+      String.raw`\.`,
+      String.raw`\-`,
+      String.raw`\\`,
+      String.raw`\n`,
+      String.raw`\t`,
+      String.raw`\0`,
+      String.raw`\x41`,
+      String.raw`\x00`,
+    ];
+    const classes = [
       '[abc]',
       '[^abc]',
       '[a-c]',
-      String.raw`\.`,
+      '[a-]',
+      '[-a]',
+      '[^]',
+      String.raw`[\x41-\x43]`,
+      String.raw`[\x00-\x1f]`,
+      '[A-Z]',
+      String.raw`[\d]`,
+      String.raw`[\w-]`,
+      String.raw`[a\-z]`,
+      String.raw`[\]]`,
     ];
-    const quantifiers = ['', '', '*', '+', '?', '{2}', '{1,3}', '*?', '+?'];
+    const atoms = ['a', 'b', 'A', '1', ' ', '.', 'é', ...escapes, ...classes];
+    const quantifiers = [
+      '',
+      '',
+      '*',
+      '+',
+      '?',
+      '{2}',
+      '{1,3}',
+      '{2,}',
+      '*?',
+      '+?',
+      '??',
+    ];
+    const anchors = ['^', '$', String.raw`\b`, String.raw`\B`];
+
     const build = (depth: number): string => {
       if (depth === 0) {
         return pick(next, atoms) + pick(next, quantifiers);
@@ -1046,31 +1155,77 @@ describe('P5: cost stays bounded', () => {
 
       const roll = next();
 
-      if (roll < 0.25) {
+      if (roll < 0.14) {
         return `(${build(depth - 1)})${pick(next, quantifiers)}`;
       }
 
-      if (roll < 0.45) {
+      if (roll < 0.24) {
+        return `(?:${build(depth - 1)})${pick(next, quantifiers)}`;
+      }
+
+      if (roll < 0.3) {
+        return `(?<g${String(Math.floor(next() * 1000))}>${build(depth - 1)})`;
+      }
+
+      if (roll < 0.46) {
         return `${build(depth - 1)}|${build(depth - 1)}`;
       }
 
-      if (roll < 0.55) {
-        return `^${build(depth - 1)}`;
+      if (roll < 0.58) {
+        return pick(next, anchors) + build(depth - 1);
       }
 
-      if (roll < 0.65) {
-        return `${build(depth - 1)}$`;
+      if (roll < 0.64) {
+        return build(depth - 1) + pick(next, anchors);
       }
 
       return build(depth - 1) + build(depth - 1);
     };
 
-    const subjects = ['', 'a', 'ab', 'abc', 'aab', 'xyz', 'a1b2', 'AAA', 'cab'];
+    // Newlines, control characters, non-ASCII and an astral pair, so `m`, `s`
+    // and case folding all actually bite.
+    const nl = String.fromCharCode(10);
+    const subjects = [
+      '',
+      'a',
+      'ab',
+      'abc',
+      'aab',
+      'A',
+      'AB',
+      'xyz',
+      'a1b2',
+      'cab',
+      'a b',
+      `a${nl}b`,
+      `a${String.fromCharCode(13)}${nl}b`,
+      nl,
+      `ab${nl}`,
+      String.fromCharCode(0),
+      String.fromCharCode(8),
+      String.fromCharCode(9),
+      String.fromCharCode(1),
+      'é',
+      'É',
+      'ß',
+      'ſ',
+      'ı',
+      'K',
+      'σ',
+      'ς',
+      'Σ',
+      '\u{1F600}',
+      'a-c',
+      '-',
+      ']',
+      '^',
+    ];
+
     const disagreements: string[] = [];
 
-    for (let run = 0; run < RUNS * 4; run += 1) {
+    for (let run = 0; run < RUNS * 20; run += 1) {
       const source = build(3);
-      const flags = pick(next, ['', '', 'i', 'm', 's']);
+      const flags = pick(next, ['', '', 'i', 'm', 's', 'im', 'is', 'ms']);
 
       let native: RegExp;
 
@@ -1087,15 +1242,17 @@ describe('P5: cost stays bounded', () => {
       }
 
       for (const subject of subjects) {
-        if (native.test(subject) !== compiled.matcher.test(subject)) {
+        const want = native.test(subject);
+
+        if (want !== compiled.matcher.test(subject)) {
           disagreements.push(
-            `/${source}/${flags} vs ${JSON.stringify(subject)}`,
+            `/${source}/${flags} vs ${JSON.stringify(subject)}: RegExp=${String(want)}`,
           );
         }
       }
     }
 
-    expect(disagreements.slice(0, 5)).toEqual([]);
+    expect(disagreements.slice(0, 8)).toEqual([]);
   });
 
   it('does not refuse patterns that are provably fast', () => {

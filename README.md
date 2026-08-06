@@ -308,7 +308,7 @@ key, and posted to a worker.
 | `onValueError`     | `'skip'`    | `'skip'` \| `'throw'` for unreadable field values |
 | `onRecovered`      | `'prune'`   | `'prune'` \| `'throw'` for tolerant-mode holes    |
 | `tolerant`         | `false`     | best-effort parsing for search-as-you-type        |
-| `regexGuard`       | `true`      | screen user regexes for catastrophic backtracking |
+| `regexGuard`       | `true`      | refuse regexes the linear matcher cannot take, instead of running them on `RegExp` |
 | `maxPatternLength` | `1000`      | longest accepted regex source                     |
 
 ### Errors: wrong query vs dirty data
@@ -398,7 +398,7 @@ through all three packages (`liqe@3.8.7`, `lucene-kit@1.3.0`, `siftql@0.1.0`).
 | custom value types                        | ✗              | ✗                  | ✅        |
 | explicit case control                     | quoting        | quoting            | `::`      |
 | tolerant parsing                          | ✗              | ✗                  | ✅        |
-| ReDoS screening                           | ✗              | ✗                  | heuristic |
+| Regex cannot backtrack                    | ✗              | ✗                  | linear-time matcher |
 | runtime dependencies                      | 2              | 0                  | 0         |
 
 The single sharpest difference:
@@ -459,6 +459,9 @@ Rust's `regex` and Go's `regexp` take. It walks the input once, holding every
 state the pattern could be in at the same time, so it never enumerates the
 exponentially many ways a pattern might match.
 
+`highlight()` reports a user regex as **ranges** rather than a `RegExp`, so
+nothing a consumer runs can backtrack either — see the highlight section.
+
 **Two features are refused**, because no engine can match them in guaranteed
 linear time:
 
@@ -471,9 +474,12 @@ name:/(?=x)y/       # lookahead        -> same
 and trust whoever writes the queries. The default is safe; the escape hatch is
 explicit.
 
-Everything else works: literals, character classes, `.`, `\d \w \s \b`,
+Everything else works: literals, character classes, `.`, `\d \w \s \b`, `\cX`,
 `* + ? {n,m}` and their lazy forms, alternation, groups (including named and
-non-capturing), anchors, and the `i m s u` flags. `maxPatternLength` still caps
+non-capturing), anchors, and the `i`, `m` and `s` flags. The `u` and `v` flags
+are **refused**: this matcher works on UTF-16 code units, and accepting them
+while ignoring their code-point semantics would give silently different
+answers. `maxPatternLength` still caps
 pattern size, and a pattern whose counted repetitions expand past the
 instruction budget is refused rather than run.
 

@@ -63,6 +63,32 @@ const pick = <T>(next: () => number, items: readonly T[]): T =>
   items[Math.floor(next() * items.length)] as T;
 
 /* ------------------------------------------------------------------------- *
+ * The vacuity guard
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Assert that a property actually did some work, not just that it found nothing.
+ *
+ * A property whose loop body stops executing stays GREEN and reports nothing,
+ * and that is indistinguishable from a property that is passing. It has already
+ * happened here: "never hands a consumer a pattern that can hang them" probed
+ * `hit.query`, `regexType` moved to `highlightSpans`, and from that moment the
+ * body ran ZERO times and the assertion was `expect([]).toEqual([])`. It stayed
+ * green through two audits while the risk it was written for moved to `ranges`,
+ * where a real defect was then found by someone else.
+ *
+ * So every property below counts the comparisons it genuinely made and states a
+ * floor. A refactor that silently empties one now fails the build, which is the
+ * only reason to trust a green run.
+ */
+const didWork = (label: string, count: number, floor: number): void => {
+  expect(
+    count,
+    `${label}: made ${String(count)} meaningful checks, expected at least ${String(floor)}. A property that stops doing work still passes — this is the guard against that.`,
+  ).toBeGreaterThanOrEqual(floor);
+};
+
+/* ------------------------------------------------------------------------- *
  * Generators
  * ------------------------------------------------------------------------- */
 
@@ -1054,30 +1080,50 @@ describe('P5: cost stays bounded', () => {
     ];
     const value = 'Lorem ipsum dolor sit amet xy';
     const slow: string[] = [];
+    let checked = 0;
 
+    /*
+     * THIS PROPERTY WENT VACUOUS AND STAYED GREEN FOR TWO AUDITS.
+     *
+     * It used to read `if (!hit?.query) continue;` and then time the consumer's
+     * exec loop. When `regexType` moved to `highlightSpans` no hit carried a
+     * `query` any more, so all five patterns hit the `continue`, the loop body
+     * ran ZERO times, and the assertion became `expect([]).toEqual([])`. The
+     * hazard had not gone away — it had moved to `ranges`, where nothing was
+     * looking, and a real defect was later found there by someone else.
+     *
+     * So the absence of a `query` is now the ASSERTION rather than a reason to
+     * skip, and the work counter below fails the build if this ever empties out
+     * again.
+     */
     for (const query of hostile) {
+      const started = Date.now();
       const [hit] = highlight(query, { v: value });
+      const elapsed = Date.now() - started;
 
-      if (!hit?.query) {
+      checked += 1;
+
+      if (hit?.query) {
+        slow.push(
+          `${query}: published a RegExp built from a user pattern, which the caller runs on the backtracking engine`,
+        );
         continue;
       }
 
-      const started = Date.now();
-      let count = 0;
-      let match = hit.query.exec(value);
-
-      while (match !== null && count < 20) {
-        count += 1;
-        match = hit.query.exec(value);
+      if (elapsed > 100) {
+        slow.push(`${query}: highlight() itself took ${String(elapsed)}ms`);
       }
 
-      const elapsed = Date.now() - started;
-
-      if (elapsed > 100) {
-        slow.push(`${query}: consumer loop ${String(elapsed)}ms`);
+      // Spans are data, so the only way they can hurt a caller is by being
+      // wrong. Every one must address real text inside the value.
+      for (const range of hit?.ranges ?? []) {
+        if (range.start < 0 || range.end > value.length) {
+          slow.push(`${query}: span ${JSON.stringify(range)} is out of bounds`);
+        }
       }
     }
 
+    didWork('hostile highlight patterns', checked, hostile.length);
     expect(slow).toEqual([]);
   });
 
@@ -1284,5 +1330,442 @@ describe('P5: cost stays bounded', () => {
     }
 
     expect(refused).toEqual([]);
+  });
+});
+
+/* ========================================================================= *
+ * P6. THE PROMISES THIS ROUND FOUND UNGUARDED
+ *
+ * Every property here corresponds to a defect that reached a release because
+ * nothing asserted the promise it broke. They are grouped separately so the
+ * provenance stays visible: this is the list an audit produced by diffing the
+ * package's stated promises against what the harness actually checked.
+ * ========================================================================= */
+
+describe('P6: spans say where the match really is', () => {
+  it('agrees with a native global exec, offset for offset', () => {
+    /*
+     * `spans()` resumed each scan with `run(code, input.slice(at), ...)`. A slice
+     * looks like an offset and is not: every assertion is positional, so `^`
+     * matched at each restart and `\b` saw an empty left context. /^foo/ over
+     * "foofoofoo" reported three matches where there is one.
+     *
+     * The existing parity property compares `test()` only, so it could never see
+     * this — the two never disagree about WHETHER there is a match, only where.
+     */
+    const next = rng(4242);
+    const ATOM = ['a', 'b', '.', '\\d', '\\w', '[ab]', '[^a]', '[a-c]'];
+    const ANCHOR = ['^', '$', '\\b', '\\B'];
+    const QUANT = ['', '*', '+', '?', '*?', '+?', '{1,2}'];
+    const SUBJECTS = [
+      '',
+      'a',
+      'aa',
+      'aaa',
+      'ab',
+      'a b',
+      'foofoo',
+      'the cat',
+      'ab\ncd',
+      'a,b,,c',
+      'xaxbxc',
+    ];
+
+    const violations: string[] = [];
+    let compared = 0;
+
+    for (let run = 0; run < RUNS * 2; run += 1) {
+      let source = '';
+
+      for (let part = 0; part < 1 + Math.floor(next() * 3); part += 1) {
+        source +=
+          next() < 0.25
+            ? pick(next, ANCHOR)
+            : pick(next, ATOM) + pick(next, QUANT);
+      }
+
+      const flags = pick(next, ['', 'i', 'm', 's']);
+
+      try {
+        new RegExp(source, flags);
+      } catch {
+        continue;
+      }
+
+      const compiled = compileLinear(source, flags);
+
+      if (!compiled.ok) {
+        continue;
+      }
+
+      for (const subject of SUBJECTS) {
+        const native = new RegExp(source, `${flags}g`);
+        const want: string[] = [];
+
+        for (
+          let hit = native.exec(subject);
+          hit !== null;
+          hit = native.exec(subject)
+        ) {
+          want.push(`${String(hit.index)}-${String(hit.index + hit[0].length)}`);
+
+          if (hit[0].length === 0) {
+            native.lastIndex += 1;
+          }
+        }
+
+        const mine = compiled.matcher
+          .spans(subject)
+          .map((span) => `${String(span.start)}-${String(span.end)}`);
+
+        compared += 1;
+
+        if (want.join(',') !== mine.join(',')) {
+          violations.push(
+            `/${source}/${flags} on ${JSON.stringify(subject)}: RegExp=[${want.join(',')}] ours=[${mine.join(',')}]`,
+          );
+        }
+      }
+    }
+
+    didWork('spans parity', compared, RUNS);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+
+  it('never points outside the value, or at text that does not match', () => {
+    // Custom `ranges` were checked with Array.isArray and nothing else, so
+    // [{start:999,end:-5}] reached a caller verbatim.
+    const next = rng(4343);
+    const violations: string[] = [];
+    let checked = 0;
+
+    for (let run = 0; run < RUNS * 3; run += 1) {
+      const value = Array.from(
+        { length: 1 + Math.floor(next() * 8) },
+        () => pick(next, [...'abAB sſKkİß']) as string,
+      ).join('');
+      const needle = pick(next, ['a', 'b', 'A', 's', 'k', 'ab']);
+      const q = pick(next, [needle, `v:*${needle}*`, `v:${needle}`]);
+
+      let hits;
+
+      try {
+        hits = highlight(q, { v: value });
+      } catch {
+        continue;
+      }
+
+      for (const hit of hits) {
+        for (const range of hit.ranges ?? []) {
+          checked += 1;
+
+          const inside =
+            Number.isInteger(range.start) &&
+            Number.isInteger(range.end) &&
+            range.start >= 0 &&
+            range.start < range.end &&
+            range.end <= value.length;
+          const slice = value.slice(range.start, range.end);
+          // Either it is the term itself, or the whole value (an exact match).
+          const truthful =
+            slice.toLowerCase() === needle.toLowerCase() ||
+            (range.start === 0 && range.end === value.length);
+
+          if (!inside || !truthful) {
+            violations.push(
+              `${q} on ${JSON.stringify(value)}: ${JSON.stringify(range)} covers ${JSON.stringify(slice)}`,
+            );
+          }
+        }
+      }
+    }
+
+    didWork('span truthfulness', checked, RUNS / 2);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P6: highlight() reports every clause that contributed', () => {
+  it('is commutative over AND', () => {
+    /*
+     * The sink keyed on `segments + query`, and `regexType` publishes `ranges`
+     * and no `query` — so two regex clauses at one path collapsed to one entry
+     * and `highlight()` gave a different answer depending on operand order.
+     */
+    const next = rng(4444);
+    const CLAUSES = [
+      'v:/Lorem/',
+      'v:/dolor/',
+      'v:/ipsum/',
+      'v:Lorem*',
+      'v:*dolor',
+      'v:/[a-z]+/',
+      'w:/x/',
+      'v:*o*',
+    ];
+    const row = { v: 'Lorem ipsum dolor', w: 'x' };
+    const shape = (hits: readonly unknown[]): string =>
+      JSON.stringify(hits.map((hit) => JSON.stringify(hit)).sort());
+
+    const violations: string[] = [];
+    let compared = 0;
+
+    for (let run = 0; run < RUNS * 2; run += 1) {
+      const left = pick(next, CLAUSES);
+      const right = pick(next, CLAUSES);
+
+      try {
+        const forwards = highlight(`${left} AND ${right}`, row);
+        const backwards = highlight(`${right} AND ${left}`, row);
+
+        compared += 1;
+
+        if (shape(forwards) !== shape(backwards)) {
+          violations.push(`${left} AND ${right}`);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    didWork('AND commutativity', compared, RUNS);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P6: tolerant mode never throws at the ENGINE boundary', () => {
+  it('survives every prefix of every generated query', () => {
+    /*
+     * P4 asserts this at `parse()`, which is one layer above where it matters.
+     * `prune()` removed only MissingExpression, so an invented range bound
+     * reached operand resolution and threw — 15 of the 28 prefixes of
+     * `d:[2020-01-01 TO 2020-12-31]` threw before any record was read.
+     */
+    const next = rng(4545);
+    const engine = createEngine({ tolerant: true });
+    const rows = [
+      { d: '2020-06-01', n: 5, name: 'ada', tags: ['x'] },
+      { d: '2021-01-01', n: 50, name: 'bob', tags: [] },
+    ];
+
+    const violations: string[] = [];
+    let evaluated = 0;
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const q = query(next);
+
+      for (let cut = 1; cut <= q.length; cut += 1) {
+        const prefix = q.slice(0, cut);
+
+        evaluated += 1;
+
+        try {
+          engine.filter(prefix, rows);
+          engine.highlight(prefix, rows[0]);
+        } catch (error) {
+          violations.push(
+            `${JSON.stringify(prefix)}: ${(error as Error).name}: ${(error as Error).message.slice(0, 50)}`,
+          );
+        }
+      }
+    }
+
+    didWork('tolerant prefixes', evaluated, RUNS);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P6: every consumer-callback member is read through a guard', () => {
+  it('raises a SiftQLError when any member is a throwing accessor', () => {
+    /*
+     * `ordering` was read raw at four sites, so a throwing accessor escaped as a
+     * plain Error from test(), filter() and types.describe(). P1 covers this
+     * channel; its fixture just never varied `ordering`.
+     */
+    const MEMBERS = [
+      'name',
+      'parseOperand',
+      'coerceValue',
+      'equals',
+      'matches',
+      'ordering',
+      'highlight',
+      'highlightSpans',
+    ];
+
+    const violations: string[] = [];
+    let attempted = 0;
+
+    for (const member of MEMBERS) {
+      const type: Record<string, unknown> = {
+        coerceValue: (value: unknown) =>
+          typeof value === 'string'
+            ? { ok: true, value }
+            : { kind: 'miss', ok: false },
+        equals: () => true,
+        name: `hostile-${member}`,
+        parseOperand: (token: { kind: string; text?: string }) =>
+          token.kind === 'text'
+            ? { ok: true, operand: token.text ?? '' }
+            : { declined: true },
+      };
+
+      Object.defineProperty(type, member, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          throw new Error(`reading ${member} threw`);
+        },
+      });
+
+      for (const act of [
+        () => createEngine({ types: [type] as never }).test('n:>5', { n: 1 }),
+        () => createEngine({ types: [type] as never }).test('a', { a: 'a' }),
+        () =>
+          createEngine({ types: [type] as never }).filter('n:[1 TO 9]', [
+            { n: 5 },
+          ]),
+        () =>
+          createEngine({ types: [type] as never }).highlight('a', { a: 'a' }),
+        () => createEngine({ types: [type] as never }).types.describe(),
+      ]) {
+        attempted += 1;
+
+        try {
+          act();
+        } catch (error) {
+          if (!isSiftQLError(error)) {
+            violations.push(
+              `${member}: ${(error as Error).name}: ${(error as Error).message.slice(0, 40)}`,
+            );
+          }
+        }
+      }
+    }
+
+    didWork('hostile members', attempted, MEMBERS.length);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P6: the round-trip law over raw characters', () => {
+  it('holds for queries no atom list can spell', () => {
+    /*
+     * P2's generator can only emit what ATOMS and FIELDS spell, so it could not
+     * produce `.`, `..`, a trailing backslash, or an empty field segment — and
+     * I4 was broken for every one of those: `a.:1` serialized to `a."":1` and
+     * re-parsed to a tree that was not deep-equal.
+     */
+    const next = rng(4646);
+    const ALPHABET = [...'ab.:"\\ ()[]{}*?/<>=-!TO019'];
+    const strip = (node: SiftQLAst): string =>
+      JSON.stringify(node, (key, value: unknown) =>
+        key === 'location' ? undefined : value,
+      );
+
+    const violations: string[] = [];
+    let parsed = 0;
+
+    for (let run = 0; run < RUNS * 20; run += 1) {
+      let q = '';
+
+      for (let at = 0; at < 1 + Math.floor(next() * 9); at += 1) {
+        q += pick(next, ALPHABET);
+      }
+
+      let ast: SiftQLAst;
+
+      try {
+        ast = parse(q);
+      } catch {
+        continue;
+      }
+
+      parsed += 1;
+
+      const once = serialize(ast);
+
+      try {
+        if (strip(parse(once)) !== strip(ast)) {
+          violations.push(`I4: ${JSON.stringify(q)} -> ${JSON.stringify(once)}`);
+        } else if (serialize(parse(once)) !== once) {
+          violations.push(`idempotence: ${JSON.stringify(once)}`);
+        }
+      } catch (error) {
+        violations.push(
+          `${JSON.stringify(once)} does not re-parse: ${(error as Error).message.slice(0, 40)}`,
+        );
+      }
+    }
+
+    didWork('raw-character round-trip', parsed, RUNS);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P6: the walk is linear in record depth for every leaf type', () => {
+  it('does not go quadratic on a chain whose leaves are not strings', () => {
+    /*
+     * The G10 benchmark used a STRING leaf at every level — the one leaf type
+     * that never reaches the failure branch that materialised a path per
+     * candidate — and the property built on it inherited the blind spot. A
+     * realistic comment thread took 31 seconds.
+     */
+    const chain = (levels: number, leaf: unknown): unknown => {
+      let node: Record<string, unknown> = { text: leaf };
+
+      for (let at = 0; at < levels; at += 1) {
+        node = {
+          author: leaf,
+          created: leaf,
+          pinned: leaf,
+          reply: node,
+          text: leaf,
+        };
+      }
+
+      return node;
+    };
+
+    const time = (levels: number, leaf: unknown): number => {
+      const built = chain(levels, leaf);
+      const started = Date.now();
+
+      matches('zzz', built);
+
+      return Math.max(Date.now() - started, 1);
+    };
+
+    const violations: string[] = [];
+    let measured = 0;
+
+    /*
+     * Measured RELATIVE to the string-leaf case rather than as a growth curve.
+     * At these depths the absolute times are a few milliseconds and noise swamps
+     * a doubling ratio — but the defect's signature is unmistakable in the
+     * comparison: string leaves ran in 16ms where number leaves took 666ms,
+     * because only the non-string ones reached the branch that built a path.
+     */
+    const DEEP = 32_000;
+    const baseline = Math.min(
+      time(DEEP, 'leaf'),
+      time(DEEP, 'leaf'),
+      time(DEEP, 'leaf'),
+    );
+
+    for (const leaf of [42, true, null, new Date()]) {
+      const best = Math.min(time(DEEP, leaf), time(DEEP, leaf));
+
+      measured += 1;
+
+      if (best > baseline * 6) {
+        violations.push(
+          `${String(leaf)} leaves took ${String(best)}ms against a ${String(baseline)}ms string-leaf baseline at depth ${String(DEEP)}`,
+        );
+      }
+    }
+
+    didWork('depth scaling', measured, 4);
+    expect(violations).toEqual([]);
   });
 });

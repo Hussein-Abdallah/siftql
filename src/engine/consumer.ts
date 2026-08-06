@@ -199,7 +199,21 @@ export const callParseOperand = (
  * ------------------------------------------------------------------------- */
 
 /** The failure descriptor minus the fields this module fills in. */
-type FailureSite = Omit<ValueFailure, 'kind' | 'reason'>;
+/**
+ * A failure descriptor still missing its classification.
+ *
+ * `with` rather than `{...site, kind, reason}`: the descriptor keeps `path` as a
+ * lazy PROTOTYPE accessor, and a spread copies only own properties, so spreading
+ * it would quietly produce a failure with no path at all.
+ */
+type FailureSite = Omit<ValueFailure, 'cause' | 'kind' | 'reason'> & {
+  with(extra: {
+    readonly kind: ValueFailure['kind'];
+    readonly reason: string | null;
+    readonly cause?: unknown;
+    readonly value?: unknown;
+  }): ValueFailure;
+};
 
 const threwReason = (method: string, error: unknown): string =>
   `${method}() threw: ${error instanceof Error ? error.message : String(error)}`;
@@ -217,12 +231,13 @@ export const callCoerceValue = (
   } catch (error) {
     // A datum this type cannot read. Route it, and report the non-match that
     // signalValueFailure guarantees when policy is 'skip'.
-    signalValueFailure({
-      ...site,
-      cause: error,
-      kind: 'invalid',
-      reason: threwReason('coerceValue', error),
-    });
+    signalValueFailure(
+      site.with({
+        cause: error,
+        kind: 'invalid',
+        reason: threwReason('coerceValue', error),
+      }),
+    );
 
     return { kind: 'miss', ok: false };
   }
@@ -255,12 +270,13 @@ export const callPredicate = (
   try {
     result = run();
   } catch (error) {
-    return signalValueFailure({
-      ...site,
-      cause: error,
-      kind: 'invalid',
-      reason: threwReason(method, error),
-    });
+    return signalValueFailure(
+      site.with({
+        cause: error,
+        kind: 'invalid',
+        reason: threwReason(method, error),
+      }),
+    );
   }
 
   if (typeof result !== 'boolean') {
@@ -287,12 +303,13 @@ export const callCompare = (
   try {
     result = run();
   } catch (error) {
-    signalValueFailure({
-      ...site,
-      cause: error,
-      kind: 'incomparable',
-      reason: threwReason('ordering.compare', error),
-    });
+    signalValueFailure(
+      site.with({
+        cause: error,
+        kind: 'incomparable',
+        reason: threwReason('ordering.compare', error),
+      }),
+    );
 
     return null;
   }

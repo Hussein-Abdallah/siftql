@@ -374,7 +374,15 @@ export interface ValueContext {
   readonly options: TypeVisibleOptions;
   /** The enclosing clause's collation; see {@link OperandContext.caseSensitive}. */
   readonly caseSensitive: boolean;
-  /** Where this value lives in the record: `['name','first']`, `['tags',3]`. */
+  /**
+   * Where this value lives in the record: `['name','first']`, `['tags',3]`.
+   * Array indices are numbers, not strings, and the array is frozen.
+   *
+   * A LAZY accessor on the prototype, because materialising it for every
+   * candidate made a deep record quadratic to search. `ctx.path`, destructuring
+   * and `JSON.stringify(ctx)` all behave normally; `{...ctx}` and
+   * `Object.keys(ctx)` do NOT include it, since it is not an own property.
+   */
   readonly path: readonly (string | number)[];
   /** True when the candidate is an object KEY rather than a value (`matchKeys`). */
   readonly isKey: boolean;

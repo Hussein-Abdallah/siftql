@@ -14,18 +14,23 @@ import {
 } from './consumer.js';
 import type {
   AnyValueType,
+  EvaluationSite,
+  OnValueError,
   OperandSite,
   OperandToken,
   ResolvedEngineOptions,
   TypeVisibleOptions,
   ValueContext,
+  ValueFailureKind,
   ValueTypeRegistry,
 } from '../registry.js';
+import type { ValueFailure } from '../errors.js';
 import type {
   Expression,
   Field,
   RangeBoundary,
   SiftQLAst,
+  SourceLocation,
   TextLiteral,
 } from '../types.js';
 import { fieldPath } from '../types.js';
@@ -207,37 +212,78 @@ const resolveOperand = (
  * tampering with, so both are frozen at engine construction (see
  * `resolveOptions`), and `path` is frozen here because it is built per call.
  */
+class LazyValueContext implements ValueContext {
+  public readonly options: TypeVisibleOptions;
+
+  public readonly lookup: (typeName: string) => AnyValueType | undefined;
+
+  readonly #ref: PathRef;
+
+  #materialised: readonly (string | number)[] | null = null;
+
+  public constructor(
+    public readonly site: OperandSite,
+    public readonly caseSensitive: boolean,
+    ref: PathRef,
+    public readonly isKey: boolean,
+    context: EvaluationContext,
+  ) {
+    this.#ref = ref;
+    this.options = context.typeOptions;
+    // An own property, not a prototype method: a type is free to destructure
+    // `const { lookup } = ctx`, and an unbound method would lose its receiver.
+    this.lookup = (name) => context.registry.get(name);
+  }
+
+  /**
+   * Built LAZILY, and memoised once built.
+   *
+   * A context is constructed once per CANDIDATE, so copying the path eagerly was
+   * half of the quadratic walk: a chain-shaped record paid O(depth) for every
+   * leaf whether or not the type ever looked at it, and most types never do.
+   */
+  public get path(): readonly (string | number)[] {
+    this.#materialised ??= Object.freeze([...pathOf(this.#ref)]);
+
+    return this.#materialised;
+  }
+
+  /**
+   * `path` lives on the PROTOTYPE, so `{...ctx}` and `JSON.stringify(ctx)` do
+   * not carry it. Reading `ctx.path` and destructuring both work as before;
+   * this puts it back for the debugging case.
+   */
+  public toJSON(): Record<string, unknown> {
+    return {
+      caseSensitive: this.caseSensitive,
+      isKey: this.isKey,
+      options: this.options,
+      path: this.path,
+      site: this.site,
+    };
+  }
+}
+
+/**
+ * The context handed to a value type, FROZEN.
+ *
+ * A CLASS rather than an object literal, because the accessor then lives on the
+ * prototype instead of being installed per instance. An own accessor is roughly
+ * 185x the allocation cost of a plain property and is created once per candidate,
+ * which made an ordinary `filter()` over 20,000 rows 2.4x slower than before the
+ * path went lazy — paying for deep records with everybody else's common case.
+ * On the prototype it is both lazy and cheaper than the eager version it replaced.
+ */
 const valueContext = (
   site: OperandSite,
   caseSensitive: boolean,
   path: PathRef,
   isKey: boolean,
   context: EvaluationContext,
-): ValueContext => {
-  /*
-   * `path` is built LAZILY, and memoised once built.
-   *
-   * This function runs once per candidate, so copying the path here was the
-   * other half of the quadratic walk: a chain-shaped record paid O(depth) for
-   * every leaf whether or not the type ever looked at it — and most types never
-   * do. A getter costs nothing to install and only materialises for the types
-   * that actually ask.
-   */
-  let materialised: readonly (string | number)[] | null = null;
-
-  return Object.freeze({
-    caseSensitive,
-    isKey,
-    lookup: (name: string) => context.registry.get(name),
-    options: context.typeOptions,
-    get path(): readonly (string | number)[] {
-      materialised ??= Object.freeze([...pathOf(path)]);
-
-      return materialised;
-    },
-    site,
-  });
-};
+): ValueContext =>
+  Object.freeze(
+    new LazyValueContext(site, caseSensitive, path, isKey, context),
+  );
 
 /** Read one candidate through the bound type, applying the failure policy. */
 const readValue = (
@@ -250,23 +296,21 @@ const readValue = (
   context: EvaluationContext,
 ): { ok: true; value: unknown } | { ok: false } => {
   const [pathRef, raw, candidateIsKey = false] = candidate;
+  const failure = failureSite(bound, site, pathRef, location, raw, context);
 
   // Reading the value itself threw — a getter or a Proxy trap. That is dirty
   // DATA, so it follows onValueError exactly like an unreadable value, instead
   // of escaping raw and destroying the whole result set.
   if (candidate.length > 3) {
     return {
-      ok: signalValueFailure({
-        cause: candidate[3],
-        kind: 'invalid',
-        location,
-        onValueError: context.options.onValueError,
-        path: pathOf(pathRef),
-        reason: 'reading this value threw',
-        site: site.kind,
-        typeName: bound.type.name,
-        value: undefined,
-      }),
+      ok: signalValueFailure(
+        failure.with({
+          cause: candidate[3],
+          kind: 'invalid',
+          reason: 'reading this value threw',
+          value: undefined,
+        }),
+      ),
     };
   }
 
@@ -280,36 +324,106 @@ const readValue = (
       isKey || candidateIsKey,
       context,
     ),
-    failureSite(bound, site, pathRef, location, raw, context),
+    failure,
   );
 
   if (result.ok) {
     return { ok: true, value: result.value };
   }
 
-  const survived = signalValueFailure({
-    kind: result.kind,
-    location,
-    onValueError: context.options.onValueError,
-    path: pathOf(pathRef),
-    reason: result.kind === 'invalid' ? result.reason : null,
-    site: site.kind,
-    typeName: bound.type.name,
-    value: raw,
-  });
+  /*
+   * `.with` rather than a fresh literal with `path: pathOf(pathRef)`.
+   *
+   * This is the common path, not an edge case: for an unfielded term
+   * `stringType.coerceValue` returns MISS for every number, boolean, null and
+   * Date leaf, and each one came through here and built a full path array that
+   * the `scan` policy then never read. That alone kept the walk quadratic —
+   * a 3.4 MB comment thread took 31 seconds.
+   */
+  const survived = signalValueFailure(
+    failure.with({
+      kind: result.kind,
+      reason: result.kind === 'invalid' ? result.reason : null,
+    }),
+  );
 
   // signalValueFailure returns false or throws; it never returns true.
   return { ok: survived };
 };
 
 /**
- * The descriptor a value-side failure needs, assembled once.
+ * The descriptor a value-side failure needs.
  *
  * Every callback that touches a datum can fail, and each one has to be able to
  * say WHICH value at WHICH path failed WHICH clause. Building that in one place
- * keeps the four call sites honest — an omitted `path` here becomes an error
- * message that cannot be acted on.
+ * keeps the call sites honest — an omitted `path` here becomes an error message
+ * that cannot be acted on.
+ *
+ * `path` is a PROTOTYPE accessor, for two separate reasons. It is lazy, because
+ * this is assembled once per candidate before anyone knows whether the value
+ * will fail, and `signalValueFailure` reads the path only on the branch that
+ * throws — under the default `skip` policy it is never read at all. Building it
+ * eagerly kept the unfielded walk quadratic for every record whose leaves are
+ * not strings, which is most records: `stringType.coerceValue` misses on every
+ * number, boolean, null and Date, and each miss came through here. And it is on
+ * the prototype rather than the instance because an own accessor costs far more
+ * to install than a plain property, once per candidate, for everyone.
+ *
+ * Since a prototype accessor is not an own property, `{...site}` would silently
+ * drop it — hence {@link LazyFailure.with} rather than a spread at the call sites.
  */
+class LazyFailure implements ValueFailure {
+  public readonly cause?: unknown;
+
+  readonly #ref: PathRef;
+
+  #materialised: readonly (string | number)[] | null = null;
+
+  public constructor(
+    public readonly site: EvaluationSite,
+    public readonly typeName: string,
+    public readonly location: SourceLocation,
+    public readonly onValueError: OnValueError,
+    public readonly value: unknown,
+    ref: PathRef,
+    public readonly kind: ValueFailureKind = 'miss',
+    public readonly reason: string | null = null,
+    cause?: unknown,
+  ) {
+    this.#ref = ref;
+
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+  }
+
+  public get path(): readonly (string | number)[] {
+    this.#materialised ??= pathOf(this.#ref);
+
+    return this.#materialised;
+  }
+
+  /** The same failure, classified — sharing the trail, so still lazy. */
+  public with(extra: {
+    readonly kind: ValueFailureKind;
+    readonly reason: string | null;
+    readonly cause?: unknown;
+    readonly value?: unknown;
+  }): LazyFailure {
+    return new LazyFailure(
+      this.site,
+      this.typeName,
+      this.location,
+      this.onValueError,
+      'value' in extra ? extra.value : this.value,
+      this.#ref,
+      extra.kind,
+      extra.reason,
+      extra.cause,
+    );
+  }
+}
+
 const failureSite = (
   bound: BoundOperand,
   site: OperandSite,
@@ -317,31 +431,15 @@ const failureSite = (
   location: { readonly start: number; readonly end: number },
   value: unknown,
   context: EvaluationContext,
-) => {
-  /*
-   * LAZY, for the same reason `valueContext` is.
-   *
-   * This descriptor is assembled once per CANDIDATE — before anyone knows
-   * whether the value will fail — so materialising the path here paid O(depth)
-   * for every leaf and kept the unfielded walk quadratic even after the trail
-   * was threaded through everything else. Most candidates match or miss without
-   * ever failing, and only a failure reads this.
-   */
-  let materialised: readonly (string | number)[] | null = null;
-
-  return {
+): LazyFailure =>
+  new LazyFailure(
+    site.kind,
+    bound.type.name,
     location,
-    onValueError: context.options.onValueError,
-    get path(): readonly (string | number)[] {
-      materialised ??= pathOf(path);
-
-      return materialised;
-    },
-    site: site.kind,
-    typeName: bound.type.name,
+    context.options.onValueError,
     value,
-  };
-};
+    path,
+  );
 
 const matchOne = (
   bound: BoundOperand,
@@ -366,11 +464,9 @@ const matchOne = (
   try {
     hasMatches = type.matches !== undefined;
   } catch {
-    return signalValueFailure({
-      ...failure,
-      kind: 'invalid',
-      reason: 'reading matches threw',
-    });
+    return signalValueFailure(
+      failure.with({ kind: 'invalid', reason: 'reading matches threw' }),
+    );
   }
 
   return !hasMatches

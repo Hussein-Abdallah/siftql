@@ -378,7 +378,10 @@ export const signalValueFailure = (failure: ValueFailure): false => {
       reason: failure.reason,
       typeName: failure.typeName,
       value: failure.value,
-      ...('cause' in failure ? { cause: failure.cause } : {}),
+      // `!== undefined` rather than `'cause' in failure`: the descriptor is a
+      // class instance, so an absent cause is still an own property on some
+      // paths, and `in` would attach `cause: undefined` to every error.
+      ...(failure.cause === undefined ? {} : { cause: failure.cause }),
     });
   }
 

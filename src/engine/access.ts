@@ -53,8 +53,58 @@
 
 import { isDateLike, safeIsArray } from '../internal.js';
 
+/**
+ * A path kept as a LINKED LIST, built as the walk descends.
+ *
+ * One node per step, shared with every descendant, so extending a path costs
+ * O(1) instead of copying an array.
+ */
+export interface PathTrail {
+  readonly parent: PathTrail | null;
+  readonly key: string | number;
+}
+
+/**
+ * A candidate's path, in whichever form was cheap to produce.
+ *
+ * The fielded walk takes one step per QUERY segment, so an array there is
+ * already short and bounded. The unfielded walk descends as deep as the record
+ * goes, so it carries a trail and only materialises on demand — see
+ * {@link pathOf}.
+ */
+export type PathRef = readonly (string | number)[] | PathTrail | null;
+
+/**
+ * Turn a path reference into an array.
+ *
+ * CALLED ONLY WHERE A PATH IS ACTUALLY NEEDED, which is on a match or a failure
+ * report — never once per candidate. Materialising eagerly made the unfielded
+ * walk QUADRATIC in record depth: a chain-shaped record (threaded comments, a
+ * linked list, an ORM parent chain) has a leaf at every level, so the paths
+ * summed to n²/2 entries. 16,000 levels took two seconds and 32,000 exhausted
+ * the heap, from a record under a megabyte. A flat record with the same leaf
+ * count took 19 ms, which is the tell: the cost was never the leaves.
+ */
+export const pathOf = (ref: PathRef): readonly (string | number)[] => {
+  if (ref === null) {
+    return [];
+  }
+
+  if (safeIsArray(ref)) {
+    return ref;
+  }
+
+  const segments: (string | number)[] = [];
+
+  for (let node: PathTrail | null = ref; node !== null; node = node.parent) {
+    segments.push(node.key);
+  }
+
+  return segments.reverse();
+};
+
 export type Candidate = readonly [
-  path: readonly (string | number)[],
+  path: PathRef,
   value: unknown,
   /**
    * True when this candidate is an object KEY rather than the value stored at
@@ -308,29 +358,20 @@ export const allLeafValues = (
   const found: Candidate[] = [];
 
   /*
-   * Paths as a LINKED LIST, materialised only for values actually emitted.
-   * Building `[...path, key]` per node is O(depth) per node and therefore
-   * quadratic overall; a 60,000-level record took thirty seconds, which is a
-   * crash traded for a hang. A deep record has one leaf at the bottom and no use
-   * for the 59,999 intermediate arrays.
+   * Paths as a LINKED LIST, and NOT materialised here at all.
+   *
+   * Building `[...path, key]` per node is O(depth) per node and quadratic
+   * overall; a 60,000-level record took thirty seconds. The trail fixed that for
+   * a record with ONE leaf at the bottom — but a chain-shaped record has a leaf
+   * at EVERY level, and materialising each one's path put the quadratic straight
+   * back: 16,000 levels took two seconds, 32,000 exhausted the heap.
+   *
+   * So the trail travels with the candidate and `pathOf` builds the array only
+   * where one is genuinely read, which is on a match or a failure — never once
+   * per leaf.
    */
-  interface Trail {
-    readonly parent: Trail | null;
-    readonly key: string | number;
-  }
-
-  const materialise = (trail: Trail | null): (string | number)[] => {
-    const segments: (string | number)[] = [];
-
-    for (let node = trail; node !== null; node = node.parent) {
-      segments.push(node.key);
-    }
-
-    return segments.reverse();
-  };
-
   interface Frame {
-    readonly trail: Trail | null;
+    readonly trail: PathTrail | null;
     readonly value: unknown;
     readonly readError?: unknown;
   }
@@ -380,10 +421,8 @@ export const allLeafValues = (
       }
 
       if (matchKeys && !safeIsArray(container)) {
-        const base = materialise(trail);
-
         for (const key of keys) {
-          found.push([[...base, key], key, true]);
+          found.push([{ key, parent: trail }, key, true]);
         }
       }
 
@@ -392,8 +431,8 @@ export const allLeafValues = (
 
     found.push(
       'readError' in frame
-        ? [materialise(trail), value, false, frame.readError]
-        : [materialise(trail), value],
+        ? [trail, value, false, frame.readError]
+        : [trail, value],
     );
   }
 

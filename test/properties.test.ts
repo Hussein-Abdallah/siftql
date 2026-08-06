@@ -921,19 +921,20 @@ describe('P4b: a declared dateFormat is never silently overridden', () => {
  * ========================================================================= */
 
 describe('P5: cost stays bounded', () => {
-  /*
-   * DEFERRED, and this one is an unfixed denial of service rather than a
-   * cosmetic gap: a chain-shaped record — threaded comments, a linked list — has
-   * a leaf at every level, and `materialise` builds an O(depth) path for each
-   * one, so time AND retained memory are quadratic. An ~830 KB record kills the
-   * process.
-   *
-   * The linked-list trail already fixed the case with one leaf at the bottom.
-   * Fixing this one needs the path to stay lazy all the way into `emit`, since
-   * only a matching or failing candidate ever needs its path materialised — a
-   * real refactor of the Candidate contract, not a patch.
-   */
-  it.fails('is not quadratic in record depth', () => {
+  it('is not quadratic in record depth', () => {
+    /*
+     * A chain-shaped record — threaded comments, a linked list, an ORM parent
+     * chain — has a leaf at EVERY level, so its paths sum to n²/2 entries. It
+     * took two seconds at 16,000 levels and exhausted the heap at 32,000, from a
+     * record under a megabyte. A flat record with the same LEAF COUNT took 19 ms,
+     * which is the tell: the cost was never the leaves.
+     *
+     * Fixed by never materialising a path until something reads one, which
+     * happens on a match or a failure and not once per candidate. Three places
+     * had to become lazy before the curve moved — the walk, the value context,
+     * and the failure descriptor — and it stayed quadratic until the last of
+     * them, which is why this is a property and not three separate tests.
+     */
     const chain = (levels: number): unknown => {
       let node: Record<string, unknown> = { text: 'leaf' };
 

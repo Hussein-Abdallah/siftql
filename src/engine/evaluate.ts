@@ -32,8 +32,10 @@ import { fieldPath } from '../types.js';
 import {
   allLeafValues,
   formatPath,
+  pathOf,
   valuesAtPath,
   type Candidate,
+  type PathRef,
 } from './access.js';
 import type { HighlightSink } from './highlight.js';
 
@@ -208,18 +210,34 @@ const resolveOperand = (
 const valueContext = (
   site: OperandSite,
   caseSensitive: boolean,
-  path: readonly (string | number)[],
+  path: PathRef,
   isKey: boolean,
   context: EvaluationContext,
-): ValueContext =>
-  Object.freeze({
+): ValueContext => {
+  /*
+   * `path` is built LAZILY, and memoised once built.
+   *
+   * This function runs once per candidate, so copying the path here was the
+   * other half of the quadratic walk: a chain-shaped record paid O(depth) for
+   * every leaf whether or not the type ever looked at it — and most types never
+   * do. A getter costs nothing to install and only materialises for the types
+   * that actually ask.
+   */
+  let materialised: readonly (string | number)[] | null = null;
+
+  return Object.freeze({
     caseSensitive,
     isKey,
     lookup: (name: string) => context.registry.get(name),
     options: context.typeOptions,
-    path: Object.freeze([...path]),
+    get path(): readonly (string | number)[] {
+      materialised ??= Object.freeze([...pathOf(path)]);
+
+      return materialised;
+    },
     site,
   });
+};
 
 /** Read one candidate through the bound type, applying the failure policy. */
 const readValue = (
@@ -231,7 +249,7 @@ const readValue = (
   location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
 ): { ok: true; value: unknown } | { ok: false } => {
-  const [path, raw, candidateIsKey = false] = candidate;
+  const [pathRef, raw, candidateIsKey = false] = candidate;
 
   // Reading the value itself threw — a getter or a Proxy trap. That is dirty
   // DATA, so it follows onValueError exactly like an unreadable value, instead
@@ -243,7 +261,7 @@ const readValue = (
         kind: 'invalid',
         location,
         onValueError: context.options.onValueError,
-        path,
+        path: pathOf(pathRef),
         reason: 'reading this value threw',
         site: site.kind,
         typeName: bound.type.name,
@@ -255,8 +273,14 @@ const readValue = (
   const result = callCoerceValue(
     bound.type,
     raw,
-    valueContext(site, caseSensitive, path, isKey || candidateIsKey, context),
-    failureSite(bound, site, path, location, raw, context),
+    valueContext(
+      site,
+      caseSensitive,
+      pathRef,
+      isKey || candidateIsKey,
+      context,
+    ),
+    failureSite(bound, site, pathRef, location, raw, context),
   );
 
   if (result.ok) {
@@ -267,7 +291,7 @@ const readValue = (
     kind: result.kind,
     location,
     onValueError: context.options.onValueError,
-    path,
+    path: pathOf(pathRef),
     reason: result.kind === 'invalid' ? result.reason : null,
     site: site.kind,
     typeName: bound.type.name,
@@ -289,25 +313,42 @@ const readValue = (
 const failureSite = (
   bound: BoundOperand,
   site: OperandSite,
-  path: readonly (string | number)[],
+  path: PathRef,
   location: { readonly start: number; readonly end: number },
   value: unknown,
   context: EvaluationContext,
-) => ({
-  location,
-  onValueError: context.options.onValueError,
-  path,
-  site: site.kind,
-  typeName: bound.type.name,
-  value,
-});
+) => {
+  /*
+   * LAZY, for the same reason `valueContext` is.
+   *
+   * This descriptor is assembled once per CANDIDATE — before anyone knows
+   * whether the value will fail — so materialising the path here paid O(depth)
+   * for every leaf and kept the unfielded walk quadratic even after the trail
+   * was threaded through everything else. Most candidates match or miss without
+   * ever failing, and only a failure reads this.
+   */
+  let materialised: readonly (string | number)[] | null = null;
+
+  return {
+    location,
+    onValueError: context.options.onValueError,
+    get path(): readonly (string | number)[] {
+      materialised ??= pathOf(path);
+
+      return materialised;
+    },
+    site: site.kind,
+    typeName: bound.type.name,
+    value,
+  };
+};
 
 const matchOne = (
   bound: BoundOperand,
   value: unknown,
   site: OperandSite,
   caseSensitive: boolean,
-  path: readonly (string | number)[],
+  path: PathRef,
   isKey: boolean,
   location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
@@ -356,7 +397,7 @@ const compareOne = (
   bound: BoundOperand,
   value: unknown,
   site: OperandSite,
-  path: readonly (string | number)[],
+  path: PathRef,
   location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
 ): number | null => {
@@ -412,7 +453,7 @@ const withinBoundary = (
   value: unknown,
   side: 'lower' | 'upper',
   site: OperandSite,
-  path: readonly (string | number)[],
+  path: PathRef,
   location: { readonly start: number; readonly end: number },
   context: EvaluationContext,
 ): boolean | null => {
@@ -737,7 +778,8 @@ const emit = (
   caseSensitive: boolean,
   context: EvaluationContext,
 ): void => {
-  const [segments, , isKey = false] = candidate;
+  const [pathRef, , isKey = false] = candidate;
+  const segments = pathOf(pathRef);
 
   // A key hit matched the field's NAME, not its contents. Reporting a pattern
   // would hand the caller one that provably cannot match the value stored at
@@ -930,7 +972,7 @@ const compileClause = (
                 kind: 'incomparable',
                 location: node.expression.location,
                 onValueError: context.options.onValueError,
-                path: candidate[0],
+                path: pathOf(candidate[0]),
                 reason: null,
                 site: 'ordered',
                 typeName: bound.type.name,
@@ -1167,10 +1209,13 @@ const compileRange = (
         sink,
         exhaustiveScan(context),
         (candidate) => {
-          const [segments, raw] = candidate;
+          const [pathRef, raw] = candidate;
           const present = raw !== undefined && raw !== null;
 
           if (present && sink) {
+            // Materialised only for a HIT, which is the point of the trail.
+            const segments = pathOf(pathRef);
+
             sink.add({ path: formatPath(segments), segments });
           }
 
@@ -1267,7 +1312,7 @@ const compileRange = (
             kind: 'incomparable',
             location: range.location,
             onValueError: context.options.onValueError,
-            path: candidate[0],
+            path: pathOf(candidate[0]),
             reason: null,
             site: 'range',
             typeName: reference.type.name,

@@ -706,11 +706,11 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    * An option may be an accessor, and a throwing one must produce a CONFIG
    * ERROR — not escape raw, and not silently vanish.
    *
-   * Swallowing the throw and returning `undefined` would let `supplied()` read
-   * false, so the default wins and an engine built from a lazily-computed or
-   * proxy-backed config object silently gets default policy — including
-   * `onValueError`. A silent default for the FAILURE policy is the quiet
-   * wrongness this validator exists to prevent.
+   * Swallowing the throw and returning `undefined` would let the default win,
+   * so an engine built from a lazily-computed or proxy-backed config object
+   * silently gets default policy — including `onValueError`. A silent default
+   * for the FAILURE policy is the quiet wrongness this validator exists to
+   * prevent.
    */
   const read = (key: string): unknown => {
     try {
@@ -724,36 +724,62 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
   };
 
   /**
-   * Was this option supplied at all?
+   * Copy an array-valued option, once, behind the same guard as `read`.
    *
-   * `in` rather than a presence test on the value, so `{ tolerant: undefined }`
-   * and an omitted `tolerant` are treated alike — both mean "leave it alone".
-   * Guarded, because `in` runs a Proxy's `has` trap, and this is the function
-   * whose job is to turn bad options into errors rather than throw them.
+   * `dateFormat` and `types` are the two options the checks below ITERATE, and
+   * iterating the caller's array reaches element accessors that `read` never
+   * saw: an array whose index getter throws escaped as a raw `Error`, and one
+   * whose index getter answered twice was validated on the first answer and
+   * kept on the second, so a layout `assertValidFormat` would have refused
+   * reached the engine and failed on the first record holding a date.
+   *
+   * The elements themselves are still the caller's objects. A value type is an
+   * object of methods that only `createRegistry` can meaningfully copy, so this
+   * guarantees the ARRAY is stable, not that every type in it is.
    */
-  const supplied = (key: string): boolean => {
+  const copyArray = (key: string, raw: unknown): unknown => {
+    if (!safeIsArray(raw)) {
+      return raw;
+    }
+
     try {
-      return key in value;
-    } catch {
-      return false;
+      return Object.freeze([...raw]);
+    } catch (error) {
+      throw new SiftQLConfigError(
+        `${fn}() could not read the "${key}" option: reading it threw. An option must be a plain value, not an accessor that fails.`,
+        { cause: error },
+      );
     }
   };
 
   /*
    * ONE read per option, before any of it is inspected.
    *
-   * Validating straight from `read()` and then reading again to build the
-   * snapshot gave an accessor two chances to answer, and only the FIRST was
-   * checked: a getter returning `'throw'` to the validator and `'garbage'`
-   * afterwards put `'garbage'` in the engine. Everything below — every check
-   * and the snapshot alike — now works from this map, so what was validated is
-   * necessarily what is kept.
+   * Reading twice — once to validate, once to build the snapshot — gave an
+   * accessor two chances to answer and checked only the first, so a getter
+   * returning `'throw'` then `'garbage'` put `'garbage'` in the engine. Every
+   * check below and the snapshot both work from this map.
+   *
+   * The read is UNCONDITIONAL. Gating it on a presence test meant an options
+   * object whose `in` failed or lied never reached `read`'s guard at all, and
+   * an unreadable config silently became an all-defaults engine — including a
+   * silent `onValueError`, which is the exact quiet wrongness this validator
+   * exists to prevent.
+   *
+   * An `undefined` value is then OMITTED, so `{ tolerant: undefined }` and an
+   * omitted `tolerant` mean the same thing: leave it alone. `engine.extend()`
+   * merges `{ ...parent, ...child }`, so keeping the key would let the ordinary
+   * act of spreading a partial config blank an option the caller never
+   * mentioned — dropping `onValueError: 'throw'` to `'skip'`, or losing the
+   * parent's custom value types.
    */
   const values = new Map<string, unknown>();
 
   for (const key of KNOWN_OPTIONS) {
-    if (supplied(key)) {
-      values.set(key, read(key));
+    const supplied = copyArray(key, read(key));
+
+    if (supplied !== undefined) {
+      values.set(key, supplied);
     }
   }
 

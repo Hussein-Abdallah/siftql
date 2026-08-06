@@ -216,8 +216,11 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
   return {
     /*
      * MERGED over this engine's options, which is what the contract says and
-     * what the snapshot now makes possible: `assertOptions` omits keys the
-     * caller did not supply, so spreading it cannot blank the parent.
+     * what the snapshot makes possible: `assertOptions` omits any key whose
+     * value is `undefined`, so spreading it cannot blank the parent. That
+     * covers the ordinary case of building `extra` from a partial config —
+     * `extend({ matchKeys: config.matchKeys })` where the field is absent
+     * type-checks, and must not silently reset the parent's setting.
      */
     extend: (extra) =>
       createEngine({ ...options, ...assertOptions(extra, 'engine.extend') }),

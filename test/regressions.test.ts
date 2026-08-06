@@ -7,11 +7,13 @@ import {
   defineValueType,
   filter,
   highlight,
+  isSiftQLError,
   MISS,
   parse,
   resolved,
   resolveTemporal,
   serialize,
+  SiftQLConfigError,
   SiftQLRecoveredQueryError,
   SiftQLSyntaxError,
   SiftQLValueError,
@@ -650,5 +652,89 @@ describe('an option is read once, so validation and the engine agree', () => {
     expect(() => createEngine({ onValueError: 'garbage' } as never)).toThrow(
       /onValueError/,
     );
+  });
+});
+
+describe('an options object that cannot be read is refused, not defaulted', () => {
+  it('refuses a revoked Proxy instead of building a defaults engine', () => {
+    // The single-read rewrite gated the read on a presence test, and that test
+    // swallowed its own failure and answered "absent". An options object whose
+    // reads throw then never reached the guard at all: a caller who asked for
+    // onValueError: 'throw' silently got 'skip', which is the exact quiet
+    // wrongness this validator exists to prevent.
+    const revocable = Proxy.revocable(
+      { onValueError: 'throw' as const, tolerant: true },
+      {},
+    );
+
+    revocable.revoke();
+
+    expect(() => createEngine(revocable.proxy)).toThrow(SiftQLConfigError);
+  });
+
+  it('reports an unreadable types array as a config error, not a raw one', () => {
+    // The element reads were guarded; iterating the array to reach them was
+    // not, so a raw Error escaped a package whose contract is that every error
+    // it throws is a SiftQLError.
+    const types = new Proxy([{ name: 'x' }], {
+      get: (target: object, key: string | symbol): unknown => {
+        if (key === '0') {
+          throw new Error('reactive read failed');
+        }
+
+        return (target as Record<string | symbol, unknown>)[key];
+      },
+    });
+
+    try {
+      createEngine({ types } as never);
+      expect.unreachable('createEngine should have refused');
+    } catch (error) {
+      expect(isSiftQLError(error)).toBe(true);
+    }
+  });
+
+  it('keeps the dateFormat it validated, not a later read of it', () => {
+    // The snapshot stored arrays by reference, so dateFormat was validated
+    // once and read again downstream: a layout assertValidFormat would have
+    // refused reached the engine and failed on the first record with a date.
+    let reads = 0;
+    const formats: string[] = [];
+
+    Object.defineProperty(formats, '0', {
+      enumerable: true,
+      get(): string {
+        reads += 1;
+
+        return reads === 1 ? 'YYYY-MM-DD' : 'QQQQ';
+      },
+    });
+    Object.defineProperty(formats, 'length', { value: 1 });
+
+    const engine = createEngine({ dateFormat: formats });
+
+    expect(() =>
+      engine.filter('when:>=2020-01-01', [{ when: '2021-06-01' }]),
+    ).not.toThrow();
+  });
+});
+
+describe('extend() does not blank a parent option with an explicit undefined', () => {
+  const parent = createEngine({ matchKeys: true, onValueError: 'throw' });
+
+  it('inherits when a partial config omits the field', () => {
+    // Spreading a partial config is ordinary JS and type-checks cleanly, so
+    // `extend({ matchKeys: config.matchKeys })` with the field absent silently
+    // reset the parent's setting — including dropping the failure policy.
+    const config: { matchKeys?: boolean } = {};
+    const child = parent.extend({ matchKeys: config.matchKeys });
+
+    expect(child.options.matchKeys).toBe(true);
+  });
+
+  it('does not downgrade the failure policy', () => {
+    expect(
+      parent.extend({ onValueError: undefined }).options.onValueError,
+    ).toBe('throw');
   });
 });

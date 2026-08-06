@@ -86,6 +86,18 @@ const ATOMS = [
   '-3',
   'x*',
   '?x',
+  // Wildcards and terms over a value whose case fold CHANGES LENGTH. Removing
+  // the guard that suppresses spans for those went undetected: nothing in the
+  // corpus asked a wildcard about `İstanbul`.
+  '*i*',
+  '*I*',
+  'İstanbul',
+  '*stanbul',
+  // A regex and a term that match MORE THAN ONCE in one value, so an
+  // off-by-one in the span walk has somewhere to show up.
+  '/a/',
+  '/a.a/',
+  '*a*',
   '/re/i',
   String.raw`/(a+)\1/`,
   '/(a*)*/',
@@ -106,6 +118,17 @@ const FIELDS = [
   '',
   'n:',
   'n::',
+  // A CASE-SENSITIVE clause against a STRING field. `n::` existed, but every
+  // record holds a number in `n`, so no `::` clause ever reached the string
+  // type — and a mutation making `:=` ignore case sensitivity went undetected.
+  'name::',
+  'name:=',
+  // `::=` — case-sensitive EQUALITY. `::` alone routes through `matches`, and
+  // `:=` alone is case-insensitive, so neither reaches `equals` with case
+  // sensitivity on. A mutation making `:=` ignore case went undetected until
+  // this combination existed.
+  'name::=',
+  'name:',
   'd:',
   'a.b:',
   'a.0:',
@@ -200,7 +223,20 @@ const record = (next: () => number): unknown => {
     a: { b: pick(next, ['ada', 3, null]) },
     d: pick(next, ['2020-06-01', '14:30', 1_591_000_000_000, new Date(0)]),
     n: pick(next, [3, -3, '007', 0]),
-    name: pick(next, ['ada', 'ADA', 'in progress', 'İstanbul', '']),
+    name: pick(next, [
+      'ada',
+      'ADA',
+      'Ada',
+      'in progress',
+      'İstanbul',
+      'banana',
+      // ADJACENT repeats. `banana` has its `a`s two apart, so a span walk that
+      // over-advances by one still lands on the same next match and looks
+      // identical — the off-by-one only shows up when matches touch.
+      'aaa',
+      'aaab',
+      '',
+    ]),
     tags: ['red', 'blue'],
   };
 };
@@ -296,8 +332,55 @@ const outcome = (act: () => unknown): string => {
   }
 };
 
+/**
+ * Hand-built trees, which no query string can produce.
+ *
+ * `parse()` caps nesting at MAX_DEPTH (200), so the evaluator's MAX_AST_DEPTH
+ * guard (2,200) is unreachable through text — a mutation raising it out of
+ * reach went undetected because nothing ever handed the engine a tree it had
+ * not parsed itself. `types.ts` advertises hand-built and JSON-deserialized
+ * ASTs as a supported transport, so leaving them out left a published surface
+ * with no coverage at all.
+ */
+const handBuilt = (
+  surface: Surface,
+): readonly (readonly [string, unknown])[] => {
+  const b = surface.builders;
+  const deep = (levels: number): unknown => {
+    let node: unknown = b.term('ada');
+
+    for (let at = 0; at < levels; at += 1) {
+      node = b.not(node);
+    }
+
+    return node;
+  };
+
+  return [
+    ['deep NOT chain, under the guard', deep(500)],
+    ['deep NOT chain, over the guard', deep(2500)],
+    [
+      'shared subtree',
+      (() => {
+        const shared = b.term('ada');
+
+        return b.or(b.and(shared, shared), shared);
+      })(),
+    ],
+    ['bare field group', b.tag(b.field('a', 'b'), b.term('ada'))],
+  ];
+};
+
 interface Surface {
   parse(query: string, options?: unknown): unknown;
+  builders: {
+    term(value: string): unknown;
+    not(node: unknown): unknown;
+    and(left: unknown, right: unknown): unknown;
+    or(left: unknown, right: unknown): unknown;
+    tag(field: unknown, expression: unknown): unknown;
+    field(...path: string[]): unknown;
+  };
   serialize(ast: unknown): string;
   test(query: unknown, item: unknown, options?: unknown): boolean;
   filter(query: unknown, items: readonly unknown[], options?: unknown): unknown;
@@ -443,6 +526,30 @@ const main = async (): Promise<void> => {
             (s: Surface) =>
               (s.createEngine(options) as Surface).highlight(q, item),
           ],
+          /*
+           * THE SAME QUERY AS AN AST, not a string.
+           *
+           * Every surface above passes text, so the whole hand-built/JSON
+           * transport that `types.ts` advertises was untested — and a mutation
+           * that raised the AST depth guard out of reach went undetected,
+           * because nothing ever handed the evaluator a tree directly.
+           */
+          [
+            'test (ast)',
+            (s: Surface) =>
+              (s.createEngine(options) as Surface).test(
+                s.parse(q, options),
+                item,
+              ),
+          ],
+          [
+            'highlight (ast)',
+            (s: Surface) =>
+              (s.createEngine(options) as Surface).highlight(
+                s.parse(q, options),
+                item,
+              ),
+          ],
         ] as const) {
           const a = outcome(() => act(base));
           const b = outcome(() => act(head));
@@ -456,6 +563,33 @@ const main = async (): Promise<void> => {
               `${JSON.stringify(q.slice(0, 60))}\n      ${divergence(a, b)}`,
             );
           }
+        }
+      }
+    }
+
+    // Hand-built trees, once each — they are fixed, not generated.
+    for (const [label, tree] of handBuilt(head)) {
+      const baseTree = handBuilt(base).find(([name]) => name === label)?.[1];
+
+      for (const [kind, act] of [
+        ['serialize', (s: Surface, t: unknown) => s.serialize(t)],
+        [
+          'test',
+          (s: Surface, t: unknown) =>
+            (s.createEngine({}) as Surface).test(t, { a: { b: 'ada' } }),
+        ],
+      ] as const) {
+        const a = outcome(() => act(base, baseTree));
+        const b = outcome(() => act(head, tree));
+
+        compared += 1;
+
+        if (a !== b) {
+          note(
+            `${kind} (hand-built)`,
+            divergence(a, b),
+            `${label}\n      ${divergence(a, b)}`,
+          );
         }
       }
     }

@@ -759,10 +759,18 @@ export const compileExpression = (
    */
   defaultCaseSensitive = false,
   /**
-   * Frames spent so far. Bounded by MAX_AST_DEPTH, which is exactly what
-   * `parse()` can emit — so this can only fire for a hand-built or deserialized
-   * tree, and it fires as a named error rather than a raw `RangeError` from
-   * whichever helper happened to be on the stack when it ran out.
+   * Frames spent so far.
+   *
+   * DEFENCE IN DEPTH, and unreachable today — which is worth saying plainly
+   * rather than implying otherwise. This used to claim it "can only fire for a
+   * hand-built or deserialized tree", but those go through `assertNode` first,
+   * and that refuses past MAX_AST_DEPTH before compilation starts. A mutation
+   * test raised this bound tenfold and produced no observable change through
+   * any public entry point.
+   *
+   * Kept anyway: it is the backstop if a future path reaches the evaluator
+   * without validating, and it fails as a named error rather than as a raw
+   * `RangeError` from whichever helper happened to be on the stack.
    */
   depth = 0,
 ): Predicate => {

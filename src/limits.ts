@@ -103,9 +103,7 @@ export const MAX_WILDCARD_SEGMENTS = 512;
  * split is 11,996 (parentheses consume the clause budget too, so the fully
  * nested shape is not the largest).
  *
- * THIS CONSTANT DOES NOT SIT ABOVE THE MAXIMAL QUERY, and an earlier version of
- * this comment claimed it did — citing a `test/limits.test.ts` that has never
- * existed. A maximal shape (MAX_CLAUSES tags, each with a MAX_FIELD_SEGMENTS
+ * THIS CONSTANT DOES NOT SIT ABOVE THE MAXIMAL QUERY. A maximal shape (MAX_CLAUSES tags, each with a MAX_FIELD_SEGMENTS
  * path and a MAX_WILDCARD_SEGMENTS value) is accepted at 453 clauses and 499,202
  * visits and refused at 454, so the budget is roughly a quarter of what the per-clause caps alone
  * would permit.

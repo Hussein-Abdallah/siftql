@@ -60,9 +60,7 @@ export class HighlightSink {
        *
        * `\0` separates the parts because it is the one character a field name,
        * a pattern source and a flag string cannot contain, so no combination of
-       * them can forge another entry's key. (It used to be written as a raw NUL
-       * byte in this file, which is invisible in every editor. Same key, but
-       * now you can see it.)
+       * them can forge another entry's key.
        */
       const spans = (highlight.ranges ?? [])
         .map((range) => `${String(range.start)}-${String(range.end)}`)

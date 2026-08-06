@@ -39,9 +39,9 @@
  * with a message saying so. A refusal a caller can read beats a hang they
  * cannot.
  *
- * The package already made this exact move once: wildcards used to compile to
- * regexes and blew up the same way, and replacing them with a two-pointer
- * matcher is why `name:*a*a*a*b` is now flat at 0.02 ms.
+ * Wildcards take the same approach for the same reason: a two-pointer glob
+ * rather than a compiled regex, which is why `name:*a*a*a*b` is flat at 0.02 ms
+ * against a 5,000-character value.
  */
 
 /* ------------------------------------------------------------------------- *
@@ -52,24 +52,16 @@
  * Most instructions a compiled pattern may occupy.
  *
  * The VM is `O(program × input)`, so the program has to be bounded for the time
- * bound to mean anything. Counted repetitions are compiled by DUPLICATION —
- * `a{3}` is three copies — so `(a{1,99}){1,99}` reaches 19,602 instructions and
- * is refused here. (`a{1000}{1000}` used to be the second example, described as
- * "a million"; it was neither, because the trailing `{1000}` was being read as
- * literal text. It is now refused as a quantifier applied to a quantifier,
- * which is what JavaScript does with it.)
+ * bound to mean anything. Counted repetitions compile by DUPLICATION — `a{3}` is
+ * three copies — so `(a{1,99}){1,99}` reaches 19,602 instructions and is refused.
+ * A pattern that exceeds the limit is refused, not silently truncated.
  *
- * A pattern that exceeds it is refused, not silently truncated.
- *
- * BOUNDING THE COUNT OF STEPS IS NOT ENOUGH ON ITS OWN, which is a mistake this
- * file made for a whole release cycle: the comment here used to promise "tens of
- * milliseconds on a long value" and `[^\s×490]{900}` with `i` took 45 seconds
- * inside `test()` at stock settings. Every step was counted; no step's COST was.
- * A character class could hold thousands of ranges scanned linearly, and the
- * case-fold closure was recomputed per character per instruction. So a step is
- * now bounded too — see {@link MAX_CLASS_RANGES}, the binary search in
- * {@link inRanges}, and the memo tables under {@link canonicalize} — and the
- * claim above is measured rather than asserted.
+ * BOUNDING THE NUMBER OF STEPS IS NOT ENOUGH ON ITS OWN. The cost of a single
+ * step has to be bounded too, or a pattern within this limit can still take
+ * tens of seconds: a character class may name thousands of ranges, and case
+ * folding is consulted per character per instruction. See
+ * {@link MAX_CLASS_RANGES}, the binary search in {@link inRanges}, and the memo
+ * tables under {@link canonicalize}.
  */
 const MAX_PROGRAM = 4000;
 
@@ -83,8 +75,8 @@ const MAX_REPEAT = 1000;
  * covers — so this only bites a class that genuinely names hundreds of separate
  * intervals, and it bounds the per-character cost of {@link inRanges} at
  * `log2(512) = 9` comparisons. Under `i` a miss also walks the input's fold
- * orbit, and the largest orbit in the BMP has four members, so the real ceiling
- * is 36 — still a constant, but not the 9 this used to claim flatly.
+ * orbit, whose largest BMP member count is four, so the ceiling is 36 — still a
+ * constant.
  */
 const MAX_CLASS_RANGES = 512;
 
@@ -102,7 +94,7 @@ interface CharSet {
    * `.` is load-bearing — {@link buildPredicate} widens it under the `s` flag.
    * The rest only mark "this came from a shorthand", which is how a class tells
    * `\d` from `\x41` when deciding whether something can be a range endpoint.
-   * They are NOT consulted when folding case, though this said they were.
+   * They are not consulted when folding case.
    */
   readonly classes: readonly string[];
 }
@@ -193,10 +185,10 @@ const MAX_CODE_UNIT = 0xffff;
 /**
  * The ranges a set does NOT cover. Input must be sorted and disjoint.
  *
- * This is what lets a negated shorthand appear inside a class. `[\s\S]` — the
- * standard "any character, newlines included" idiom — used to be refused on the
- * grounds that `[\D]` "needs set subtraction to express exactly". It does not:
- * a class is a UNION, and unioning a complement is still a union.
+ * This is what lets a negated shorthand appear inside a class, so `[\s\S]` — the
+ * standard "any character, newlines included" idiom — is expressible. A class is
+ * a UNION, and unioning a complement is still a union; no set subtraction is
+ * needed.
  */
 const complement = (
   ranges: readonly (readonly [number, number])[],
@@ -404,17 +396,15 @@ class Parser {
      * short — the pattern `(?:.*?)?\w+` over "a,b,,c" reported [0,1][1,3][3,6]
      * where RegExp reports [0,3][3,6].
      *
-     * Implementing the rule properly was tried and reverted. It needs a slot
-     * carried per epsilon path, which cost a 992-character pattern 2 seconds
-     * per kilobyte of value — reintroducing, through the fix, the exact
-     * uninterruptible hang this file exists to remove. Weakening the dedup that
-     * would make it cheap is weakening the linear-time guarantee itself.
+     * Implementing the rule needs a slot carried per epsilon path, which costs
+     * a near-limit pattern seconds per kilobyte of value — reintroducing the
+     * uninterruptible hang this file exists to remove. The cheap alternative is
+     * to weaken the deduplication, and that IS the linear-time guarantee.
      *
-     * So the pattern is refused with a message instead of matched with subtly
-     * wrong spans. That is the same trade the file already makes for
-     * backreferences and lookaround, for the same reason: a refusal a caller
-     * can read beats a wrong answer they cannot see. `a*`, `(?:ab)*` and
-     * `(\s*,\s*)*` are all unaffected — only a body that can match nothing is.
+     * So the pattern is refused rather than matched with subtly wrong spans:
+     * the same trade made for backreferences and lookaround, for the same
+     * reason. Only a body that can match NOTHING is affected — `a*`,
+     * `(?:ab)*` and `(\s*,\s*)*` are all fine.
      */
     if (nullable(atom)) {
       fail(
@@ -423,7 +413,8 @@ class Parser {
     }
 
     // `a{2}{3}`, `a*?` followed by `?`: JavaScript rejects a quantifier applied
-    // to a quantifier, and this used to read the second one as literal text.
+    // to a quantifier, so reading the second one as literal text would accept a
+    // pattern no engine agrees with.
     const trailing = this.peek();
 
     if (
@@ -479,8 +470,7 @@ class Parser {
       fail(`a quantifier with nothing to repeat: ${JSON.stringify(character)}`);
     }
 
-    // `{2}` on its own is a quantifier with no atom, which JavaScript rejects;
-    // it used to be read as the three literal characters.
+    // `{2}` on its own is a quantifier with no atom, which JavaScript rejects.
     if (
       character === '{' &&
       /^\{\d+(,\d*)?\}/u.test(this.source.slice(this.index))
@@ -683,7 +673,7 @@ class Parser {
       case '7': {
         /*
          * A LEGACY OCTAL escape (Annex B), up to three digits and never above
-         * 0377. `\0` was previously a fixed NUL and `\1`-`\7` inside a class
+         * 0377. Inside a class `\1`-`\7` are octal escapes, not literal digits
          * fell through to the literal digit, so `[\1]` matched "1" and not
          * \x01 — wrong in both directions — and `[\x00-\1f]` built the range
          * \x00 to "1" instead of \x00 to \x1f.
@@ -946,7 +936,7 @@ const inRanges = (
 /**
  * JavaScript's `Canonicalize`, which is not `toUpperCase`.
  *
- * Two rules matter and the first version had neither:
+ * Two rules matter:
  *
  *  - A character whose uppercase is MULTIPLE characters does not fold. `ß`
  *    uppercases to `SS`, so `/S/i` must not match it.
@@ -990,10 +980,10 @@ let ORBITS: Map<number, readonly number[]> | null = null;
  * This is the REVERSE of {@link canonicalize}, and it has to be tabulated rather
  * than derived, because case conversion is not invertible by applying more case
  * conversion. `ς` uppercases to `Σ`, but `Σ` lowercases to `σ` and never to `ς`,
- * so a closure over `toLowerCase`/`toUpperCase` — which is what this used to be
- * — cannot get from one to the other. `/[α-ς]/i` therefore failed to match `Σ`,
- * and `/[^α-ς]/i` MATCHED it: an over-match straight through a negated class.
- * The same hole covered `µ` MICRO SIGN, `ϕ/Φ`, `ϰ/Κ`, `ẚ/Ṡ` and Cyrillic U+1C80+.
+ * so a closure over `toLowerCase`/`toUpperCase` cannot get from one to the
+ * other. Deriving the reverse that way misses `Σ` for `/[α-ς]/i`, and MATCHES it
+ * for `/[^α-ς]/i` — an over-match straight through a negated class. The same
+ * applies to `µ` MICRO SIGN, `ϕ/Φ`, `ϰ/Κ`, `ẚ/Ṡ` and Cyrillic U+1C80+.
  *
  * Built once, lazily, and only when an `i` pattern is first compiled — a pattern
  * without `i` never pays for it. Only orbits with more than one member are kept:
@@ -1066,9 +1056,9 @@ const buildPredicate = (
        * testing the input's whole ORBIT against the set decides it exactly, in
        * both directions and for ranges of any width.
        *
-       * The set used to be widened instead, by adding the canonical form of each
-       * SINGLE-character range. That could not work for a multi-character range,
-       * which is how `/[α-ς]/i` came to miss `Σ`.
+       * Widening the SET instead — adding the canonical form of each
+       * single-character range — cannot work for a multi-character range, and
+       * would make `/[α-ς]/i` miss `Σ`.
        */
       for (const candidate of foldCandidates(code)) {
         if (inRanges(candidate, ranges)) {
@@ -1091,10 +1081,9 @@ const PREDICATES = new WeakMap<
  * {@link buildPredicate}, but built once per distinct set.
  *
  * Counted repetitions compile by duplicating the body, and every copy shares the
- * SAME `CharSet` object — so `[…]{1000}` used to rebuild and re-merge the same
- * range list a thousand times before the program-size limit refused the pattern.
- * That is why a rejected pattern could still burn 2.7 seconds of uninterruptible
- * CPU: the work happened on the way to the refusal.
+ * SAME `CharSet` object, so without this `[…]{1000}` rebuilds and re-merges one
+ * range list a thousand times before the program-size limit refuses the pattern
+ * — seconds of uninterruptible CPU spent on the way to a rejection.
  */
 const predicate = (
   source: CharSet,
@@ -1127,12 +1116,11 @@ class Program {
   /**
    * Compilation steps taken, which is NOT the same as instructions emitted.
    *
-   * The budget used to live only in `emit`, so a body that compiles to ZERO
-   * instructions — `()`, `(?:)` — could be repeated for free: `{1000}` spun the
-   * duplication loop a thousand times without emitting anything, and nesting
-   * multiplied it. `((((){1000}){1000}){1000}){1000}` is 32 characters and took
-   * over 75 seconds, which moved the uninterruptible hang this engine exists to
-   * remove from match time to COMPILE time.
+   * Budgeting only emitted instructions is not enough: a body that compiles to
+   * ZERO of them — `()`, `(?:)` — repeats for free, and nesting multiplies it.
+   * `((((){1000}){1000}){1000}){1000}` is 32 characters and spins the
+   * duplication loop far past any budget while emitting nothing, moving the
+   * uninterruptible hang this engine exists to remove into COMPILE time.
    */
   public steps = 0;
 
@@ -1300,12 +1288,11 @@ const isWordCode = (code: number | undefined): boolean =>
  * when its stamp equals the current one, so moving to the next position costs
  * an increment instead of a fresh array.
  *
- * This is not a micro-optimisation. `run` used to allocate and zero-fill two
- * arrays of `code.length` FOR EVERY INPUT CHARACTER, and `spans()` calls `run`
- * once per match — so walking a 12,000-character value with `(?:.*q|)` took
- * 10.6 seconds against native RegExp's 102 ms on the identical pattern, with
- * identical results. Native is quadratic on that shape too; the gap was the
- * constant, and nearly all of the constant was here.
+ * This is not a micro-optimisation. Allocating and zero-filling two arrays of
+ * `code.length` for every input character, with `spans()` calling `run` once per
+ * match, costs seconds on a 12,000-character value where native `RegExp` — also
+ * quadratic on such a pattern — takes around 100 ms. Nearly all of that gap is
+ * this allocation.
  */
 interface Scratch {
   readonly seen: Int32Array;
@@ -1634,10 +1621,10 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
              * A zero-length match would otherwise pin the cursor forever — the
              * same trap `matchesEmpty` exists to keep out of a caller's loop.
              *
-             * `at` therefore rises by at least one every time round, so the walk
-             * runs at most `input.length + 1` times and needs no other cap. It
-             * used to stop after 10,001 spans, which silently returned a partial
-             * answer that a caller could not distinguish from a complete one.
+             * `at` therefore rises by at least one every time round, so the
+             * walk runs at most `input.length + 1` times and needs no other cap.
+             * A fixed span cap would silently return a partial answer that a
+             * caller could not distinguish from a complete one.
              */
             at = end > start ? end : start + 1;
           }

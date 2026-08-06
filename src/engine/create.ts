@@ -217,7 +217,7 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
     /*
      * MERGED over this engine's options, which is what the contract says and
      * what the snapshot now makes possible: `assertOptions` omits keys the
-     * caller did not supply, so spreading it can no longer blank the parent.
+     * caller did not supply, so spreading it cannot blank the parent.
      */
     extend: (extra) =>
       createEngine({ ...options, ...assertOptions(extra, 'engine.extend') }),

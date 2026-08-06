@@ -354,8 +354,8 @@ const serializeBody = (
     case 'LogicalExpression': {
       // Operators are left-associative, so `a AND b AND c ...` is a LEFT SPINE
       // one node deep per term. parse() builds it with a loop and accepts
-      // MAX_CLAUSES terms — 2,000, not the 50,000 this used to say;
-      // recursing to print it costs one frame per term and
+      // MAX_CLAUSES terms — 2,000 — and recursing to print one costs a frame
+      // per term, so
       // overflowed the stack at around 5,000 — a query the parser had just
       // accepted could not be serialized. The spine is walked iteratively so
       // the two agree on what is representable.
@@ -413,11 +413,11 @@ const serializeBody = (
        * query the user was typing. That output is a BEST-EFFORT RENDERING and is
        * not guaranteed to re-parse in either mode.
        *
-       * This used to claim it "only re-parses in tolerant mode", which was
-       * simply untrue: a Tag with a hole prints as `field:` with nothing after
-       * it, so when the next sibling is parenthesized the two run together and
-       * `!:}""O:` serializes to `!: ("" O:)`, which strict rejects as a field
-       * group containing a field and tolerant rejects for the same reason.
+       * It does not re-parse in tolerant mode either: a Tag with a hole prints
+       * as `field:` with nothing after it, so when the next sibling is
+       * parenthesized the two run together and `!:}""O:` serializes to
+       * `!: ("" O:)`, which both modes reject as a field group containing a
+       * field.
        * Fixing that in the serializer would mean inventing text the user never
        * typed, which is worse than saying what this does.
        *
@@ -508,10 +508,8 @@ const wrap = (
  * Serialize an AST back to a query string.
  *
  * The result re-parses to a deep-equal AST (locations aside) for every tree the
- * STRICT parser produces. It does NOT for tolerant trees, and this used to say
- * "every tree parse() produces" without that word: measured over 59,888
- * tolerant trees, 63% differ after a round trip, because `recovered` markers
- * have no spelling in the query text.
+ * STRICT parser produces. It does NOT for tolerant trees: most differ after a
+ * round trip, because `recovered` markers have no spelling in the query text.
  *
  * One of those cases loses more than a marker. A tolerant range boundary keeps
  * the text it could not interpret — `n:[x* TO z]` records the lower bound as

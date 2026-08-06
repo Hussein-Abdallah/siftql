@@ -157,9 +157,8 @@ class Parser {
      *
      * A stray closer is what you have half way through an edit: `(a:b))` is one
      * keystroke away from `(a:b)`. Discarding everything after it, which is what
-     * this used to do, made the answer a SUPERSET — `a:b } zzz` silently dropped
-     * the `zzz` conjunct and matched rows it should not have, which is worse
-     * than the throw it replaced. The clauses either side are both things the
+     * Discarding everything after it makes the answer a SUPERSET — `a:b } zzz`
+     * would silently drop the `zzz` conjunct and match rows it should not. The clauses either side are both things the
      * user typed, so both are kept and joined implicitly.
      */
     let result = expression;
@@ -558,7 +557,7 @@ class Parser {
   /**
    * Count one clause against the budget.
    *
-   * Extracted because `parsePrimary` is no longer the only place a clause is
+   * Extracted because `parsePrimary` is not the only place a clause is
    * produced: the negative fold makes one too, and when it did its own accounting
    * by not doing any, `MAX_CLAUSES` stopped bounding the tree.
    */
@@ -707,13 +706,13 @@ class Parser {
      * The tokenizer already decided where each step begins and ends, and whether
      * it was quoted. Reading that is the whole job.
      *
-     * This used to walk a cursor forward by `name.length + 1` per segment, which
-     * assumes a decoded name occupies exactly its own length in the source. That
-     * is false for anything quoted or escaped: `'full name'.first` reported its
-     * first segment as `'full nam` and its second as `'.fir`, so every caret and
-     * highlight built on those spans pointed at the wrong characters. It also
-     * had one `quoted` flag for the whole token, so per-segment quoting — which
-     * `types.ts` calls load-bearing — was always reported as false.
+     * Walking a cursor forward by `name.length + 1` per segment instead would
+     * assume a decoded name occupies exactly its own length in the source,
+     * which is false for anything quoted or escaped: `'full name'.first` would
+     * report its first segment as `'full nam` and its second as `'.fir`, so
+     * every caret and highlight built on those spans points at the wrong
+     * characters. It would also collapse per-segment `quoted` — which
+     * `types.ts` calls load-bearing — into one flag for the whole token.
      */
     if (token.segments.length > MAX_FIELD_SEGMENTS) {
       this.fail(

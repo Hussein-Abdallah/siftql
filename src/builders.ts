@@ -237,12 +237,10 @@ export const builders: AstBuilders = Object.freeze({
    * Flags are de-duplicated but NOT sorted, which is what the parser does, so a
    * built node and a parsed one compare equal.
    *
-   * They used to be sorted here, under a comment claiming the parser sorted them
-   * too. It does not, deliberately: `types.ts` calls the array order-preserving
-   * so `/x/gi` never prints back as `/x/ig`. Sorting here was therefore the one
-   * thing preventing the equality the comment promised — `builders.regex('a',
-   * ['i','g'])` gave `['g','i']` where `parse('/a/ig')` gives `['i','g']`, so a
-   * deepStrictEqual between them failed for the exact use case named.
+   * Sorting them here would BREAK that equality: `types.ts` calls the array
+   * order-preserving so `/x/gi` never prints back as `/x/ig`, so a sorted
+   * `builders.regex('a', ['i','g'])` would give `['g','i']` where
+   * `parse('/a/ig')` gives `['i','g']`.
    */
   regex: (
     pattern: string,

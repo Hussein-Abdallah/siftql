@@ -118,10 +118,10 @@ const isWhitespace = (character: string): boolean => WHITESPACE.has(character);
  * A piece of a field path as it was read: either a run of raw source text, or a
  * quoted segment already decoded.
  *
- * The path used to be assembled into ONE escaped string that the parser split
- * again, which threw away where each piece came from — so spans had to be
- * reconstructed by assuming a decoded name occupies its own length in the
- * source, and that is false for anything quoted or escaped.
+ * Keeping the pieces separate preserves where each came from. Assembling the
+ * path into one escaped string for the parser to split again loses that, and
+ * spans then have to be reconstructed by assuming a decoded name occupies its
+ * own length in the source — false for anything quoted or escaped.
  */
 type PathChunk =
   | { readonly kind: 'raw'; readonly text: string; readonly start: number }
@@ -632,12 +632,10 @@ export class Tokenizer {
        * Tolerant mode SKIPS it, because it is the single most common thing a
        * half-typed query contains.
        *
-       * SKIPPED IN A LOOP, NOT BY RECURSING. Recursing consumed one stack frame
-       * per character, so `':'.repeat(5000)` overflowed and escaped `parse()`
-       * as a raw RangeError — worse than the located SiftQLSyntaxError it
-       * replaced, and in the mode whose whole job is to survive untrusted paste.
-       * The end-of-input guard that used to sit here caught only the single-
-       * character case; a RUN was the shape that failed.
+       * SKIPPED IN A LOOP, NOT BY RECURSING. A recursive skip costs one stack
+       * frame per character, so a long run — `':'.repeat(5000)` — overflows and
+       * escapes `parse()` as a raw RangeError, in the mode whose whole job is
+       * to survive untrusted paste.
        */
       while (this.index < this.source.length) {
         const before = this.index;
@@ -666,9 +664,8 @@ export class Tokenizer {
       }
 
       // MARKED, so `onRecovered: 'throw'` can refuse a query whose text was
-      // altered and a UI can grey it out. Skipping silently made `:abc` and
-      // `abc` produce identical trees, with nothing recording the difference —
-      // and the doc line added beside this claimed both were marked.
+      // altered and a UI can grey it out. Without it, `:abc` and `abc` produce
+      // identical trees and nothing records that input was discarded.
       recovered ??= STRAY_SKIPPED;
     }
 
@@ -716,10 +713,6 @@ export class Tokenizer {
    * quotes buy is that `"in progress"` is one value rather than two terms, and
    * that `"true"` is text rather than the boolean.
    *
-   * This said "a case-sensitive term" until an audit caught it. `types.ts`
-   * records that an earlier table made the identical mistake and that anyone
-   * following it got silently wrong results; the same error was still live here,
-   * one layer down, sixty lines above the correct statement in `tokens.ts`.
    */
   private readQuotedTerm(start: number, quoteCharacter: string): Token {
     const { quote, recovered, value } = this.readQuoted(start, quoteCharacter);
@@ -747,11 +740,10 @@ export class Tokenizer {
       /*
        * MAYBE a dotted path — `'full name'.first:x` — and maybe not.
        *
-       * The delegation below was unconditional, which was wrong: it fired on
-       * `"foo bar".baz`, where no colon ever arrives, and turned two clauses
-       * into a single BARE literal whose value contained a space. The `quoted`
-       * flag was destroyed with them, and no other code path can produce that
-       * node.
+       * Delegating unconditionally is wrong: it fires on `"foo bar".baz`, where
+       * no colon ever arrives, and turns two clauses into a single BARE literal
+       * whose value contains a space — destroying the `quoted` flag, and
+       * producing a node no other path can build.
        *
        * So it is attempted and BACKTRACKED. Nothing is committed until the
        * bare-term reader comes back with a `field`, which it only does when it

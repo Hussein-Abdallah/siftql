@@ -115,9 +115,10 @@ export const resolveTemporal = (
      * IMPOSSIBLE STOPS HERE. A value that fits the declared layout has been
      * claimed by it, so if its fields name no real instant the answer is a
      * refusal — falling through would hand it to a parser the caller never asked
-     * for. Under `YYYY-DD-MM`, `2020-02-29` used to come back as 29 February via
-     * ISO while `2020-02-11` came back as 11 February via the layout, so one
-     * column meant two things depending on whether the second field exceeded 12.
+     * for. Under `YYYY-DD-MM`, falling through would read `2020-02-29` as 29
+     * February via ISO while `2020-02-11` reads as 11 February via the layout —
+     * one column meaning two things depending on whether the second field
+     * exceeds 12.
      */
     if (read.outcome === 'impossible') {
       return null;

@@ -501,7 +501,7 @@ export const callHighlightSpans = (
     }
 
     /*
-     * VALIDATED and COPIED, neither of which it used to be.
+     * VALIDATED and COPIED.
      *
      * `Array.isArray` was the whole check, so `[{ start: 999, end: -5 }]` and
      * `[null, { start: 'a' }]` were published verbatim and a consumer slicing by

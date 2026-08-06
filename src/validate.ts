@@ -160,7 +160,7 @@ export const assertItems = (value: unknown, fn: string): readonly unknown[] => {
  *
  * The AST is plain JSON by design — it survives `structuredClone`, a
  * `postMessage`, a database round trip — so there is no class to test. An
- * unrecognised `type` is refused rather than ignored: `serialize` used to return
+ * unrecognised `type` is refused rather than ignored, because `serialize` would
  * `''` for `{ type: 'bogus' }`, which is indistinguishable from a legitimately
  * empty query and turned a typo into a query that matched everything.
  */
@@ -376,7 +376,7 @@ const shapeProblem = (node: object, type: string): string | null => {
  * is to protect walks that have not been written yet as much as the four that
  * exist. Property reads are GUARDED: `Object.values` invokes getters, so an AST
  * node backed by an accessor — a class instance, a reactive proxy — threw a raw
- * error out of `serialize()` for a tree that used to serialize fine.
+ * error out of `serialize()` for a tree shallow enough to print.
  *
  * One pass per QUERY, not per item: `filter` over 10,000 records validates once
  * and then compiles once.
@@ -706,12 +706,11 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    * An option may be an accessor, and a throwing one must produce a CONFIG
    * ERROR — not escape raw, and not silently vanish.
    *
-   * This used to route through `peek`, which swallows and returns `undefined`.
-   * Nothing escaped, so half the promise held; but `supplied()` then read
-   * false, the default won, and an engine built from a lazily-computed or
-   * proxy-backed config object silently got default policy — including
-   * `onValueError`. A silent default for the FAILURE policy is exactly the
-   * quiet wrongness this validator exists to prevent.
+   * Swallowing the throw and returning `undefined` would let `supplied()` read
+   * false, so the default wins and an engine built from a lazily-computed or
+   * proxy-backed config object silently gets default policy — including
+   * `onValueError`. A silent default for the FAILURE policy is the quiet
+   * wrongness this validator exists to prevent.
    */
   const read = (key: string): unknown => {
     try {
@@ -788,7 +787,7 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    * load-bearing. Including them made the snapshot a complete object, so
    * `engine.extend()` — which merges `{ ...parent, ...child }` — overwrote every
    * option the caller had not restated with `undefined`. An extended engine
-   * silently lost `matchKeys`, reverted `onValueError: 'throw'` to `'skip'`, and
+   * would silently lose `matchKeys`, drop `onValueError: 'throw'` to `'skip'`, and
    * dropped its custom value types, against a documented contract that says
    * "merged over this one's". Nothing in 690 tests noticed.
    *

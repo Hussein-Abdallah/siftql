@@ -1,19 +1,11 @@
 /**
  * Behavioural diff between this working tree and an earlier commit.
  *
- * WHY THIS EXISTS. Nine adversarial audits have run against this package, and
- * every round found defects in the previous round's REPAIRS. The two worst
- * findings of round nine were both regressions: `parse(':'.repeat(5000))` threw
- * a located error before the change and overflowed the stack after it, and `+`
- * bypassed a depth limit that `NOT` and `-` both enforced. Neither needed
- * insight to find. Both were visible the moment you ran the same input through
- * both commits.
- *
- * The property suite did not catch them, and could not have: a property asserts
- * what its author thought to assert. This asserts nothing. It runs a large
- * generated corpus through both trees and reports every place they disagree,
- * which catches the changes nobody thought to look for — including the ones the
- * author did not intend to make.
+ * WHY THIS EXISTS. A property suite asserts what someone thought to assert.
+ * This asserts nothing: it runs a large generated corpus through both trees and
+ * reports every place they disagree, which catches changes nobody thought to
+ * look for — including unintended ones. A regression is usually obvious the
+ * moment the same input goes through both commits, and invisible otherwise.
  *
  * A disagreement is NOT automatically a defect. Most runs here are expected to
  * report some, because deliberate changes show up too. The output is a list to
@@ -86,9 +78,8 @@ const ATOMS = [
   '-3',
   'x*',
   '?x',
-  // Wildcards and terms over a value whose case fold CHANGES LENGTH. Removing
-  // the guard that suppresses spans for those went undetected: nothing in the
-  // corpus asked a wildcard about `İstanbul`.
+  // Wildcards and terms over a value whose case fold CHANGES LENGTH, so the
+  // guard that suppresses spans for those is exercised.
   '*i*',
   '*I*',
   'İstanbul',
@@ -118,15 +109,13 @@ const FIELDS = [
   '',
   'n:',
   'n::',
-  // A CASE-SENSITIVE clause against a STRING field. `n::` existed, but every
-  // record holds a number in `n`, so no `::` clause ever reached the string
-  // type — and a mutation making `:=` ignore case sensitivity went undetected.
+  // A CASE-SENSITIVE clause against a STRING field. `n::` alone never reaches
+  // the string type, because every record holds a number in `n`.
   'name::',
   'name:=',
-  // `::=` — case-sensitive EQUALITY. `::` alone routes through `matches`, and
-  // `:=` alone is case-insensitive, so neither reaches `equals` with case
-  // sensitivity on. A mutation making `:=` ignore case went undetected until
-  // this combination existed.
+  // `::=` — case-sensitive EQUALITY. `::` alone routes through `matches` and
+  // `:=` alone is case-insensitive, so only the combination reaches `equals`
+  // with case sensitivity on.
   'name::=',
   'name:',
   'd:',
@@ -135,11 +124,9 @@ const FIELDS = [
   'n:>=',
   'n:<',
   'n:=',
-  // A QUOTED PATH SEGMENT. Nothing in the first version of this corpus could
-  // emit a dot followed by a quote — 0 of 500,000 generated queries — so it
-  // could not reach the folding regression that was live in the very commit
-  // pair it was written to check. A generator with a blind spot is a generator
-  // that certifies that spot.
+  // A QUOTED PATH SEGMENT. Without one, the corpus cannot emit a dot followed
+  // by a quote, and the path-folding branch is never exercised. A generator
+  // with a blind spot certifies that spot.
   "a.'b':",
   'a."b".c:',
   "'full name'.first:",
@@ -245,10 +232,9 @@ const record = (next: () => number): unknown => {
  * Inputs a random generator will never reach, because the failures they expose
  * are failures OF SCALE.
  *
- * This list is the whole lesson of round nine. The property generator emitted
- * one stray character; the bug needed a run of five thousand. It exercised the
- * branch and could not reach the depth that broke it. A generator explores
- * SHAPE; scale has to be asked for by name.
+ * A generator explores SHAPE; scale has to be asked for by name. One stray
+ * character exercises a branch, but only a run of thousands reaches the depth
+ * that breaks it.
  *
  * Everything here is cheap to run and each entry names a limit or a recursion.
  */
@@ -336,11 +322,9 @@ const outcome = (act: () => unknown): string => {
  * Hand-built trees, which no query string can produce.
  *
  * `parse()` caps nesting at MAX_DEPTH (200), so the evaluator's MAX_AST_DEPTH
- * guard (2,200) is unreachable through text — a mutation raising it out of
- * reach went undetected because nothing ever handed the engine a tree it had
- * not parsed itself. `types.ts` advertises hand-built and JSON-deserialized
- * ASTs as a supported transport, so leaving them out left a published surface
- * with no coverage at all.
+ * guard (2,200) is unreachable through text. `types.ts` advertises hand-built
+ * and JSON-deserialized ASTs as a supported transport, and nothing else here
+ * covers that surface.
  */
 const handBuilt = (
   surface: Surface,
@@ -529,10 +513,8 @@ const main = async (): Promise<void> => {
           /*
            * THE SAME QUERY AS AN AST, not a string.
            *
-           * Every surface above passes text, so the whole hand-built/JSON
-           * transport that `types.ts` advertises was untested — and a mutation
-           * that raised the AST depth guard out of reach went undetected,
-           * because nothing ever handed the evaluator a tree directly.
+           * Every surface above passes text, so without this the hand-built
+           * and JSON transport `types.ts` advertises has no coverage.
            */
           [
             'test (ast)',

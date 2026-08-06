@@ -1,16 +1,13 @@
 /**
  * Does the regression diff actually catch changes? Measured, not assumed.
  *
- * WHY THIS EXISTS. `npm run diff` is the tool this project now leans on before
- * every commit, and an audit found four ways it silently reported "no
- * behavioural differences" for changes it was staring at — including a crash on
- * the very records it generates on purpose, and a summary line that printed the
- * number of examples KEPT as the number of differences found. A diagnostic that
- * lies is worse than no diagnostic, because it stops you looking.
+ * WHY THIS EXISTS. `npm run diff` is the tool this project leans on before a
+ * commit, and a diagnostic that silently reports "no differences" for a change
+ * it is staring at is worse than no diagnostic, because it stops you looking.
  *
- * Spot-fixing those holes proves nothing on its own. This measures the property
- * that matters: introduce a KNOWN behaviour change, and see whether the diff
- * reports it. The output is a detection rate and a list of misses.
+ * This measures the property that matters: introduce a KNOWN behaviour change,
+ * and see whether the diff reports it. The output is a detection rate and a
+ * list of misses.
  *
  * An audit asks a careful reader "can you find a hole?", which depends on their
  * imagination. This asks "what fraction of real changes does it catch?", which

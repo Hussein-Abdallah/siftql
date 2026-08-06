@@ -221,9 +221,9 @@ export const isSafeUnquotedExpression = (value: string): boolean => {
  * `SiftQLSyntaxError { code: 'UNSUPPORTED_SYNTAX' }`), and printed by the v0.1
  * serializer so a hand-built tree is not silently truncated on the way out.
  *
- * THEY DO NOT ROUND-TRIP IN v0.1, and this said they did. `serialize()` prints
+ * THEY DO NOT ROUND-TRIP IN v0.1. `serialize()` prints
  * `a^2` and `+a`, which the v0.1 parser is REQUIRED to reject — the two
- * statements cannot both hold, and it is this one that was wrong. In tolerant
+ * statements cannot both hold. In tolerant
  * mode the text parses but the modifier is dropped and the clause marked
  * `recovered`, so the tree that comes back is deliberately not the tree that
  * went out.
@@ -400,8 +400,7 @@ export type LiteralExpression = TextLiteral | BooleanLiteral | NullLiteral;
  *   ends           status:*active         status::*active
  *   with a space   status:"in progress"   status::"in progress"
  *
- * An earlier version of this table put the QUOTED spellings in the
- * case-sensitive column, which was wrong in a way worth recording: quoting has
+ * The QUOTED spellings belong in the case-INSENSITIVE column: quoting has
  * never affected case here, so `status:'active'` matches `ACTIVE` exactly as
  * `status:active` does. Anyone following the table got silently wrong results,
  * and it sat 260 lines above the correct statement in this same file.

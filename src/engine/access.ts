@@ -47,7 +47,7 @@
  * trap may throw. That is dirty DATA, so it is reported as a failed candidate and
  * dispositioned by `onValueError` like any other unreadable value — never allowed
  * to abort the run. `length` is never trusted either: `new Array(6e8)` with one
- * real element used to be expanded to its declared length and killed the process
+ * real element would be expanded to its declared length and kill the process
  * outright, so both walks enumerate OWN KEYS and never the declared range.
  */
 

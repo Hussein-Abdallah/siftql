@@ -285,14 +285,13 @@ export const VALUE_FAILURE_POLICY = Object.freeze({
 /**
  * Look up a disposition, or `undefined` for a pair the table does not cover.
  *
- * `undefined` is in the return type deliberately. The lookup used to be
- * `VALUE_FAILURE_POLICY[site][kind]` typed as always returning a
- * `FailureDisposition`, which was a lie in exactly the case that mattered: a
- * custom type returning `{ ok: false, kind: 'bogus' }` produced `undefined`,
- * `undefined === 'value-error'` was false, and the failure was silently
- * dispositioned as `'no-match'`. That turned an unknown failure kind into a
- * quiet non-match — and, for an `ordered` or `range` site, quietly downgraded
- * the strictest row in the table to the most lenient behaviour it has.
+ * `undefined` is in the return type deliberately. Typing the lookup as always
+ * returning a `FailureDisposition` is a lie in the case that matters: a custom
+ * type returning `{ ok: false, kind: 'bogus' }` yields `undefined`,
+ * `undefined === 'value-error'` is false, and the failure would be silently
+ * dispositioned as `'no-match'` — turning an unknown failure kind into a quiet
+ * non-match, and downgrading the strictest row of the table to its most lenient
+ * behaviour for an `ordered` or `range` site.
  *
  * Typing the absence forces `signalValueFailure` to decide what an unknown pair
  * means, which it does by refusing it.
@@ -420,10 +419,9 @@ export interface ValueContext {
  *                     and `height:=100` agree. `string` implements it — but only
  *                     to widen an UNFIELDED term to a containment scan, so
  *                     `name:foo` and `name:=foo` also agree, and it is a bare
- *                     `foo` that differs. An earlier version of this comment
- *                     claimed the fielded forms differ; they do not, and the
- *                     grammar has no unfielded relational operator to compare
- *                     them with.
+ *                     `foo` that differs. The fielded forms do NOT differ, and
+ *                     the grammar has no unfielded relational operator to
+ *                     compare them with.
  *  compare always   → moved into an OPTIONAL `ordering` sub-object. Its ABSENCE
  *  present            is the sole fact that a type is unordered, which makes
  *                     `name:>="m"` throw structurally: quoted free text resolves
@@ -573,9 +571,9 @@ export const defineValueType = <TOperand, TValue = TOperand>(
  *                it must not change which type claims the token. Does NOT claim
  *                bare integers — `1591000000000` is a number.
  *
- *                A CONSEQUENCE WORTH KNOWING, which this used to state
- *                backwards: `d:>=1591000000000` against a `Date` field matches
- *                NOTHING. The operand is claimed by `number` (correctly), and
+ *                A CONSEQUENCE WORTH KNOWING: `d:>=1591000000000` against a
+ *                `Date` field matches NOTHING. The operand is claimed by
+ *                `number` (correctly), and
  *                `number.coerceValue` misses on every `Date`, so under the
  *                default `onValueError: 'skip'` the result is silently empty.
  *                It is the VALUE side of `datetime` that accepts epochs and
@@ -729,8 +727,7 @@ export type EngineOptions = ParseOptions &
      * Names this engine in {@link TypeEnvironment}, so a custom type can tell
      * which engine it is running inside.
      *
-     * NOT currently included in any error message, despite an earlier version of
-     * this comment saying so.
+     * NOT included in any error message.
      */
     readonly id?: string | undefined;
   };
@@ -753,13 +750,11 @@ export interface ResolvedEngineOptions {
  * implementation, and `Highlight` above is the one engine-facing type the
  * registry needs.
  *
- * NOTE FOR v0.2: this section previously declared `CompiledQuery`,
- * `CompileResult`, `Queryable`, `ParseResult`, `Diagnostic`, `CreateEngine`
- * and a second `Engine` describing `compile()`, `tryCompile()` and
- * `parseWithDiagnostics()`. All were designed and then cut for the same reason
- * as the backend-lowering hooks: declaration-only API is still API, every
- * exported name is something this package is then obliged to support, and
- * nothing in v0.1 could exercise any of it. Adding them later is additive.
+ * NOTE FOR v0.2: `CompiledQuery`, `CompileResult`, `Queryable`, `ParseResult`,
+ * `Diagnostic` and a `compile()`/`tryCompile()`/`parseWithDiagnostics()` surface
+ * are deliberately NOT declared here. Declaration-only API is still API: every
+ * exported name is something this package is obliged to support, and nothing in
+ * v0.1 can exercise any of it. Adding them later is additive.
  * ========================================================================= */
 
 /** A half-open range inside a matched value. */

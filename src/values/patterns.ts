@@ -34,14 +34,13 @@ export interface PatternMatcher {
   /**
    * Where the matches are, when the matcher can say.
    *
-   * Absent on the `RegExp` fallback used under `regexGuard: false`.
+   * Absent on the `RegExp` fallback used under `regexGuard: false`, and there
+   * is no `query` either — `regexType` publishes no `highlight` hook, because a
+   * `RegExp` built from a user's pattern is the thing that must not escape.
    *
-   * There is then NO highlight at all for that clause — not a `RegExp` either.
-   * This used to say "the old highlighter is what they get"; that highlighter
-   * was deleted in the same change that wrote the sentence, because it was
-   * written twice and read nowhere. So a caller who sets `regexGuard: false` to
-   * get lookahead silently loses regex highlight positions: the field still
-   * reports as matched, with no ranges and no query.
+   * So a caller who sets `regexGuard: false` to get lookahead loses regex
+   * highlight POSITIONS: the field still reports as matched, with neither
+   * ranges nor query.
    */
   spans?(
     input: string,

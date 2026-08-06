@@ -54,10 +54,6 @@ import type { HighlightSink } from './highlight.js';
  * reached by exactly the same code path as a consumer's `semver`. There is no
  * branch anywhere below on which type a value belongs to.
  *
- * (This used to say "grep this file for date and you will find nothing", which
- * returns 76 hits — the claim is true of the LOGIC and false as an instruction,
- * and an instruction is what a reader will actually follow.)
- *
  * Range evaluation in particular is implemented ONCE, on top of `compare` plus
  * per-boundary inclusivity, so no value type ever writes range code.
  */
@@ -761,16 +757,13 @@ export const compileExpression = (
   /**
    * Frames spent so far.
    *
-   * DEFENCE IN DEPTH, and unreachable today — which is worth saying plainly
-   * rather than implying otherwise. This used to claim it "can only fire for a
-   * hand-built or deserialized tree", but those go through `assertNode` first,
-   * and that refuses past MAX_AST_DEPTH before compilation starts. A mutation
-   * test raised this bound tenfold and produced no observable change through
-   * any public entry point.
+   * DEFENCE IN DEPTH, and unreachable through any public entry point: a
+   * hand-built or deserialized tree passes `assertNode` first, and that refuses
+   * past MAX_AST_DEPTH before compilation starts.
    *
-   * Kept anyway: it is the backstop if a future path reaches the evaluator
-   * without validating, and it fails as a named error rather than as a raw
-   * `RangeError` from whichever helper happened to be on the stack.
+   * Kept as the backstop if a future path reaches the evaluator without
+   * validating, so it fails as a named error rather than as a raw `RangeError`
+   * from whichever helper happened to be on the stack.
    */
   depth = 0,
 ): Predicate => {
@@ -1009,8 +1002,8 @@ const matchesEmpty = (pattern: RegExp): boolean => {
    *
    * WHAT IT MISSES: a pattern zero-width only in a context the probes lack, such
    * as `(?<=x)`. Stated rather than papered over. The consequence is bounded —
-   * such a highlight keeps its regex, and the risk is the consumer's own loop,
-   * exactly as it was before this check existed at all.
+   * such a highlight keeps its regex, and the risk falls back to the consumer's
+   * own loop.
    */
   const probes = ['', 'a1 A'];
 

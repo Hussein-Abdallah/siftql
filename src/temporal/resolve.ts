@@ -1,5 +1,5 @@
 import { isDateLike } from '../internal.js';
-import { formatWidth, parseWithFormats } from './format.js';
+import { formatWidth, readWithFormats } from './format.js';
 import { parseIso } from './iso.js';
 import type { ResolvedTemporal, TemporalOptions } from './types.js';
 
@@ -102,13 +102,25 @@ export const resolveTemporal = (
      * A genuine epoch-millisecond value is unaffected: 1593000000000 does not
      * match an 8-character layout, so it falls through to the branch below.
      */
-    const formatted = parseWithFormats(
+    const read = readWithFormats(
       typeof value === 'number' ? String(value) : value,
       options.dateFormat,
     );
 
-    if (formatted) {
-      return formatted;
+    if (read.outcome === 'parsed') {
+      return read.value;
+    }
+
+    /*
+     * IMPOSSIBLE STOPS HERE. A value that fits the declared layout has been
+     * claimed by it, so if its fields name no real instant the answer is a
+     * refusal — falling through would hand it to a parser the caller never asked
+     * for. Under `YYYY-DD-MM`, `2020-02-29` used to come back as 29 February via
+     * ISO while `2020-02-11` came back as 11 February via the layout, so one
+     * column meant two things depending on whether the second field exceeded 12.
+     */
+    if (read.outcome === 'impossible') {
+      return null;
     }
   }
 

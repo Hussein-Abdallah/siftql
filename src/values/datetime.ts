@@ -14,6 +14,7 @@ import {
   compareTemporal,
   detectTemporalFormat,
   equalsTemporal,
+  readWithFormats,
   resolveTemporal,
   SUPPORTED_TEMPORAL_MESSAGE,
   type ResolvedTemporal,
@@ -91,7 +92,27 @@ export const createDatetimeType = (env: TypeEnvironment): TemporalValueType =>
         return DECLINED;
       }
 
-      const looksTemporal = detectTemporalFormat(operand.text) !== null;
+      /*
+       * "Shaped like a date" must include the DECLARED layout, not just ISO.
+       *
+       * `detectTemporalFormat` knows ISO shapes only, so under
+       * `dateFormat: 'DD-MM-YYYY'` the operand `31-02-2020` was not recognised
+       * as temporal at all: this type declined, `string` claimed it, and
+       * `d:31-02-2020` matched a field holding the same text — an impossible
+       * date matching itself. The ordered form was worse, reporting
+       * `Type "string" has no ordering` and blaming the wrong thing entirely.
+       *
+       * `readWithFormats` reports `impossible` for exactly this — a value that
+       * FITS the layout but names no real instant — so it is the right signal to
+       * claim on.
+       */
+      const fitsDeclaredLayout =
+        env.temporal.dateFormat !== undefined &&
+        readWithFormats(operand.text, env.temporal.dateFormat).outcome ===
+          'impossible';
+
+      const looksTemporal =
+        detectTemporalFormat(operand.text) !== null || fitsDeclaredLayout;
       const parsed = resolveTemporal(operand.text, env.temporal);
 
       if (parsed !== null) {

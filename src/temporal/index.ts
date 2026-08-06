@@ -15,7 +15,9 @@ export { detectTemporalFormat } from './detect.js';
 export {
   assertValidFormat,
   parseWithFormat,
+  readWithFormats,
   SiftQLDateFormatError,
+  type FormatOutcome,
 } from './format.js';
 export { parseIso } from './iso.js';
 export { resolveTemporal, SUPPORTED_TEMPORAL_MESSAGE } from './resolve.js';

@@ -159,15 +159,41 @@ const compileFormat = (format: string): CompiledFormat => {
 };
 
 /** Parse `value` against a single declared layout. */
-export const parseWithFormat = (
+/**
+ * What reading a value through a declared layout produced.
+ *
+ * THREE outcomes, not two, and the distinction is the whole point. `null` used
+ * to mean both "this value is not shaped like the layout" and "it is shaped like
+ * the layout and names a date that does not exist" — so `resolveTemporal` fell
+ * through to the built-in ISO parser in both cases.
+ *
+ * Under `dateFormat: 'YYYY-DD-MM'` that meant `2020-02-11` was read through the
+ * layout as 11 February while `2020-02-29` was read as ISO — because day 29 is
+ * not a valid MONTH, the layout declined, and ISO happily took it. One column,
+ * two calendars, split on whether the second field happened to exceed 12. That
+ * is the exact defect a previous commit claimed to have fixed by reordering the
+ * chain; reordering moved the split rather than removing it.
+ *
+ * `impossible` must NOT fall through. A value that fits the declared layout has
+ * been claimed by it, and if the fields name no real instant the answer is a
+ * refusal — not a second opinion from a parser the caller did not ask for.
+ */
+export type FormatOutcome =
+  | { readonly outcome: 'parsed'; readonly value: ResolvedTemporal }
+  | { readonly outcome: 'mismatch' }
+  | { readonly outcome: 'impossible'; readonly reason: string };
+
+const MISMATCH: FormatOutcome = Object.freeze({ outcome: 'mismatch' });
+
+export const readWithFormat = (
   value: string,
   format: string,
-): ResolvedTemporal | null => {
+): FormatOutcome => {
   const { kind, regex } = compileFormat(format);
   const groups = regex.exec(value)?.groups;
 
   if (!groups) {
-    return null;
+    return MISMATCH;
   }
 
   const hour = groups.hour === undefined ? 0 : Number(groups.hour);
@@ -177,14 +203,20 @@ export const parseWithFormat = (
     groups.fraction === undefined ? 0 : Number(groups.fraction);
 
   if (!isValidTimeOfDay(hour, minute, second, millisecond)) {
-    return null;
+    return {
+      outcome: 'impossible',
+      reason: 'names a time that does not exist',
+    };
   }
 
   if (kind === 'time') {
     return {
-      domain: 'timeOfDay',
-      kind: 'time',
-      value: millisecondsSinceMidnight(hour, minute, second, millisecond),
+      outcome: 'parsed',
+      value: {
+        domain: 'timeOfDay',
+        kind: 'time',
+        value: millisecondsSinceMidnight(hour, minute, second, millisecond),
+      },
     };
   }
 
@@ -193,22 +225,45 @@ export const parseWithFormat = (
   const day = Number(groups.day);
 
   if (!isValidCalendarDate(year, month, day)) {
-    return null;
+    return {
+      outcome: 'impossible',
+      reason: 'names a date that does not exist',
+    };
   }
 
   return {
-    domain: 'instant',
-    kind,
-    value: utcTimestamp(year, month, day, hour, minute, second, millisecond),
+    outcome: 'parsed',
+    value: {
+      domain: 'instant',
+      kind,
+      value: utcTimestamp(year, month, day, hour, minute, second, millisecond),
+    },
   };
 };
 
+/** The old two-outcome shape, kept for callers that only need a value. */
+export const parseWithFormat = (
+  value: string,
+  format: string,
+): ResolvedTemporal | null => {
+  const read = readWithFormat(value, format);
+
+  return read.outcome === 'parsed' ? read.value : null;
+};
+
 /**
- * How many characters a layout consumes, or `null` if it is not fixed-width.
+ * How many DIGITS a layout consumes, or `null` if a bare number could never be
+ * one.
  *
  * Used to tell a number that was MEANT as this layout from one that was not:
  * under `YYYYMMDD`, the 8-digit 20200631 is an attempt at a date (an impossible
  * one), while the 13-digit 1593000000000 is plainly epoch milliseconds.
+ *
+ * A layout containing any LITERAL character returns `null`, because a bare
+ * number cannot contain one. Counting literals toward the width made
+ * `YYYY-MM-DD` a 10-character layout, so every 10-digit number was refused as a
+ * malformed date — including 1593000000, which is an ordinary epoch-seconds
+ * timestamp and matches no part of that layout.
  */
 export const formatWidth = (format: string): number | null => {
   let width = 0;
@@ -230,27 +285,36 @@ export const formatWidth = (format: string): number | null => {
       continue;
     }
 
-    width += 1;
-    index += 1;
+    // A literal separator. No bare number can contain one, so this layout can
+    // never claim a number and must not veto one either.
+    return null;
   }
 
   return width;
 };
 
 /** Try each declared layout in order; the first that parses wins. */
-export const parseWithFormats = (
+export const readWithFormats = (
   value: string,
   formats: string | readonly string[],
-): ResolvedTemporal | null => {
+): FormatOutcome => {
   const list = typeof formats === 'string' ? [formats] : formats;
 
-  for (const format of list) {
-    const parsed = parseWithFormat(value, format);
+  let impossible: FormatOutcome | null = null;
 
-    if (parsed) {
-      return parsed;
+  for (const format of list) {
+    const read = readWithFormat(value, format);
+
+    if (read.outcome === 'parsed') {
+      return read;
+    }
+
+    // Remembered, not returned yet: with several layouts declared, a LATER one
+    // may still read the value successfully, and a real reading beats a refusal.
+    if (read.outcome === 'impossible') {
+      impossible ??= read;
     }
   }
 
-  return null;
+  return impossible ?? MISMATCH;
 };

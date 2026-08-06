@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   builders,
   createEngine,
+  resolveTemporal,
   filter,
   highlight,
   isSiftQLError,
@@ -761,6 +762,79 @@ describe('P4: an engine honours its configuration', () => {
     }
 
     expect(leaks.slice(0, 5)).toEqual([]);
+  });
+});
+
+/* ========================================================================= *
+ * P4b. A DECLARED LAYOUT IS OBEYED, OR THE VALUE IS REFUSED
+ *
+ * `format.ts` promises "you state the layout; siftql obeys it exactly". Written
+ * as a property because two commits have now claimed to deliver it and both left
+ * a class of values being read by the built-in ISO parser instead — the second
+ * one moved the split rather than removing it, which a case-by-case test could
+ * not have shown.
+ * ========================================================================= */
+
+describe('P4b: a declared dateFormat is never silently overridden', () => {
+  it('reads every value through the layout, or refuses it', () => {
+    /*
+     * Under `YYYY-DD-MM`, a value is EITHER the layout's reading or refused.
+     * Never ISO's. The counterexample was `2020-02-29`: day 29 is not a valid
+     * month, so the layout declined and ISO took it — while `2020-02-11` used
+     * the layout. One column, two calendars, split on whether the second field
+     * exceeded 12.
+     */
+    const layout = 'YYYY-DD-MM';
+    const wrong: string[] = [];
+
+    for (let day = 1; day <= 28; day += 1) {
+      for (let month = 1; month <= 28; month += 1) {
+        const text = `2020-${String(day).padStart(2, '0')}-${String(
+          month,
+        ).padStart(2, '0')}`;
+        const resolved = resolveTemporal(text, { dateFormat: layout });
+
+        if (resolved === null) {
+          // Refused: only legitimate when the layout genuinely cannot read it.
+          if (month <= 12) {
+            wrong.push(`${text} refused but the layout accepts it`);
+          }
+
+          continue;
+        }
+
+        // Accepted: it must be the LAYOUT's reading, never ISO's.
+        const asLayout = Date.UTC(2020, month - 1, day);
+
+        if (resolved.value !== asLayout) {
+          wrong.push(
+            `${text} read as ${new Date(resolved.value).toISOString().slice(0, 10)}, not the layout's`,
+          );
+        }
+      }
+    }
+
+    expect(wrong.slice(0, 5)).toEqual([]);
+  });
+
+  it('refuses an impossible date rather than matching it against itself', () => {
+    // `d:31-02-2020` matched a field holding `31-02-2020`, because both sides
+    // degraded to `string` — an impossible date matching itself.
+    const engine = createEngine({ dateFormat: 'DD-MM-YYYY' });
+
+    expect(() => engine.test('d:31-02-2020', { d: '31-02-2020' })).toThrow();
+    expect(engine.test('d:01-06-2020', { d: '01-06-2020' })).toBe(true);
+  });
+
+  it('lets a layout with separators leave bare numbers alone', () => {
+    // `YYYY-MM-DD` cannot match a bare number, but its width was counted with
+    // the dashes, so every 10-digit number was refused — including ordinary
+    // epoch seconds.
+    expect(
+      resolveTemporal(1_593_000_000, { dateFormat: 'YYYY-MM-DD' }),
+    ).not.toBeNull();
+    // An all-digit layout still claims a number of its own width.
+    expect(resolveTemporal(20_200_631, { dateFormat: 'YYYYMMDD' })).toBeNull();
   });
 });
 

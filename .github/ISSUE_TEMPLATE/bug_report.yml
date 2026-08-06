@@ -1,0 +1,66 @@
+name: Bug report
+description: A wrong answer, a crash, or behaviour that contradicts the docs
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. If this has **security impact** — a denial of
+        service, an escape from the failure boundary, a crafted input that
+        matches when it should not — please close this and follow
+        [SECURITY.md](https://github.com/Hussein-Abdallah/siftql/blob/main/SECURITY.md)
+        instead, so it is not disclosed publicly before it is fixed.
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: >-
+        Something someone else can run. Paste it as code, not as a description
+        of code — a report without a runnable repro is a suspicion rather than a
+        finding, and it takes far longer to act on.
+      render: typescript
+      placeholder: |
+        import { filter } from 'siftql';
+
+        console.log(filter('name:ada', [{ name: 'Ada' }]));
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens
+      description: The actual output, or the full error with its stack.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+      description: >-
+        And, if you can, why — a line from the README, a doc comment, or an
+        invariant in `src/types.ts` that this contradicts.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: >-
+        The version, or the commit SHA if you are running from a clone. `0.1.0`
+        is not on npm yet, so this is most likely a SHA.
+      placeholder: b881633
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`. Supported floor is 18.
+      placeholder: v22.11.0
+    validations:
+      required: true

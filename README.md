@@ -565,6 +565,17 @@ npm publish          # prepublishOnly rebuilds, so dist can never be stale
 Verify what ships first with `npm pack --dry-run` — it should be `dist/`,
 `README.md`, `LICENSE` and `package.json`, nothing else.
 
+## Contributing
+
+Bug reports are welcome — a reproducible wrong answer is the most useful thing
+anyone can send. Please open an issue before writing a pull request: the
+package has constraints that are not visible in a diff, including zero runtime
+dependencies and four invariants governing the AST as a public contract.
+[CONTRIBUTING.md](CONTRIBUTING.md) has the details.
+
+Found something with security impact? Do not open a public issue — see
+[SECURITY.md](SECURITY.md).
+
 ## Acknowledgements
 
 The query syntax is compatible with [liqe](https://github.com/gajus/liqe) by

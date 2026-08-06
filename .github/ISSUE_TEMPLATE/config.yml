@@ -1,0 +1,12 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Hussein-Abdallah/siftql/security/advisories/new
+    about: >-
+      Denial of service, an escape from the failure boundary, or a crafted input
+      that matches when it should not. Reported privately, never as an issue.
+  - name: Proposing a change to the API or AST
+    url: https://github.com/Hussein-Abdallah/siftql/discussions
+    about: >-
+      Everything in src/types.ts is semver-major surface governed by four
+      invariants. Worth talking through before anyone writes code against it.

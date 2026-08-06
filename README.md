@@ -481,8 +481,8 @@ JavaScript's `RegExp`. Cost is `O(pattern × input)` for every pattern that
 exists, so there is no such thing as a query that hangs the process.
 
 That matters because `RegExp` backtracks. `/^(a|a)*$/` against 27 characters
-blocks for four seconds, a few more make it minutes, and nothing can interrupt a
-running regex in JavaScript. If your search box is open to people you do not
+blocks for about eight seconds, a few more make it minutes, and nothing can
+interrupt a running regex in JavaScript. If your search box is open to people you do not
 trust, that is a denial of service with a twelve-character payload.
 
 ```rb
@@ -510,14 +510,46 @@ name:/(?=x)y/       # lookahead        -> same
 and trust whoever writes the queries. The default is safe; the escape hatch is
 explicit.
 
+**A third is refused, and this one is a limitation rather than an
+impossibility**: a quantifier whose body can match the empty string.
+
+```rb
+name:/(a*)*/        # -> refused
+name:/(?:a?)+/      # -> refused
+name:/(x|)*/        # -> refused
+```
+
+JavaScript fails a loop iteration that consumes nothing once the minimum is
+satisfied. This matcher holds no per-thread state, so it cannot detect that, and
+match POSITIONS came out short — `(?:.*?)?\w+` over `a,b,,c` reported three
+matches where `RegExp` reports two. Implementing the rule was tried and reverted:
+it needs state carried per path, which made a 992-character pattern cost two
+seconds per kilobyte of value — reintroducing, through the fix, the exact hang
+the matcher exists to remove.
+
+Refusing is the honest answer while that is true. Only a body that can match
+*nothing* is affected: `a*`, `(?:ab)*`, `(\s*,\s*)+` and `(\w+\s?)*` are all
+fine, as are the catastrophic shapes this section opens with.
+
 Everything else works: literals, character classes, `.`, `\d \w \s \b`, `\cX`,
 `* + ? {n,m}` and their lazy forms, alternation, groups (including named and
 non-capturing), anchors, and the `i`, `m` and `s` flags. The `u` and `v` flags
 are **refused**: this matcher works on UTF-16 code units, and accepting them
 while ignoring their code-point semantics would give silently different
-answers. `maxPatternLength` still caps
-pattern size, and a pattern whose counted repetitions expand past the
-instruction budget is refused rather than run.
+answers. `maxPatternLength` still caps pattern size, and a pattern whose counted
+repetitions expand past the instruction budget is refused rather than run.
+
+Patterns that `RegExp` itself rejects are rejected here too — `a{2}{3}`, `^*`,
+`{2}`, `(?<>x)` — so a query cannot mean one thing under `regexGuard: true` and
+another under `false`.
+
+One cost is worth stating plainly. `highlight()` on a regex walks the value once
+per match, and a pattern that matches at *every* position while keeping a match
+alive to the right — `(?:.*;)?` — costs O(value²) to locate. `RegExp` is
+quadratic on the same patterns; this matcher's constant is larger. Rather than
+run away, the walk is bounded and reports **no ranges** for such a pattern: the
+field still matches, and the highlight degrades to "matched, but not where",
+exactly as it does for a range or a boolean.
 
 **Wildcards are not regexes and never were an exposure.** `name:*a*a*a*b` is
 matched by a two-pointer glob: 200 stars against a 5,000-character value takes

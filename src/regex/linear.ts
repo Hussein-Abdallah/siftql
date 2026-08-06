@@ -410,7 +410,7 @@ class Parser {
      */
     if (nullable(atom)) {
       fail(
-        'a quantifier whose body can match the empty string, which cannot be given JavaScript\'s iteration semantics in linear time',
+        "a quantifier whose body can match the empty string, which cannot be given JavaScript's iteration semantics in linear time",
       );
     }
 
@@ -425,7 +425,9 @@ class Parser {
       (trailing === '{' &&
         /^\{\d+(,\d*)?\}/u.test(this.source.slice(this.index)))
     ) {
-      fail('a quantifier applied to another quantifier, which JavaScript rejects');
+      fail(
+        'a quantifier applied to another quantifier, which JavaScript rejects',
+      );
     }
 
     return { body: atom, kind: 'repeat', lazy, max, min };
@@ -552,8 +554,17 @@ class Parser {
        * anywhere matches it in linear time. RE2 and Rust's regex refuse them
        * for exactly this reason.
        */
+      /*
+       * The message names the backreference because that is the reading that
+       * matters, but `\1` with no capture group ahead of it is a legacy OCTAL
+       * escape in Annex B, and `\8`/`\9` are identity escapes. Both are legal
+       * in `RegExp` and both are refused here rather than disambiguated by
+       * counting groups — a false refusal on a pattern nobody writes, which is
+       * the safe direction, and the message says so rather than asserting a
+       * backreference is definitely what was meant.
+       */
       fail(
-        'a backreference, which cannot be matched in guaranteed linear time',
+        `\\${character}, which is a backreference when a group precedes it — and backreferences cannot be matched in guaranteed linear time. Write \\x0${character} for the control character, or escape the digit`,
       );
     }
 
@@ -623,7 +634,12 @@ class Parser {
         const digits = this.source.slice(this.index, this.index + width);
 
         if (!new RegExp(`^[0-9a-fA-F]{${String(width)}}$`, 'u').test(digits)) {
-          fail(`a malformed \\${character} escape`);
+          // Annex B reads this as an identity escape — `/\u41/` matches "u41" —
+          // which is almost never what someone typing `\u` meant. Refused
+          // rather than silently matching the letter.
+          fail(
+            `\\${character} without ${String(width)} hex digits after it. JavaScript would read that as the literal "${character}", which is unlikely to be what was meant`,
+          );
         }
 
         this.index += width;
@@ -635,7 +651,17 @@ class Parser {
 
       case 'p':
       case 'P':
-        fail('a unicode property escape');
+        /*
+         * Without `u` this is an identity escape — `/\pdf/` matches "pdf" — and
+         * WITH `u` it is a property escape this matcher does not implement.
+         * `u` is refused outright, so only the identity reading can reach here,
+         * and it is still refused: silently matching a literal `p` where a
+         * reader expects a property class is the kind of quiet disagreement
+         * this file exists to avoid.
+         */
+        fail(
+          'a \\p escape, which is a Unicode property class this matcher does not implement (and a literal "p" only under rules the refused `u` flag changes)',
+        );
 
         return set([]);
 
@@ -1048,7 +1074,10 @@ const buildPredicate = (
   };
 };
 
-const PREDICATES = new WeakMap<CharSet, Map<string, (code: number) => boolean>>();
+const PREDICATES = new WeakMap<
+  CharSet,
+  Map<string, (code: number) => boolean>
+>();
 
 /**
  * {@link buildPredicate}, but built once per distinct set.

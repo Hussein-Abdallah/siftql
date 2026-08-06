@@ -234,20 +234,21 @@ export const builders: AstBuilders = Object.freeze({
   }),
 
   /**
-   * Flags are sorted and de-duplicated here, because two ASTs that mean the same
-   * thing should compare equal.
+   * Flags are de-duplicated but NOT sorted, which is what the parser does, so a
+   * built node and a parsed one compare equal.
    *
-   * THE PARSER DOES NOT DO THIS, and this comment used to claim it did. The
-   * parser preserves written order on purpose — `types.ts` calls the array
-   * order-preserving so `/x/gi` never prints back as `/x/ig` — so a built node
-   * and a parsed one do NOT deep-equal when the flags were written out of order.
-   * Compare `new Set(node.flags)` if you need to check two nodes agree.
+   * They used to be sorted here, under a comment claiming the parser sorted them
+   * too. It does not, deliberately: `types.ts` calls the array order-preserving
+   * so `/x/gi` never prints back as `/x/ig`. Sorting here was therefore the one
+   * thing preventing the equality the comment promised — `builders.regex('a',
+   * ['i','g'])` gave `['g','i']` where `parse('/a/ig')` gives `['i','g']`, so a
+   * deepStrictEqual between them failed for the exact use case named.
    */
   regex: (
     pattern: string,
     flags: readonly RegexFlag[] = [],
   ): RegexExpression => ({
-    flags: [...new Set(flags)].sort(),
+    flags: [...new Set(flags)],
     location: at,
     pattern,
     type: 'RegexExpression',

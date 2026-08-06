@@ -30,9 +30,10 @@ Initial release.
   precision, `dateFormat` declarations, and a pluggable `parseDate` hook.
 - Half-open, inclusive, exclusive, and mixed-inclusivity ranges.
 - Tolerant parsing mode for search-as-you-type.
-- A structural screen for catastrophic regex backtracking, plus a pattern-length
-  cap. The screen is a heuristic and is bypassable; see the README for what it
-  does and does not catch.
+- A linear-time regex matcher (Thompson NFA + Pike VM), so a user-supplied
+  pattern can never backtrack catastrophically. Backreferences and lookaround
+  are refused, since neither can be matched in guaranteed linear time;
+  `regexGuard: false` runs them on `RegExp` for callers who accept the risk.
 - `matchKeys` option to match against object keys.
 
 [unreleased]: https://github.com/Hussein-Abdallah/siftql/compare/v0.1.0...HEAD

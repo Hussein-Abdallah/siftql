@@ -12,7 +12,7 @@ import {
   test as matches,
   type SiftQLAst,
 } from '../src/index.js';
-import { assessPattern } from '../src/engine/redos.js';
+import { compileLinear } from '../src/regex/linear.js';
 
 /**
  * EXECUTABLE PROPERTIES.
@@ -967,18 +967,15 @@ describe('P5: cost stays bounded', () => {
     expect(large / small).toBeLessThan(8);
   });
 
-  // DEFERRED, not forgotten: the screen is being replaced with a linear-time
-  // matcher rather than patched a fourth time. `it.fails` keeps the expectation
-  // in the build and turns it into a failure the day it starts passing, which is
-  // the day the replacement lands.
-  it.fails('never accepts a regex that then runs away', () => {
+  it('never accepts a regex that then runs away', () => {
     /*
-     * THE PROPERTY THE SCREEN ACTUALLY OWES, and the one no version of it has
-     * been tested against: whatever it accepts must not hang.
+     * THE PROPERTY THE MATCHER OWES, and the one no version of the SCREEN could
+     * keep: whatever is accepted must not hang.
      *
-     * Every bypass below was found by an auditor, not by the suite — including
-     * two that are the commit message's own headline examples with one
-     * parenthesis added.
+     * Every pattern below was found by an auditor rather than by this suite, and
+     * every one of them defeated the screen — two are its own commit message's
+     * headline examples with one parenthesis added. They are all accepted now,
+     * because an automaton makes them linear.
      */
     const suspects = [
       '^(a+)+$',
@@ -994,20 +991,22 @@ describe('P5: cost stays bounded', () => {
       '^((a|a?))*$',
       '^([a-z]|[a-c])*$',
       '^((a|b)|(a|c))*$',
-      '^(\\w{1,50})+$',
+      String.raw`^(\w{1,50})+$`,
       '^(x+x+){1,99}y$',
     ];
 
     const slow: string[] = [];
 
     for (const pattern of suspects) {
-      if (assessPattern(pattern, 1000) !== null) {
+      const compiled = compileLinear(pattern, '');
+
+      if (!compiled.ok) {
         continue;
       }
 
       const started = Date.now();
 
-      new RegExp(pattern, 'u').test(`${'a'.repeat(26)}!`);
+      compiled.matcher.test(`${'a'.repeat(40)}!`);
 
       const elapsed = Date.now() - started;
 
@@ -1019,9 +1018,89 @@ describe('P5: cost stays bounded', () => {
     expect(slow).toEqual([]);
   });
 
-  it.fails('does not refuse patterns that are provably fast', () => {
+  it('agrees with RegExp on patterns RegExp can safely run', () => {
+    /*
+     * The other half of replacing an engine: it has to give the SAME ANSWERS.
+     * A fast matcher that disagrees with `RegExp` would trade a denial of
+     * service for silently wrong results, which is the worse bargain.
+     */
+    const next = rng(90_210);
+    const atoms = [
+      'a',
+      'b',
+      '1',
+      '.',
+      String.raw`\d`,
+      String.raw`\w`,
+      String.raw`\s`,
+      '[abc]',
+      '[^abc]',
+      '[a-c]',
+      String.raw`\.`,
+    ];
+    const quantifiers = ['', '', '*', '+', '?', '{2}', '{1,3}', '*?', '+?'];
+    const build = (depth: number): string => {
+      if (depth === 0) {
+        return pick(next, atoms) + pick(next, quantifiers);
+      }
+
+      const roll = next();
+
+      if (roll < 0.25) {
+        return `(${build(depth - 1)})${pick(next, quantifiers)}`;
+      }
+
+      if (roll < 0.45) {
+        return `${build(depth - 1)}|${build(depth - 1)}`;
+      }
+
+      if (roll < 0.55) {
+        return `^${build(depth - 1)}`;
+      }
+
+      if (roll < 0.65) {
+        return `${build(depth - 1)}$`;
+      }
+
+      return build(depth - 1) + build(depth - 1);
+    };
+
+    const subjects = ['', 'a', 'ab', 'abc', 'aab', 'xyz', 'a1b2', 'AAA', 'cab'];
+    const disagreements: string[] = [];
+
+    for (let run = 0; run < RUNS * 4; run += 1) {
+      const source = build(3);
+      const flags = pick(next, ['', '', 'i', 'm', 's']);
+
+      let native: RegExp;
+
+      try {
+        native = new RegExp(source, flags);
+      } catch {
+        continue;
+      }
+
+      const compiled = compileLinear(source, flags);
+
+      if (!compiled.ok) {
+        continue;
+      }
+
+      for (const subject of subjects) {
+        if (native.test(subject) !== compiled.matcher.test(subject)) {
+          disagreements.push(
+            `/${source}/${flags} vs ${JSON.stringify(subject)}`,
+          );
+        }
+      }
+    }
+
+    expect(disagreements.slice(0, 5)).toEqual([]);
+  });
+
+  it('does not refuse patterns that are provably fast', () => {
     // The other direction, which matters just as much: a false positive rejects
-    // a query the user legitimately wants, and the module's own doc says so.
+    // a query the user legitimately wants. The screen refused eight of these.
     const ordinary = [
       String.raw`^(\d+,)*\d+$`,
       '^([^/]+/)*[^/]+$',
@@ -1041,7 +1120,7 @@ describe('P5: cost stays bounded', () => {
 
       const elapsed = Date.now() - started;
 
-      if (assessPattern(pattern, 1000) !== null && elapsed < 50) {
+      if (!compileLinear(pattern, '').ok && elapsed < 50) {
         refused.push(`${pattern} refused, but runs in ${String(elapsed)}ms`);
       }
     }

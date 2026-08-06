@@ -12,7 +12,6 @@ import {
   resolved,
   resolveTemporal,
   serialize,
-  SiftQLOperandError,
   SiftQLRecoveredQueryError,
   SiftQLSyntaxError,
   SiftQLValueError,
@@ -479,10 +478,17 @@ describe('regular expressions', () => {
     expect(filter('v:/a/y', identical)).toHaveLength(4);
   });
 
-  it('refuses a nested quantifier rather than hanging', () => {
-    expect(() => filter('v:/^(a+)+$/', [{ v: `${'a'.repeat(30)}!` }])).toThrow(
-      SiftQLOperandError,
-    );
+  it('runs a nested quantifier in linear time rather than hanging', () => {
+    /*
+     * This pinned a REFUSAL: the matcher was `RegExp`, so `((a+))+` took 104
+     * seconds and the only defence was a screen that guessed. The matcher is now
+     * an automaton, so the pattern is linear and refusing it would cost a
+     * legitimate query for nothing.
+     */
+    const started = Date.now();
+
+    expect(matches('v:/((a+))+$/', { v: `${'a'.repeat(40)}!` })).toBe(false);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });
 

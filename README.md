@@ -438,47 +438,48 @@ that matches nothing; in siftql it is a syntax error, so a `catch` around
 > `f:x` narrows (visible: an empty result); `f:"x"` widens (invisible). Plan a
 > pass over stored query strings.
 
-## On ReDoS screening
+## On regular expressions
 
-User-supplied regexes are screened for shapes that backtrack exponentially, and
-refused with a located error and a rewrite hint.
+User-supplied regexes are matched by a **linear-time automaton**, not by
+JavaScript's `RegExp`. Cost is `O(pattern × input)` for every pattern that
+exists, so there is no such thing as a query that hangs the process.
 
-**It is a heuristic, not a guarantee.** You cannot reliably decide whether an
-arbitrary backtracking regex is safe in synchronous JavaScript: there is no
-timeout, no interruption, and no way to bound the engine's work once `test()` is
-running. A pattern that passes this screen can still be slow.
-
-> **Known limitation, being replaced.** The current screen is a structural
-> heuristic and it is bypassable: bounding the outer quantifier
-> (`/^(a+){1,99}$/`) or adding a redundant group (`/^((a|a))*$/`) gets past it,
-> and it refuses some patterns that are provably fast. It is being replaced with
-> a linear-time matcher, which removes the possibility of catastrophic
-> backtracking rather than trying to detect it. Until then, treat a regex from an
-> untrusted author as unscreened and set `regexGuard: false` only where the
-> author is trusted anyway.
-
-What makes backtracking exponential is an **unbounded** repetition over
-something that can match the same input more than one way. The screen refuses
-three forms of that, plus a length cap:
+That matters because `RegExp` backtracks. `/^(a|a)*$/` against 27 characters
+blocks for four seconds, a few more make it minutes, and nothing can interrupt a
+running regex in JavaScript. If your search box is open to people you do not
+trust, that is a denial of service with a twelve-character payload.
 
 ```rb
-/(a+)+/        # nested unbounded quantifier
-/(a?)*/        # a repeated group that can match nothing
-/(a|a)*/       # two identical alternatives, so two ways to match at every position
+name:/^(a|a)*$/     # 40,000-character value: 8 ms
+name:/(a+)+/        # linear, like everything else
 ```
 
-A **bounded** outer quantifier is not screened, because bounded repetition of a
-finite body is finite work — so `/^([A-Z]{3}-){1,4}[0-9]{2}$/`, the ordinary way
-to write a SKU or a number plate, is allowed. Precision is weighted over recall:
-`(a|b)*`, `(cat|car)*` and `(abc)*` all pass. Turn the screen off with
-`regexGuard: false` where the query author is trusted.
+This is Thompson's construction with a Pike VM — the same approach `grep`, RE2,
+Rust's `regex` and Go's `regexp` take. It walks the input once, holding every
+state the pattern could be in at the same time, so it never enumerates the
+exponentially many ways a pattern might match.
 
-**Wildcards are not regexes and cannot backtrack.** `name:*a*a*a*b` is matched by
-a two-pointer glob, not compiled to `[\s\S]*`, so it is O(n×m) with no
-exponential path: 200 stars against a 5,000-character value takes under a
-millisecond. An earlier version of this document warned that unbounded stars were
-a denial-of-service surface. They were, and then the matcher was rewritten and
-the warning was not.
+**Two features are refused**, because no engine can match them in guaranteed
+linear time:
+
+```rb
+name:/(a+)\1/       # backreference    -> SiftQLOperandError, code UNSAFE_PATTERN
+name:/(?=x)y/       # lookahead        -> same
+```
+
+`regexGuard: false` runs those on `RegExp` instead, for callers who need them
+and trust whoever writes the queries. The default is safe; the escape hatch is
+explicit.
+
+Everything else works: literals, character classes, `.`, `\d \w \s \b`,
+`* + ? {n,m}` and their lazy forms, alternation, groups (including named and
+non-capturing), anchors, and the `i m s u` flags. `maxPatternLength` still caps
+pattern size, and a pattern whose counted repetitions expand past the
+instruction budget is refused rather than run.
+
+**Wildcards are not regexes and never were an exposure.** `name:*a*a*a*b` is
+matched by a two-pointer glob: 200 stars against a 5,000-character value takes
+under a millisecond.
 
 ## Development
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createEngine, filter, test as matches } from '../src/index.js';
-import { assessPattern } from '../src/engine/redos.js';
+import { compileLinear } from '../src/regex/linear.js';
 
 /**
  * ENGINE ISOLATION AND PATTERN SCREENING (G6).
@@ -10,22 +10,22 @@ import { assessPattern } from '../src/engine/redos.js';
  * engines in one process cannot see each other, and that a user-supplied regex is
  * screened for catastrophic backtracking.
  *
- * The screening tests are written as a CORPUS rather than as a list of shapes,
- * because the previous screen was wrong in both directions at once — refusing
- * `^([A-Z]{3}-){1,4}[0-9]{2}$`, which runs in 0.01 ms, while passing `(a|a)*`,
- * which blocks the event loop for four seconds. A test naming only the shapes
- * the implementation already knew about would have passed throughout.
+ * The regex tests are written as a CORPUS rather than as a list of shapes,
+ * because the screen they replaced was wrong in both directions at once —
+ * refusing `^([A-Z]{3}-){1,4}[0-9]{2}$`, which runs in 0.01 ms, while passing
+ * `(a|a)*`, which blocks the event loop for four seconds. A test naming only the
+ * shapes the implementation already knew about would have passed throughout.
  */
 
-const screened = (pattern: string): boolean =>
-  assessPattern(pattern, 1000) === null;
+/** Does the linear matcher accept this pattern? */
+const screened = (pattern: string): boolean => compileLinear(pattern, '').ok;
 
-describe('a regex the screen must ALLOW', () => {
+describe('a regex the matcher must ACCEPT', () => {
   // Every one of these is a pattern somebody would reasonably type into a search
   // box, and each must survive: a false positive rejects a query the user
-  // legitimately wants, which the module's own doc calls the thing to avoid.
+  // legitimately wants. Under the old screen, eight of them were refused.
   const legitimate = [
-    // Bounded groups: finite match tree, however nested. All were refused.
+    // Bounded groups. All were refused by the screen.
     '^([A-Z]{3}-){1,4}[0-9]{2}$',
     String.raw`^(\d{4}){2}$`,
     String.raw`(\d{2,4}){1,2}`,
@@ -45,7 +45,6 @@ describe('a regex the screen must ALLOW', () => {
     String.raw`^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$`,
     String.raw`^(?<year>\d{4})-(?<month>\d{2})$`,
     '(?:ab)+',
-    '^(?!x)y+$',
     String.raw`\b\w+\b`,
     '[^"]*',
   ];
@@ -57,9 +56,19 @@ describe('a regex the screen must ALLOW', () => {
   }
 });
 
-describe('a regex the screen must REFUSE', () => {
-  const catastrophic = [
-    // Nested unbounded quantifier — the classic, always caught.
+describe('a regex that used to be refused now runs, safely', () => {
+  /*
+   * These are the classic catastrophic shapes. Under `RegExp` each one takes
+   * seconds to minutes on a subject under 40 characters, which is why three
+   * successive versions of this package tried to SCREEN for them — and why all
+   * three were bypassable, the last accepting `^(a+){1,99}$` while refusing
+   * `^(a+)+$`.
+   *
+   * They are no longer refused, because they are no longer dangerous: the
+   * matcher is an automaton, so every one of them is linear. Refusing a
+   * legitimate pattern was always a cost; now there is nothing bought with it.
+   */
+  const formerlyCatastrophic = [
     '(a+)+',
     '(a*)*',
     '((a+))+',
@@ -68,58 +77,103 @@ describe('a regex the screen must REFUSE', () => {
     '(a+)*b',
     '(.*)*',
     '^(([a-z])+.)+[A-Z]([a-z])+$',
-    // A repeated group that can match nothing. The old screen excluded `?`
-    // outright, on the stated grounds that it "cannot drive exponential
-    // backtracking on its own" — which `(a|a?)*` falsifies.
     '(a?)*',
     '^(a|a?)*$',
     '(x|)*',
     String.raw`(\w+\s?)*`,
-    // Two identical alternatives: two ways to match the same text at every
-    // position. Not a nested quantifier at all, so the old screen never saw it.
     '^(a|a)*$',
     String.raw`^(\s|\s)*$`,
+    '^(a+){1,99}$',
+    '^((a|a))*$',
+    '^([a-z]|[a-c])*$',
   ];
 
-  for (const pattern of catastrophic) {
-    it(`refuses ${pattern}`, () => {
-      expect(screened(pattern)).toBe(false);
+  for (const pattern of formerlyCatastrophic) {
+    it(`runs ${pattern} in linear time`, () => {
+      const subject = `${'a'.repeat(40)}!`;
+      const compiled = compileLinear(pattern, '');
+
+      expect(compiled.ok, pattern).toBe(true);
+
+      const started = Date.now();
+
+      if (compiled.ok) {
+        compiled.matcher.test(subject);
+      }
+
+      expect(Date.now() - started).toBeLessThan(50);
     });
   }
 
-  it('explains which of the three shapes it found', () => {
-    expect(assessPattern('(a+)+', 1000)?.reason).toContain('nested quantifier');
-    expect(assessPattern('(a?)*', 1000)?.reason).toContain('match nothing');
-    expect(assessPattern('(a|a)*', 1000)?.reason).toContain(
-      'identical alternatives',
-    );
-  });
+  it('stays linear as the subject grows', () => {
+    const compiled = compileLinear('^(a|a)*$', '');
 
-  it('treats an absurd bound as unbounded', () => {
-    // Otherwise `{1,999999}` is an obvious way around the screen.
-    expect(screened('(a+){1,999999}')).toBe(false);
-  });
+    expect(compiled.ok).toBe(true);
 
-  it('still enforces the length cap', () => {
-    expect(assessPattern('a'.repeat(1200), 1000)?.reason).toContain(
-      'over the 1000-character limit',
-    );
+    if (!compiled.ok) {
+      return;
+    }
+
+    const time = (length: number): number => {
+      const started = Date.now();
+
+      compiled.matcher.test(`${'a'.repeat(length)}!`);
+
+      return Date.now() - started;
+    };
+
+    time(1000);
+
+    // Exponential would be astronomically worse across a 4x step; linear is 4x.
+    const small = Math.max(time(10_000), 1);
+
+    expect(time(40_000) / small).toBeLessThan(12);
   });
 });
 
-describe('a refused pattern reports the documented code', () => {
-  it('uses UNSAFE_PATTERN, not the generic OPERAND', () => {
-    // `UNSAFE_PATTERN` was declared in errors.ts, described, and unreachable:
-    // both rejection paths reported OPERAND, so a consumer could not tell "that
-    // pattern was refused as unsafe" from "that is not a valid operand".
-    for (const query of ['v:/^(a+)+$/', `v:/${'a'.repeat(1200)}/`]) {
-      try {
-        filter(query, [{ v: 'x' }]);
-        expect.unreachable('should have thrown');
-      } catch (error) {
-        expect((error as { code: string }).code, query).toBe('UNSAFE_PATTERN');
-      }
+describe('a regex the matcher cannot take is refused, not run', () => {
+  // Backreferences and lookaround are what make linear matching impossible, so
+  // they are the only refusals left — and they are refusals rather than a quiet
+  // fallback to the backtracking engine.
+  const unsupported = [
+    String.raw`(a+)\1`,
+    '(?=abc)x',
+    '(?!abc)x',
+    '(?<=a)b',
+    '(?<!a)b',
+  ];
+
+  for (const pattern of unsupported) {
+    it(`refuses ${pattern}`, () => {
+      const compiled = compileLinear(pattern, '');
+
+      expect(compiled.ok, pattern).toBe(false);
+    });
+  }
+
+  it('says why, and offers the escape hatch', () => {
+    try {
+      filter(String.raw`v:/(a+)\1/`, [{ v: 'aa' }]);
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect((error as { code: string }).code).toBe('UNSAFE_PATTERN');
+      expect((error as Error).message).toContain('backreference');
+      expect((error as { hint: string }).hint).toContain('regexGuard: false');
     }
+  });
+
+  it('runs it on the backtracking engine when the caller opts in', () => {
+    // `regexGuard: false` means "I trust whoever writes these queries". The risk
+    // is then theirs, explicitly, rather than ours by default.
+    const engine = createEngine({ regexGuard: false });
+
+    expect(engine.test(String.raw`v:/(a)\1/`, { v: 'aa' })).toBe(true);
+  });
+
+  it('refuses an expansion too large to bound', () => {
+    // Counted repetitions compile by duplication, so the program has to be
+    // capped for the time bound to mean anything.
+    expect(compileLinear('(a{100}){100}', '').ok).toBe(false);
   });
 });
 

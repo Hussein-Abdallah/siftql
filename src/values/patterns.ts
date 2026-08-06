@@ -1,4 +1,4 @@
-import { assessPattern } from '../engine/redos.js';
+import { compileLinear } from '../regex/linear.js';
 import {
   claimed,
   DECLINED,
@@ -27,17 +27,27 @@ export interface CompiledWildcard {
   readonly caseSensitive: boolean;
 }
 
+/** Anything that can answer "does this value match", statelessly. */
+export interface PatternMatcher {
+  test(input: string): boolean;
+}
+
 export interface CompiledPattern {
   /**
-   * Answers "does this value match". NEVER carries `g` or `y`.
+   * Answers "does this value match".
    *
-   * Those flags make `RegExp.prototype.test` STATEFUL — it advances
-   * `lastIndex` between calls — and this matcher is compiled once and reused
-   * for every record. With `g` left on, four identical rows return three
-   * matches: a silently wrong result, which is the one outcome this package
-   * exists to prevent.
+   * Normally the linear-time automaton from `src/regex/linear.ts`, which cannot
+   * backtrack whatever the pattern. A `RegExp` only when the caller has set
+   * `regexGuard: false` to run a pattern the automaton will not take — a
+   * backreference or lookaround — and accepted the risk that comes with it.
+   *
+   * Either way it NEVER carries `g` or `y`. Those flags make
+   * `RegExp.prototype.test` STATEFUL — it advances `lastIndex` between calls —
+   * and this matcher is compiled once and reused for every record. With `g` left
+   * on, four identical rows return three matches: a silently wrong result, which
+   * is the one outcome this package exists to prevent.
    */
-  readonly matcher: RegExp;
+  readonly matcher: PatternMatcher;
   /**
    * Answers "which part of the value to underline", or `null` when there is
    * nothing meaningful to point at. Unanchored and global, because a UI wants
@@ -218,7 +228,7 @@ export const wildcardType: ValueType<CompiledWildcard, string> =
  * Unlike every other type, the pattern here is arbitrary and can be
  * catastrophically slow: `/^(a+)+$/` against 31 characters hangs the process.
  *
- * The screen itself lives in `../engine/redos.ts` and is driven by engine
+ * The matcher itself lives in `../regex/linear.ts` and is driven by engine
  * OPTIONS rather than by this type, because whether to accept a risky pattern
  * is a deployment policy — a trusted internal tool and a public search box want
  * different answers — and not a rule about how a regex matches.
@@ -242,18 +252,12 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
       return DECLINED;
     }
 
-    if (ctx.options.regexGuard) {
-      const risk = assessPattern(operand.source, ctx.options.maxPatternLength);
-
-      if (risk) {
-        // A refused pattern stops resolution and is reported. Falling through
-        // to `string` would silently turn a regex query into a literal one.
-        //
-        // Reported under UNSAFE_PATTERN, the code errors.ts documents for
-        // exactly this, so a consumer can tell "refused as unsafe" from "not a
-        // valid operand" — they call for different messages in a UI.
-        return malformedOperand(risk.reason, risk.hint, 'UNSAFE_PATTERN');
-      }
+    if (operand.source.length > ctx.options.maxPatternLength) {
+      return malformedOperand(
+        `pattern is ${String(operand.source.length)} characters, over the ${String(ctx.options.maxPatternLength)}-character limit`,
+        `Shorten the pattern, or raise maxPatternLength (currently ${String(ctx.options.maxPatternLength)}).`,
+        'UNSAFE_PATTERN',
+      );
     }
 
     // A regular expression carries its OWN case semantics in its `i` flag, and
@@ -262,10 +266,62 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
     // is not what anyone who reached for a regex asked for.
     const flags = operand.flags.join('');
 
+    /*
+     * COMPILED TO AN AUTOMATON, not handed to `RegExp`.
+     *
+     * This is the whole ReDoS answer. `RegExp` backtracks, so a pattern like
+     * `^(a|a)*$` takes four seconds on 27 characters and minutes on a few more,
+     * with no way to interrupt it — and the pattern comes from whoever is typing
+     * in the search box. Three attempts to SCREEN for such patterns were made and
+     * all three were bypassable; the last accepted `^(a+){1,99}$` while refusing
+     * `^(a+)+$`, and accepted `^((a|a))*$` while refusing `^(a|a)*$`.
+     *
+     * A linear-time matcher has nothing to bypass. See `src/regex/linear.ts`.
+     */
+    const linear = compileLinear(operand.source, flags);
+
+    if (linear.ok) {
+      let highlighter: RegExp | null = null;
+
+      try {
+        highlighter = new RegExp(operand.source, forHighlighting(flags));
+      } catch {
+        // The automaton accepted it and `RegExp` did not, which is possible for
+        // a handful of spellings. Matching still works; there is simply nothing
+        // to hand a highlighter.
+        highlighter = null;
+      }
+
+      return claimed({
+        caseSensitive: !operand.flags.includes('i'),
+        highlighter,
+        matcher: linear.matcher,
+      });
+    }
+
+    /*
+     * The automaton could not take it — a backreference, lookaround, or an
+     * expansion too large to bound.
+     *
+     * With the guard ON, that is a refusal. Falling back to `RegExp` by default
+     * would mean the one pattern we could not make safe is the one that runs on
+     * the unsafe engine, which is exactly backwards.
+     *
+     * With `regexGuard: false` the caller has said they trust whoever writes the
+     * queries, so `RegExp` is used and the risk is theirs — which is what makes
+     * lookahead available at all rather than simply unsupported.
+     */
+    if (ctx.options.regexGuard) {
+      return malformedOperand(
+        `this pattern uses ${linear.reason}`,
+        'Rewrite it without that feature, or set regexGuard: false to run it on the backtracking engine and accept the risk.',
+        'UNSAFE_PATTERN',
+      );
+    }
+
     try {
       return claimed({
         caseSensitive: !operand.flags.includes('i'),
-        // The user's own pattern is already the thing to underline.
         highlighter: new RegExp(operand.source, forHighlighting(flags)),
         matcher: new RegExp(operand.source, forMatching(flags)),
       });

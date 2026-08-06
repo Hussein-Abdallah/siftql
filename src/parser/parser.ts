@@ -21,7 +21,7 @@ import type {
   WildcardExpression,
 } from '../types.js';
 import { RECOVERY_REASONS } from '../types.js';
-import { decodeEscapes, scanPattern } from './pattern.js';
+import { scanPattern } from './pattern.js';
 import { Tokenizer, type TokenizerOptions } from './tokenizer.js';
 import type { Token } from './tokens.js';
 
@@ -656,26 +656,24 @@ class Parser {
   }
 
   private buildField(token: Extract<Token, { type: 'field' }>): Field {
-    const quoted = token.quote !== 'none';
-    // The tokenizer already split an unquoted name on its dots; a quoted name is
-    // one segment, so a literal key containing a dot stays addressable.
-    const names = token.path;
-    let cursor = quoted ? token.start + 1 : token.start;
-
-    const segments = names.map((name): FieldSegment => {
-      const start = cursor;
-      const end = start + name.length;
-
-      // +1 steps over the dot separating unquoted segments.
-      cursor = end + 1;
-
-      return {
-        location: span(start, end),
-        name: decodeEscapes(name),
-        quoted,
-        type: 'FieldSegment',
-      };
-    }) as unknown as NonEmptyArray<FieldSegment>;
+    /*
+     * The tokenizer already decided where each step begins and ends, and whether
+     * it was quoted. Reading that is the whole job.
+     *
+     * This used to walk a cursor forward by `name.length + 1` per segment, which
+     * assumes a decoded name occupies exactly its own length in the source. That
+     * is false for anything quoted or escaped: `'full name'.first` reported its
+     * first segment as `'full nam` and its second as `'.fir`, so every caret and
+     * highlight built on those spans pointed at the wrong characters. It also
+     * had one `quoted` flag for the whole token, so per-segment quoting — which
+     * `types.ts` calls load-bearing — was always reported as false.
+     */
+    const segments = token.segments.map((segment): FieldSegment => ({
+      location: span(segment.start, segment.end),
+      name: segment.name,
+      quoted: segment.quoted,
+      type: 'FieldSegment',
+    })) as unknown as NonEmptyArray<FieldSegment>;
 
     return {
       location: span(token.start, token.end),

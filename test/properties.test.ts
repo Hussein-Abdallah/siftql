@@ -766,6 +766,80 @@ describe('P4: an engine honours its configuration', () => {
 });
 
 /* ========================================================================= *
+ * P3b. EVERY LOCATION POINTS AT THE TEXT IT CLAIMS
+ * ========================================================================= */
+
+describe('P3b: a node location slices back to its own source', () => {
+  it('holds for every field segment of every generated query', () => {
+    /*
+     * `SourceLocation` is contractually "a half-open character range into the
+     * original query string", and consumers slice it — a caret excerpt, a
+     * highlight offset. Field segments were the one place it lied: spans were
+     * reconstructed by walking a cursor forward by `name.length + 1`, which
+     * assumes a decoded name occupies its own length in the source. For
+     * `'full name'.first` that reported `'full nam` and `'.fir`.
+     */
+    const next = rng(515);
+    const wrong: string[] = [];
+
+    const check = (node: unknown, source: string): void => {
+      if (typeof node !== 'object' || node === null) {
+        return;
+      }
+
+      const record = node as Record<string, unknown>;
+
+      if (record.type === 'FieldSegment') {
+        const location = record.location as { start: number; end: number };
+        const slice = source.slice(location.start, location.end);
+        const name = record.name as string;
+
+        if (
+          location.start < 0 ||
+          location.end > source.length ||
+          location.start > location.end
+        ) {
+          wrong.push(`${source}: segment span out of range`);
+        } else if (!slice.includes(name) && name !== '') {
+          // Quotes and escapes make the slice longer than the name, never
+          // shorter, and never a different run of characters.
+          wrong.push(
+            `${source}: segment ${JSON.stringify(name)} spans ${JSON.stringify(slice)}`,
+          );
+        }
+      }
+
+      for (const value of Object.values(record)) {
+        check(value, source);
+      }
+    };
+
+    for (let run = 0; run < RUNS * 2; run += 1) {
+      const text = query(next);
+
+      try {
+        check(parse(text), text);
+      } catch {
+        continue;
+      }
+    }
+
+    expect(wrong.slice(0, 5)).toEqual([]);
+  });
+
+  it('reports per-segment quoting, which types.ts calls load-bearing', () => {
+    const ast = parse("name.'first name':x") as unknown as {
+      field: { segments: { name: string; quoted: boolean }[] };
+    };
+
+    expect(ast.field.segments.map((segment) => segment.quoted)).toEqual([
+      false,
+      true,
+    ]);
+  });
+});
+
+/* ========================================================================= *
  * P4b. A DECLARED LAYOUT IS OBEYED, OR THE VALUE IS REFUSED
  *
  * `format.ts` promises "you state the layout; siftql obeys it exactly". Written

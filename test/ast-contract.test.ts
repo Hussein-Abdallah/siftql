@@ -160,10 +160,27 @@ describe('every Field the contract permits can be serialized and read back', () 
   });
 
   it('keeps an empty middle segment addressable', () => {
+    /*
+     * The PATH is what must survive; the `quoted` flag legitimately does not.
+     *
+     * An empty segment has no unquoted spelling, so serialize must emit `""` —
+     * and the text `a."".b:x` genuinely does contain a quoted segment, which the
+     * tokenizer now reports faithfully. Asserting byte-identity here would be
+     * asserting that the parser lies about what it read.
+     *
+     * The round-trip law is stated over queries the STRICT PARSER accepts, and
+     * `a."".b:x` round-trips exactly; a hand-built tree claiming an unquoted
+     * empty name is outside it.
+     */
     const node = builders.tag(fieldOf('a', '', 'b'), builders.term('x'));
     const text = serialize(node);
+    const names = (tree: SiftQLAst): string[] =>
+      (
+        tree as unknown as { field: { segments: { name: string }[] } }
+      ).field.segments.map((segment) => segment.name);
 
-    expect(strip(parse(text))).toBe(strip(node as SiftQLAst));
+    expect(names(parse(text))).toEqual(['a', '', 'b']);
+    expect(serialize(parse(text))).toBe(text);
   });
 
   it('round-trips a path the parser itself produces with an empty step', () => {

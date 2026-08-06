@@ -11,6 +11,16 @@ import type { SourceLocation } from '../errors.js';
  */
 
 /** How a term was written. Bare terms match case-insensitively. */
+/** One step of a field path, as the tokenizer saw it. */
+export interface FieldSegmentToken {
+  /** Decoded: escapes resolved, quotes removed. */
+  readonly name: string;
+  readonly quoted: boolean;
+  /** Half-open span in the original query, quotes included when present. */
+  readonly start: number;
+  readonly end: number;
+}
+
 export type QuoteKind = 'double' | 'none' | 'single';
 
 /** The comparison operators that may follow a field name. */
@@ -31,6 +41,21 @@ export type Token = SourceLocation &
          * while `user.name` addresses a nested one.
          */
         readonly path: readonly string[];
+        /**
+         * One entry per path step, DECODED, with its true span in the source and
+         * its own `quoted` flag.
+         *
+         * `path` carries the names and nothing else, so the parser had to
+         * reconstruct spans by walking a cursor forward by `name.length + 1` —
+         * which assumes the decoded name occupies exactly its own length in the
+         * source. That is false the moment a segment is quoted or contains an
+         * escape: `'full name'.first` reported its first segment as `'full nam`
+         * and its second as `'.fir`, so every caret and highlight built from
+         * those spans pointed at the wrong characters. It also had one `quoted`
+         * flag for the whole token, so the per-segment quoting `types.ts` calls
+         * load-bearing was always reported as `false`.
+         */
+        readonly segments: readonly FieldSegmentToken[];
         readonly quote: QuoteKind;
         /**
          * Set when tolerant mode invented a closing quote inside the field PATH —

@@ -1,7 +1,12 @@
 import { SiftQLSyntaxError } from '../errors.js';
 import { isSafeUnquotedExpression } from '../types.js';
 import { decodeEscapes } from './pattern.js';
-import type { ComparisonOperator, QuoteKind, Token } from './tokens.js';
+import type {
+  ComparisonOperator,
+  FieldSegmentToken,
+  QuoteKind,
+  Token,
+} from './tokens.js';
 
 /**
  * Hand-written, mode-switching tokenizer. No parser generator is involved.
@@ -108,6 +113,110 @@ const GROUP_TERMINATORS = new Set([
 ]);
 
 const isWhitespace = (character: string): boolean => WHITESPACE.has(character);
+
+/**
+ * A piece of a field path as it was read: either a run of raw source text, or a
+ * quoted segment already decoded.
+ *
+ * The path used to be assembled into ONE escaped string that the parser split
+ * again, which threw away where each piece came from — so spans had to be
+ * reconstructed by assuming a decoded name occupies its own length in the
+ * source, and that is false for anything quoted or escaped.
+ */
+type PathChunk =
+  | { readonly kind: 'raw'; readonly text: string; readonly start: number }
+  | {
+      readonly kind: 'quoted';
+      readonly name: string;
+      readonly start: number;
+      readonly end: number;
+    };
+
+/**
+ * Turn the chunks of a path into segments, splitting raw text on UNESCAPED dots
+ * and keeping each segment's true span.
+ *
+ * A segment is `quoted` if any part of it was, which is what makes
+ * `name.'first name'` report the second step as quoted and the first as not.
+ */
+const chunksToSegments = (
+  chunks: readonly PathChunk[],
+): FieldSegmentToken[] => {
+  const segments: FieldSegmentToken[] = [];
+
+  let name = '';
+  let start = -1;
+  let end = -1;
+  let quoted = false;
+
+  const flush = (): void => {
+    segments.push({
+      end: end === -1 ? 0 : end,
+      name,
+      quoted,
+      start: start === -1 ? 0 : start,
+    });
+    name = '';
+    start = -1;
+    end = -1;
+    quoted = false;
+  };
+
+  for (const chunk of chunks) {
+    if (chunk.kind === 'quoted') {
+      if (start === -1) {
+        start = chunk.start;
+      }
+
+      name += chunk.name;
+      end = chunk.end;
+      quoted = true;
+      continue;
+    }
+
+    let index = 0;
+
+    while (index < chunk.text.length) {
+      const at = chunk.start + index;
+      const character = chunk.text.charAt(index);
+
+      if (character === '\\' && index + 1 < chunk.text.length) {
+        // The backslash is consumed; the character it protects is literal.
+        if (start === -1) {
+          start = at;
+        }
+
+        name += chunk.text.charAt(index + 1);
+        end = at + 2;
+        index += 2;
+        continue;
+      }
+
+      if (character === '.') {
+        if (start === -1) {
+          start = at;
+          end = at;
+        }
+
+        flush();
+        index += 1;
+        continue;
+      }
+
+      if (start === -1) {
+        start = at;
+      }
+
+      name += character;
+      end = at + 1;
+      index += 1;
+    }
+  }
+
+  flush();
+
+  return segments;
+};
 
 const RECOVERED_QUOTE = 'unterminated-quote';
 const RECOVERED_REGEX = 'unterminated-regex';
@@ -444,13 +553,23 @@ export class Tokenizer {
    * two segments. Without this the scan stopped at the quote and the whole thing
    * silently became two separate clauses.
    */
-  private readBareTerm(start: number, prefix = ''): Token {
+  private readBareTerm(start: number, lead?: PathChunk): Token {
     // Inside a field group a colon is an ordinary character; see
     // GROUP_TERMINATORS.
     const inGroup = this.groupDepth > 0;
+    const terminators = inGroup ? GROUP_TERMINATORS : DEFAULT_TERMINATORS;
+    const chunks: PathChunk[] = lead ? [lead] : [];
 
-    let word =
-      prefix + this.readWord(inGroup ? GROUP_TERMINATORS : DEFAULT_TERMINATORS);
+    const readRaw = (): string => {
+      const from = this.index;
+      const text = this.readWord(terminators);
+
+      chunks.push({ kind: 'raw', start: from, text });
+
+      return text;
+    };
+
+    let word = (lead?.kind === 'quoted' ? lead.name : '') + readRaw();
     // A folded segment may itself have been recovered — an unclosed quote. The
     // flag has to survive to the field token, or `onRecovered` cannot see that
     // anything was invented and `name.'first:ada` silently becomes a full-text
@@ -458,24 +577,24 @@ export class Tokenizer {
     let recovered: string | undefined;
 
     while (word.endsWith('.') && (this.peek() === '"' || this.peek() === "'")) {
+      const from = this.index;
       const segment = this.readQuoted(this.index, this.peek());
 
       recovered ??= segment.recovered === true ? RECOVERED_QUOTE : undefined;
 
-      /*
-       * DECODE, then re-escape. `segment.value` is raw source text with its
-       * escapes intact, so escaping only its dots ran over the top of them:
-       * `a.'b\.c'` became `a.b\\.c`, whose `\\` splitFieldPath consumed as an
-       * escaped backslash — leaving the `.` unprotected and yielding three
-       * segments, one of them a literal backslash. Decoding first means the
-       * segment is plain text, and escaping both metacharacters keeps it one
-       * path step whatever it contains.
-       */
-      word += decodeEscapes(segment.value).replace(
-        /[\\.]/gu,
-        (character) => `\\${character}`,
-      );
-      word += this.readWord(inGroup ? GROUP_TERMINATORS : DEFAULT_TERMINATORS);
+      const decoded = decodeEscapes(segment.value);
+
+      chunks.push({
+        end: this.index,
+        kind: 'quoted',
+        name: decoded,
+        start: from,
+      });
+
+      // `word` still drives the AND/OR/NOT check and the literal fallback, so it
+      // keeps the escaped spelling; the SEGMENTS are what the parser reads.
+      word += decoded.replace(/[\\.]/gu, (character) => `\\${character}`);
+      word += readRaw();
     }
 
     if (word.length === 0) {
@@ -490,7 +609,13 @@ export class Tokenizer {
 
     // Never a field inside a group: the colon was already read as part of `word`.
     if (!inGroup && this.peek() === ':') {
-      return this.finishField(start, word, 'none', recovered);
+      return this.finishField(
+        start,
+        word,
+        'none',
+        chunksToSegments(chunks),
+        recovered,
+      );
     }
 
     switch (word) {
@@ -522,7 +647,9 @@ export class Tokenizer {
     const { quote, recovered, value } = this.readQuoted(start, quoteCharacter);
 
     if (this.peek() === ':') {
-      return this.finishField(start, value, quote);
+      return this.finishField(start, value, quote, [
+        { end: this.index, name: decodeEscapes(value), quoted: true, start },
+      ]);
     }
 
     /*
@@ -555,10 +682,12 @@ export class Tokenizer {
        * to undo beyond the index.
        */
       const resume = this.index;
-      const attempt = this.readBareTerm(
+      const attempt = this.readBareTerm(start, {
+        end: this.index,
+        kind: 'quoted',
+        name: decodeEscapes(value),
         start,
-        value.replace(/[\\.]/gu, (character) => `\\${character}`),
-      );
+      });
 
       if (attempt.type === 'field') {
         return attempt;
@@ -583,6 +712,7 @@ export class Tokenizer {
     start: number,
     name: string,
     quote: QuoteKind,
+    segments: readonly FieldSegmentToken[],
     recovered?: string,
   ): Token {
     const fieldEnd = this.index;
@@ -608,6 +738,7 @@ export class Tokenizer {
       name,
       path,
       quote,
+      segments,
       start,
       type: 'field',
       ...(recovered === undefined ? {} : { recovered }),

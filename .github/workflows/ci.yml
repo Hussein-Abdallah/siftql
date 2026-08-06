@@ -10,6 +10,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege, stated rather than inherited. This workflow only reads the
+# tree: it publishes nothing, comments on nothing, and pushes nothing, so a
+# token that can write is a token that can be misused. `pull_request` — NOT
+# `pull_request_target` — is what keeps a fork's code out of a context holding
+# secrets; a run triggered by a fork gets no access to them either way.
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: verify (node ${{ matrix.node }})
@@ -24,6 +32,10 @@ jobs:
         node: [18, 20, 22, 24]
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Do not leave the token in .git/config, where any later step — or
+          # anything a dependency's install script runs — could pick it up.
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:

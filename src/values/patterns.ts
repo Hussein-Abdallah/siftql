@@ -58,22 +58,24 @@ export interface CompiledPattern {
    * is the one outcome this package exists to prevent.
    */
   readonly matcher: PatternMatcher;
-  /**
-   * Answers "which part of the value to underline", or `null` when there is
-   * nothing meaningful to point at. Unanchored and global, because a UI wants
-   * every occurrence of the term, not the whole field.
-   */
-  readonly highlighter: RegExp | null;
   readonly caseSensitive: boolean;
 }
+
+/*
+ * There is deliberately NO `highlighter` here, though there was one until it was
+ * found to be written twice and read nowhere.
+ *
+ * `regexType` reports positions through `highlightSpans`, and spans are data.
+ * A compiled `RegExp` over a user's own pattern is the thing that must not
+ * escape — running it is the caller's `exec` loop, on the backtracking engine,
+ * however fast ours is. Keeping the field cost a `RegExp` compile per operand
+ * for nobody, and left a loaded footgun for whoever next added a `highlight`
+ * hook to this type.
+ */
 
 /** `g`/`y` make `test()` stateful; nothing else about a flag set matters here. */
 const forMatching = (flags: string): string =>
   [...new Set(flags)].filter((flag) => flag !== 'g' && flag !== 'y').join('');
-
-/** A highlight wants every occurrence, so it always gets `g`. */
-const forHighlighting = (flags: string): string =>
-  [...new Set(`${forMatching(flags)}g`)].join('');
 
 /** A wildcard pattern flattened to one token per position. */
 type Glob = readonly ('*' | '?' | { readonly ch: string })[];
@@ -215,8 +217,18 @@ export const wildcardType: ValueType<CompiledWildcard, string> =
     /*
      * A wildcard's highlighter is built from ESCAPED LITERAL text, so it has no
      * quantified group to backtrack over and is safe to hand out.
+     *
+     * The length-changing fold is the same trap `stringType.highlight` documents,
+     * and this type ignored it: matching folds with `toLowerCase`, while the
+     * emitted pattern is applied by the CALLER to the raw value under RegExp's
+     * own `i`. Those disagree exactly when folding changes length, so
+     * `name:*i*` matched "İstanbul" and then handed back a pattern that
+     * highlighted nothing in it.
      */
-    highlight: (_value, operand) => operand.highlighter,
+    highlight: (value, operand) =>
+      !operand.caseSensitive && fold(value).length !== value.length
+        ? null
+        : operand.highlighter,
 
     name: 'wildcard',
 
@@ -304,20 +316,8 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
     const linear = compileLinear(operand.source, flags);
 
     if (linear.ok) {
-      let highlighter: RegExp | null = null;
-
-      try {
-        highlighter = new RegExp(operand.source, forHighlighting(flags));
-      } catch {
-        // The automaton accepted it and `RegExp` did not, which is possible for
-        // a handful of spellings. Matching still works; there is simply nothing
-        // to hand a highlighter.
-        highlighter = null;
-      }
-
       return claimed({
         caseSensitive: !operand.flags.includes('i'),
-        highlighter,
         matcher: linear.matcher,
       });
     }
@@ -345,7 +345,6 @@ export const regexType: ValueType<CompiledPattern, string> = defineValueType<
     try {
       return claimed({
         caseSensitive: !operand.flags.includes('i'),
-        highlighter: new RegExp(operand.source, forHighlighting(flags)),
         matcher: new RegExp(operand.source, forMatching(flags)),
       });
     } catch (error) {

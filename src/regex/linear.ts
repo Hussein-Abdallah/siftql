@@ -89,7 +89,14 @@ const MAX_CLASS_RANGES = 512;
 interface CharSet {
   readonly negate: boolean;
   readonly ranges: readonly (readonly [number, number])[];
-  /** `d`, `w`, `s` and their negations, kept symbolic so `i` folding is right. */
+  /**
+   * `d`, `w`, `s` and `.`, kept symbolic.
+   *
+   * `.` is load-bearing — {@link buildPredicate} widens it under the `s` flag.
+   * The rest only mark "this came from a shorthand", which is how a class tells
+   * `\d` from `\x41` when deciding whether something can be a range endpoint.
+   * They are NOT consulted when folding case, though this said they were.
+   */
   readonly classes: readonly string[];
 }
 
@@ -150,6 +157,38 @@ const mergeRanges = (
   return merged;
 };
 
+/** This matcher works on UTF-16 code units, so a set spans at most this. */
+const MAX_CODE_UNIT = 0xffff;
+
+/**
+ * The ranges a set does NOT cover. Input must be sorted and disjoint.
+ *
+ * This is what lets a negated shorthand appear inside a class. `[\s\S]` — the
+ * standard "any character, newlines included" idiom — used to be refused on the
+ * grounds that `[\D]` "needs set subtraction to express exactly". It does not:
+ * a class is a UNION, and unioning a complement is still a union.
+ */
+const complement = (
+  ranges: readonly (readonly [number, number])[],
+): readonly (readonly [number, number])[] => {
+  const out: (readonly [number, number])[] = [];
+  let next = 0;
+
+  for (const [from, to] of ranges) {
+    if (from > next) {
+      out.push([next, from - 1]);
+    }
+
+    next = Math.max(next, to + 1);
+  }
+
+  if (next <= MAX_CODE_UNIT) {
+    out.push([next, MAX_CODE_UNIT]);
+  }
+
+  return out;
+};
+
 const DIGIT: readonly (readonly [number, number])[] = [[48, 57]];
 const WORD: readonly (readonly [number, number])[] = [
   [48, 57],
@@ -187,8 +226,9 @@ const set = (
   return { classes, negate, ranges: merged };
 };
 
+// `\0` is absent deliberately: it is the start of a legacy OCTAL escape, so it
+// is decoded alongside `\1`..`\7` rather than as a fixed single character.
 const SINGLE_ESCAPES: Readonly<Record<string, number>> = {
-  '0': 0,
   f: 0x0c,
   n: 0x0a,
   r: 0x0d,
@@ -449,6 +489,16 @@ class Parser {
 
         return { kind: 'char', set: set([[code, code]]) };
       }
+
+      /*
+       * `\c` with no control letter after it: Annex B makes the BACKSLASH the
+       * literal, so `/\c/` matches the two characters `\c` and not `c`. Only
+       * the backslash is consumed here; the `c` is then read as an ordinary
+       * character by whoever called us.
+       */
+      this.index += 1;
+
+      return { kind: 'char', set: set([[0x5c, 0x5c]]) };
     }
 
     this.index += 2;
@@ -493,6 +543,49 @@ class Parser {
 
         return set([]);
 
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7': {
+        /*
+         * A LEGACY OCTAL escape (Annex B), up to three digits and never above
+         * 0377. `\0` was previously a fixed NUL and `\1`-`\7` inside a class
+         * fell through to the literal digit, so `[\1]` matched "1" and not
+         * \x01 — wrong in both directions — and `[\x00-\1f]` built the range
+         * \x00 to "1" instead of \x00 to \x1f.
+         *
+         * OUTSIDE a class only `\0` reaches here: `\1`-`\9` are backreferences
+         * there and are refused before this point, which is what JavaScript
+         * does too.
+         */
+        let value = Number(character);
+        let digits = 1;
+
+        while (digits < 3) {
+          const next = this.peek();
+
+          if (!/^[0-7]$/u.test(next)) {
+            break;
+          }
+
+          const widened = value * 8 + Number(next);
+
+          if (widened > 255) {
+            break;
+          }
+
+          value = widened;
+          this.index += 1;
+          digits += 1;
+        }
+
+        return set([[value, value]]);
+      }
+
       default: {
         const single = SINGLE_ESCAPES[character];
         const code = single ?? character.charCodeAt(0);
@@ -534,6 +627,32 @@ class Parser {
       return { code: 0x08, kind: 'char' };
     }
 
+    /*
+     * `\cJ` is a normal way to spell a newline inside a class, and this used to
+     * miss it entirely: `c` fell through to the literal `c`, so `[\cJ]` matched
+     * "c" and "J" and did not match "\n" — wrong in both directions.
+     */
+    if (escaped === 'c') {
+      const letter = this.peek(2);
+
+      /*
+       * A class accepts a WIDER control letter than the rest of a pattern does:
+       * Annex B's `ClassControlLetter` admits a digit or `_` as well, so `[\c0]`
+       * is \x10 while `/\c0/` is the literal `\c0`. Reusing the outside-a-class
+       * rule here made `[^\c0]` reject "c" and "\", which a generated sweep
+       * caught after the hand-written cases all passed.
+       */
+      if (/^[A-Za-z0-9_]$/u.test(letter)) {
+        this.index += 3;
+
+        return { code: letter.charCodeAt(0) % 32, kind: 'char' };
+      }
+
+      this.index += 1;
+
+      return { code: 0x5c, kind: 'char' };
+    }
+
     this.index += 2;
 
     const inner = this.escapeSet(escaped);
@@ -570,8 +689,9 @@ class Parser {
       }
 
       if (item.set.negate) {
-        // `[\D]` needs set subtraction to express exactly; refusing is honest.
-        fail('a negated shorthand inside a character class');
+        ranges.push(...complement(item.set.ranges));
+
+        return;
       }
 
       ranges.push(...item.set.ranges);
@@ -581,40 +701,44 @@ class Parser {
     while (this.index < this.source.length && this.peek() !== ']') {
       const left = this.parseClassAtom();
 
-      // A `-` forms a range only between two single characters, and only when
-      // something other than `]` follows. Otherwise it is a literal dash, which
-      // is what makes `[a-]`, `[-a]` and `[\d-z]` all read correctly.
-      if (
-        left.kind === 'char' &&
-        this.peek() === '-' &&
-        this.peek(1) !== ']' &&
-        this.peek(1) !== ''
-      ) {
-        const dashAt = this.index;
+      // A `-` is only a range separator when something other than `]` follows.
+      // Otherwise it is a literal dash, which is what makes `[a-]` and `[-a]`
+      // read correctly.
+      const separates =
+        this.peek() === '-' && this.peek(1) !== ']' && this.peek(1) !== '';
 
-        this.index += 1;
-
-        const right = this.parseClassAtom();
-
-        if (right.kind === 'char') {
-          if (right.code < left.code) {
-            fail('a character class range whose end is below its start');
-          }
-
-          ranges.push([left.code, right.code]);
-          continue;
-        }
-
-        // `[1-\d]`: JavaScript reads this as three items, not a range.
-        ranges.push([left.code, left.code]);
-        ranges.push([0x2d, 0x2d]);
-        absorb(right);
-        // The dash was consumed as a literal; nothing to rewind.
-        void dashAt;
+      if (!separates) {
+        absorb(left);
         continue;
       }
 
+      this.index += 1;
+
+      const right = this.parseClassAtom();
+
+      if (left.kind === 'char' && right.kind === 'char') {
+        if (right.code < left.code) {
+          fail('a character class range whose end is below its start');
+        }
+
+        ranges.push([left.code, right.code]);
+        continue;
+      }
+
+      /*
+       * A shorthand on EITHER side means no range is formed: JavaScript's
+       * `CharacterRangeOrUnion` reads the three items as a union instead, so
+       * `[1-\d]` is `1`, `-`, `\d`.
+       *
+       * The dash has to be consumed here, by this branch. Leaving it for the
+       * next pass — which is what happened when only the left side was checked
+       * — let it become a fresh range start, so `[\d--z]` compiled to the range
+       * \x2D-\x7A and matched every letter. That is an OVER-match: a filter
+       * admitted records it was asked to reject.
+       */
       absorb(left);
+      ranges.push([0x2d, 0x2d]);
+      absorb(right);
     }
 
     if (this.peek() !== ']') {
@@ -702,6 +826,15 @@ const inRanges = (
  *
  * Folding with a bare `toUpperCase` produced exactly those over-matches.
  */
+const computeCanonical = (code: number): number => {
+  const upper = String.fromCharCode(code).toUpperCase();
+  const upperCode = upper.charCodeAt(0);
+
+  return upper.length !== 1 || (code >= 128 && upperCode < 128)
+    ? code
+    : upperCode;
+};
+
 const CANONICAL = new Map<number, number>();
 
 const canonicalize = (code: number): number => {
@@ -711,10 +844,7 @@ const canonicalize = (code: number): number => {
     return cached;
   }
 
-  const upper = String.fromCharCode(code).toUpperCase();
-  const upperCode = upper.charCodeAt(0);
-  const folded =
-    upper.length !== 1 || (code >= 128 && upperCode < 128) ? code : upperCode;
+  const folded = computeCanonical(code);
 
   // Bounded by the code-unit space, so this cannot grow without limit.
   CANONICAL.set(code, folded);
@@ -722,57 +852,60 @@ const canonicalize = (code: number): number => {
   return folded;
 };
 
+let ORBITS: Map<number, readonly number[]> | null = null;
+
 /**
- * Every character that canonicalizes the same way this one does.
+ * Every character sharing a canonical form, grouped by that form.
  *
- * Needed because folding only the INPUT is not enough: `/σ/i` must match `ς`,
- * and neither is the other's `toUpperCase`. Both reach `Σ`, so the closure runs
- * twice — `ς` → `Σ` → `σ` — and then keeps only the members that really share a
- * canonical form, which is what keeps `ß`, `ı` and the Kelvin sign out.
+ * This is the REVERSE of {@link canonicalize}, and it has to be tabulated rather
+ * than derived, because case conversion is not invertible by applying more case
+ * conversion. `ς` uppercases to `Σ`, but `Σ` lowercases to `σ` and never to `ς`,
+ * so a closure over `toLowerCase`/`toUpperCase` — which is what this used to be
+ * — cannot get from one to the other. `/[α-ς]/i` therefore failed to match `Σ`,
+ * and `/[^α-ς]/i` MATCHED it: an over-match straight through a negated class.
+ * The same hole covered `µ` MICRO SIGN, `ϕ/Φ`, `ϰ/Κ`, `ẚ/Ṡ` and Cyrillic U+1C80+.
+ *
+ * Built once, lazily, and only when an `i` pattern is first compiled — a pattern
+ * without `i` never pays for it. Only orbits with more than one member are kept,
+ * which is a few thousand entries out of the 65,536 scanned.
  */
-const computeFoldCandidates = (code: number): readonly number[] => {
-  const canonical = canonicalize(code);
-  const found = new Set<number>([code]);
+const orbits = (): Map<number, readonly number[]> => {
+  if (ORBITS) {
+    return ORBITS;
+  }
 
-  for (let pass = 0; pass < 2; pass += 1) {
-    for (const member of [...found]) {
-      const character = String.fromCharCode(member);
+  const byCanonical = new Map<number, number[]>();
 
-      for (const variant of [
-        character.toLowerCase(),
-        character.toUpperCase(),
-      ]) {
-        if (variant.length === 1) {
-          found.add(variant.charCodeAt(0));
-        }
-      }
+  for (let code = 0; code <= MAX_CODE_UNIT; code += 1) {
+    // Deliberately NOT the memoised `canonicalize`: filling that cache with
+    // every code unit would cost megabytes to answer questions nobody asked.
+    const canonical = computeCanonical(code);
+    const bucket = byCanonical.get(canonical);
+
+    if (bucket) {
+      bucket.push(code);
+      continue;
+    }
+
+    byCanonical.set(canonical, [code]);
+  }
+
+  const kept = new Map<number, readonly number[]>();
+
+  for (const [canonical, members] of byCanonical) {
+    if (members.length > 1) {
+      kept.set(canonical, members);
     }
   }
 
-  return [...found].filter((member) => canonicalize(member) === canonical);
+  ORBITS = kept;
+
+  return kept;
 };
 
-const FOLD_CANDIDATES = new Map<number, readonly number[]>();
-
-/*
- * MEMOISED because this runs per input character per live instruction on a
- * miss, and each call allocates a Set and several strings. Under a NEGATED class
- * every character is a miss, so `[^\s×490]{900}` over an 800-character value
- * called it 720,000 times and took 45 seconds inside `test()`.
- */
-const foldCandidates = (code: number): readonly number[] => {
-  const cached = FOLD_CANDIDATES.get(code);
-
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  const computed = computeFoldCandidates(code);
-
-  FOLD_CANDIDATES.set(code, computed);
-
-  return computed;
-};
+/** Every character that canonicalizes the same way this one does. */
+const foldCandidates = (code: number): readonly number[] =>
+  orbits().get(canonicalize(code)) ?? [code];
 
 /** Turn a set into a predicate, folding case and widening `.` under `s`. */
 
@@ -782,28 +915,13 @@ const buildPredicate = (
 ): ((code: number) => boolean) => {
   const isDot = source.classes.includes('.');
 
-  /*
-   * Under `i`, the PATTERN side is canonicalized too, once, here.
-   *
-   * Folding only the input is not enough when two lowercase forms share one
-   * uppercase: `Σ.toLowerCase()` is always `σ`, never `ς`, so no amount of
-   * case-flipping the input reaches `ς` from `σ`. `/σ/i` therefore missed `ς`
-   * and Greek search was wrong.
-   *
-   * Adding each single character's canonical form to the set makes both
-   * directions meet in the middle: `{ς}` becomes `{ς, Σ}`, and an input of `σ`
-   * canonicalizes to `Σ` and is found. Multi-character ranges are left alone —
-   * `[a-z]` cannot be expanded cheaply — and are covered by testing the input's
-   * fold candidates below.
-   */
-  const ranges = options.ignoreCase
-    ? mergeRanges([
-        ...source.ranges,
-        ...source.ranges
-          .filter(([from, to]) => from === to)
-          .map(([from]) => [canonicalize(from), canonicalize(from)] as const),
-      ])
-    : source.ranges;
+  const { ranges } = source;
+
+  if (options.ignoreCase) {
+    // Warm the table now, at compile time, so no single character of a scan
+    // pays for a 65,536-entry build partway through.
+    orbits();
+  }
 
   return (code: number): boolean => {
     if (isDot) {
@@ -813,16 +931,19 @@ const buildPredicate = (
     let hit = inRanges(code, ranges);
 
     if (!hit && options.ignoreCase) {
-      // The input's own canonical form, then the handful of characters sharing
-      // it — which is what covers a multi-character range like `[a-z]`.
-      hit = inRanges(canonicalize(code), ranges);
-
-      if (!hit) {
-        for (const candidate of foldCandidates(code)) {
-          if (inRanges(candidate, ranges)) {
-            hit = true;
-            break;
-          }
+      /*
+       * The rule is `∃a ∈ set : Canonicalize(a) === Canonicalize(input)`, so
+       * testing the input's whole ORBIT against the set decides it exactly, in
+       * both directions and for ranges of any width.
+       *
+       * The set used to be widened instead, by adding the canonical form of each
+       * SINGLE-character range. That could not work for a multi-character range,
+       * which is how `/[α-ς]/i` came to miss `Σ`.
+       */
+      for (const candidate of foldCandidates(code)) {
+        if (inRanges(candidate, ranges)) {
+          hit = true;
+          break;
         }
       }
     }

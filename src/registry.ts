@@ -571,9 +571,17 @@ export const defineValueType = <TOperand, TValue = TOperand>(
  *   5. datetime  text passing strict `detectTemporalFormat`, QUOTED OR BARE.
  *                Quoting is a tokenizer convenience, not a semantic signal, so
  *                it must not change which type claims the token. Does NOT claim
- *                bare integers — `1591000000000` is a number — while epoch
- *                queries against `Date` fields still work, because it is the
- *                VALUE side that accepts epochs and `Date`s.
+ *                bare integers — `1591000000000` is a number.
+ *
+ *                A CONSEQUENCE WORTH KNOWING, which this used to state
+ *                backwards: `d:>=1591000000000` against a `Date` field matches
+ *                NOTHING. The operand is claimed by `number` (correctly), and
+ *                `number.coerceValue` misses on every `Date`, so under the
+ *                default `onValueError: 'skip'` the result is silently empty.
+ *                It is the VALUE side of `datetime` that accepts epochs and
+ *                `Date`s — but `datetime` never sees the operand. Write the
+ *                date (`d:>=2020-06-01`) and every storage shape works,
+ *                including epoch numbers.
  *   6. number    unquoted numeric text
  *   7. string    TOTAL — claims every operand, and has no `ordering`
  *

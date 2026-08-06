@@ -30,6 +30,12 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/**/*", "test/**/*", "*.config.ts", "playground.ts"],
+  "include": [
+    "src/**/*",
+    "test/**/*",
+    "*.config.ts",
+    "playground.ts",
+    "scripts/**/*"
+  ],
   "exclude": ["dist", "node_modules", "coverage"]
 }

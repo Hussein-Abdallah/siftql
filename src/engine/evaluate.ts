@@ -670,7 +670,9 @@ export const repairUnresolvableHoles = (
       case 'ParenthesizedExpression': {
         const inner = repair(node.expression, depth + 1);
 
-        return inner === node.expression ? node : { ...node, expression: inner };
+        return inner === node.expression
+          ? node
+          : { ...node, expression: inner };
       }
 
       case 'UnaryOperator': {

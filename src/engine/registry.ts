@@ -1,5 +1,10 @@
 import { withoutFailurePolicy } from '../registry.js';
-import { nameOf, readOrdering, rememberName, resolveTypeInput } from './consumer.js';
+import {
+  nameOf,
+  readOrdering,
+  rememberName,
+  resolveTypeInput,
+} from './consumer.js';
 import { SiftQLConfigError } from '../errors.js';
 import type {
   AnyValueType,
@@ -47,7 +52,7 @@ const assertUniqueNames = (types: readonly AnyValueType[]): void => {
       name = type.name;
     } catch (error) {
       throw new SiftQLConfigError(
-        'Reading a value type\'s name threw. A name must be a plain string.',
+        "Reading a value type's name threw. A name must be a plain string.",
         { cause: error },
       );
     }

@@ -2333,7 +2333,9 @@ describe('P10: invariants that held only by construction', () => {
       const fixed = PER_TYPE[run];
       const q = fixed ?? query(next);
       const item =
-        fixed !== undefined || run % 2 === 0 ? pick(next, LIKELY) : record(next);
+        fixed !== undefined || run % 2 === 0
+          ? pick(next, LIKELY)
+          : record(next);
 
       let hits;
 

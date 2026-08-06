@@ -234,7 +234,7 @@ export const wildcardType: ValueType<CompiledWildcard, string> =
       // Longest-literal-first at each position, then skip past it: exactly the
       // non-overlapping, longest-alternative-wins walk the old `(?:ab|a)g`
       // pattern performed.
-      for (let at = 0; at < haystack.length; ) {
+      for (let at = 0; at < haystack.length;) {
         const hit = operand.literals.find((literal) =>
           haystack.startsWith(literal, at),
         );

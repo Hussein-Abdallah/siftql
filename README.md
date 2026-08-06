@@ -298,18 +298,18 @@ key, and posted to a worker.
 
 ### Options
 
-| option             | default     | meaning                                           |
-| ------------------ | ----------- | ------------------------------------------------- |
-| `types`            | `[]`        | custom value types                                |
-| `typeStrategy`     | `'prepend'` | `prepend` \| `append` \| `replace`                |
-| `dateFormat`       | —           | declared non-ISO layout(s)                        |
-| `parseDate`        | —           | pluggable date parser                             |
-| `matchKeys`        | `false`     | also match object _keys_                          |
-| `onValueError`     | `'skip'`    | `'skip'` \| `'throw'` for unreadable field values |
-| `onRecovered`      | `'prune'`   | `'prune'` \| `'throw'` for tolerant-mode holes    |
-| `tolerant`         | `false`     | best-effort parsing for search-as-you-type        |
+| option             | default     | meaning                                                                            |
+| ------------------ | ----------- | ---------------------------------------------------------------------------------- |
+| `types`            | `[]`        | custom value types                                                                 |
+| `typeStrategy`     | `'prepend'` | `prepend` \| `append` \| `replace`                                                 |
+| `dateFormat`       | —           | declared non-ISO layout(s)                                                         |
+| `parseDate`        | —           | pluggable date parser                                                              |
+| `matchKeys`        | `false`     | also match object _keys_                                                           |
+| `onValueError`     | `'skip'`    | `'skip'` \| `'throw'` for unreadable field values                                  |
+| `onRecovered`      | `'prune'`   | `'prune'` \| `'throw'` for tolerant-mode holes                                     |
+| `tolerant`         | `false`     | best-effort parsing for search-as-you-type                                         |
 | `regexGuard`       | `true`      | refuse regexes the linear matcher cannot take, instead of running them on `RegExp` |
-| `maxPatternLength` | `1000`      | longest accepted regex source                     |
+| `maxPatternLength` | `1000`      | longest accepted regex source                                                      |
 
 ### Limits
 
@@ -318,15 +318,15 @@ exist so that a tree the parser produces is always one the serializer and the
 evaluator can walk — a query that parses and then fails downstream would be the
 worst of both. All are exported.
 
-| Constant                | Value     | What it bounds                                  |
-| ----------------------- | --------- | ----------------------------------------------- |
-| `MAX_CLAUSES`           | `2000`    | clauses in one query                            |
-| `MAX_DEPTH`             | `200`     | nesting depth while parsing                     |
-| `MAX_FIELD_SEGMENTS`    | `32`      | dotted segments in one field path (`a.b.c` = 3) |
-| `MAX_WILDCARD_SEGMENTS` | `512`     | segments in one wildcard pattern                |
-| `MAX_AST_NODES`         | `500000`  | node visits when a tree is expanded             |
-| `MAX_AST_DEPTH`         | `2200`    | depth of a hand-built or deserialized tree      |
-| `maxPatternLength`      | `1000`    | regex source length (an option, not a constant) |
+| Constant                | Value    | What it bounds                                  |
+| ----------------------- | -------- | ----------------------------------------------- |
+| `MAX_CLAUSES`           | `2000`   | clauses in one query                            |
+| `MAX_DEPTH`             | `200`    | nesting depth while parsing                     |
+| `MAX_FIELD_SEGMENTS`    | `32`     | dotted segments in one field path (`a.b.c` = 3) |
+| `MAX_WILDCARD_SEGMENTS` | `512`    | segments in one wildcard pattern                |
+| `MAX_AST_NODES`         | `500000` | node visits when a tree is expanded             |
+| `MAX_AST_DEPTH`         | `2200`   | depth of a hand-built or deserialized tree      |
+| `maxPatternLength`      | `1000`   | regex source length (an option, not a constant) |
 
 `MAX_AST_NODES` is the one that binds in practice, because what expands is the
 PRODUCT of clause count and segments per clause — per-clause caps alone cannot
@@ -337,7 +337,6 @@ consumes the AST.
 Tolerant mode does **not** relax these. It absorbs input that is incomplete or
 malformed; a structural limit is a resource guard, and a search box does not
 reach one by accident.
-
 
 ### Errors: wrong query vs dirty data
 
@@ -497,7 +496,6 @@ divergence. The leap-day row also credited liqe with a check it does not perform
 — it throws the same error for `2021-02-29`, for `2021-13-01` and for a
 perfectly valid date, because it never examines the value at all.
 
-
 ## Migrating from liqe
 
 The syntax is compatible; two behaviours are not.
@@ -597,7 +595,7 @@ seconds per kilobyte of value — reintroducing, through the fix, the exact hang
 the matcher exists to remove.
 
 Refusing is the honest answer while that is true. Only a body that can match
-*nothing* is affected: `a*`, `(?:ab)*`, `(\s*,\s*)+` and `(\w+\s?)*` are all
+_nothing_ is affected: `a*`, `(?:ab)*`, `(\s*,\s*)+` and `(\w+\s?)*` are all
 fine, as are the catastrophic shapes this section opens with.
 
 Everything else works: literals, character classes, `.`, `\d \w \s \b`, `\cX`,
@@ -613,7 +611,7 @@ Patterns that `RegExp` itself rejects are rejected here too — `a{2}{3}`, `^*`,
 another under `false`.
 
 One cost is worth stating plainly. `highlight()` on a regex walks the value once
-per match, and a pattern that matches at *every* position while keeping a match
+per match, and a pattern that matches at _every_ position while keeping a match
 alive to the right — `(?:.*;)?` — costs O(value²) to locate. `RegExp` is
 quadratic on the same patterns; this matcher's constant is larger. Rather than
 run away, the walk is bounded and reports **no ranges** for such a pattern: the

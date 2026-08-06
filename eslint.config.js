@@ -49,9 +49,9 @@ export default tseslint.config(
     ...tseslint.configs.disableTypeChecked,
   },
   {
-    // The examples are a console program by design: printing real output is
-    // the entire point of the file, and it never ships (files: ["dist"]).
-    files: ['examples/**/*.mjs'],
+    // A console program by design: printing real output is the entire point of
+    // these files, and neither ships (package.json `files` is ["dist"]).
+    files: ['examples/**/*.mjs', 'scripts/**/*.ts'],
     languageOptions: {
       globals: { console: 'readonly', process: 'readonly' },
     },

@@ -136,7 +136,31 @@ export const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
 ]);
 
 /** Words that can never be a bare term: they are grammar keywords. */
-export const RESERVED_WORDS: ReadonlySet<string> = new Set([
+/**
+ * A set nothing can add to, which `Object.freeze` does NOT give you.
+ *
+ * `Object.freeze(new Set(…))` freezes the object's own properties and leaves
+ * `add`, `delete` and `clear` fully working — while `Object.isFrozen` returns
+ * `true`, so the obvious check passes on a mutable object. These sets are
+ * module-global and decide what the parser reserves and what `isSiftQLNode`
+ * accepts, so one library calling `.add` would change those answers for every
+ * engine in the process. That is the exact hazard `registry.ts` refuses a global
+ * type registry over; it should not be reintroduced by a `Set`.
+ */
+const sealedSet = (members: readonly string[]): ReadonlySet<string> => {
+  const set = new Set(members);
+  const refuse = (): never => {
+    throw new TypeError(
+      "This set is part of siftql's published contract and cannot be modified.",
+    );
+  };
+
+  return Object.freeze(
+    Object.assign(set, { add: refuse, clear: refuse, delete: refuse }),
+  );
+};
+
+export const RESERVED_WORDS: ReadonlySet<string> = sealedSet([
   'AND',
   'OR',
   'NOT',
@@ -153,7 +177,7 @@ export const RESERVED_WORDS: ReadonlySet<string> = new Set([
  * the circularity ("escaping `*` would make wildcards unserializable")
  * disappears.
  */
-export const RESERVED_CHARACTERS: ReadonlySet<string> = new Set([
+export const RESERVED_CHARACTERS: ReadonlySet<string> = sealedSet([
   // Every character below is ASCII punctuation or whitespace, so there is no
   // grapheme cluster, surrogate pair or combining mark for the spread to split.
   // eslint-disable-next-line @typescript-eslint/no-misused-spread
@@ -833,20 +857,18 @@ export type AstVisitor<R = void> = {
  */
 import { safeIsArray } from './internal.js';
 
-export const ROOT_NODE_TYPES: ReadonlySet<string> = Object.freeze(
-  new Set<string>([
-    'EmptyExpression',
-    'LiteralExpression',
-    'LogicalExpression',
-    'MissingExpression',
-    'ParenthesizedExpression',
-    'RangeExpression',
-    'RegexExpression',
-    'Tag',
-    'UnaryOperator',
-    'WildcardExpression',
-  ] satisfies SiftQLAst['type'][]),
-);
+export const ROOT_NODE_TYPES: ReadonlySet<string> = sealedSet([
+  'EmptyExpression',
+  'LiteralExpression',
+  'LogicalExpression',
+  'MissingExpression',
+  'ParenthesizedExpression',
+  'RangeExpression',
+  'RegexExpression',
+  'Tag',
+  'UnaryOperator',
+  'WildcardExpression',
+] satisfies SiftQLAst['type'][]);
 
 /**
  * Is this a siftql AST root?

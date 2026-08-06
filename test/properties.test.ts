@@ -10,6 +10,9 @@ import {
   resolveTemporal,
   serialize,
   test as matches,
+  RESERVED_CHARACTERS,
+  RESERVED_WORDS,
+  ROOT_NODE_TYPES,
   type SiftQLAst,
 } from '../src/index.js';
 import { compileLinear } from '../src/regex/linear.js';
@@ -1437,7 +1440,9 @@ describe('P6: spans say where the match really is', () => {
           hit !== null;
           hit = native.exec(subject)
         ) {
-          want.push(`${String(hit.index)}-${String(hit.index + hit[0].length)}`);
+          want.push(
+            `${String(hit.index)}-${String(hit.index + hit[0].length)}`,
+          );
 
           if (hit[0].length === 0) {
             native.lastIndex += 1;
@@ -1470,9 +1475,8 @@ describe('P6: spans say where the match really is', () => {
     let checked = 0;
 
     for (let run = 0; run < RUNS * 3; run += 1) {
-      const value = Array.from(
-        { length: 1 + Math.floor(next() * 8) },
-        () => pick(next, Array.from('abAB sſKkİß')),
+      const value = Array.from({ length: 1 + Math.floor(next() * 8) }, () =>
+        pick(next, Array.from('abAB sſKkİß')),
       ).join('');
       const needle = pick(next, ['a', 'b', 'A', 's', 'k', 'ab']);
       const q = pick(next, [needle, `v:*${needle}*`, `v:${needle}`]);
@@ -1734,7 +1738,9 @@ describe('P6: the round-trip law over raw characters', () => {
 
       try {
         if (strip(parse(once)) !== strip(ast)) {
-          violations.push(`I4: ${JSON.stringify(q)} -> ${JSON.stringify(once)}`);
+          violations.push(
+            `I4: ${JSON.stringify(q)} -> ${JSON.stringify(once)}`,
+          );
         } else if (serialize(parse(once)) !== once) {
           violations.push(`idempotence: ${JSON.stringify(once)}`);
         }
@@ -1956,9 +1962,12 @@ describe('P7: a hostile value TYPE cannot escape a non-SiftQLError', () => {
     const check = (type: unknown): void => {
       for (const q of QUERIES) {
         for (const act of [
-          () => createEngine({ types: [type] as never }).test(q, { n: 5, v: 'a' }),
           () =>
-            createEngine({ types: [type] as never }).filter(q, [{ n: 5, v: 'a' }]),
+            createEngine({ types: [type] as never }).test(q, { n: 5, v: 'a' }),
+          () =>
+            createEngine({ types: [type] as never }).filter(q, [
+              { n: 5, v: 'a' },
+            ]),
           () =>
             createEngine({ types: [type] as never }).highlight(q, {
               n: 5,
@@ -2128,7 +2137,9 @@ describe('P8: a built tree and a parsed one are the same tree', () => {
           return builders.group(tree(depth - 1) as never);
         default:
           return builders.tag(
-            builders.field(...(pick(next, [['a'], ['a', 'b'], ['x']]) as [string])),
+            builders.field(
+              ...(pick(next, [['a'], ['a', 'b'], ['x']]) as [string]),
+            ),
             leaf() as never,
           );
       }
@@ -2256,5 +2267,142 @@ describe('P9: everything parse() accepts, the rest of the package accepts', () =
 
     didWork('cap refusals', refused, 2);
     expect(refused).toBe(2);
+  });
+});
+
+describe('P10: invariants that held only by construction', () => {
+  it('never lets a built-in publish a RegExp, and never emits both forms', () => {
+    /*
+     * Two promises guaranteed by one early `return` in `emit()`, asserted at
+     * individual call sites and never as invariants. `nullType`, `booleanType`
+     * and `datetime` still carry a `highlight` hook — all three return null
+     * today — so a one-line change to any of them puts a RegExp back into
+     * public output while `registry.ts`'s "every built-in reports spans" stays
+     * silently false.
+     */
+    const next = rng(5050);
+    const violations: string[] = [];
+    let inspected = 0;
+
+    /*
+     * Generated records seldom match generated queries, so the corpus is padded
+     * with items shaped to hit — otherwise the vacuity guard below fires on a
+     * property that is working, which is what it did at the first attempt.
+     */
+    const LIKELY = [
+      { name: 'ada', tags: ['red', 'blue'] },
+      { d: '2020-06-01', n: 3 },
+      { 'content-type': 'json', name: 'in progress' },
+    ];
+
+    for (let run = 0; run < RUNS * 2; run += 1) {
+      const q = query(next);
+      const item = run % 2 === 0 ? pick(next, LIKELY) : record(next);
+
+      let hits;
+
+      try {
+        hits = highlight(q, item);
+      } catch {
+        continue;
+      }
+
+      for (const hit of hits) {
+        inspected += 1;
+
+        if (hit.query !== undefined) {
+          violations.push(`${q} published a RegExp: ${String(hit.query)}`);
+        }
+
+        if (hit.query !== undefined && hit.ranges !== undefined) {
+          violations.push(`${q} published both ranges and query`);
+        }
+      }
+    }
+
+    didWork('highlights inspected', inspected, RUNS / 10);
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+
+  it('keeps its published sets genuinely immutable', () => {
+    /*
+     * `Object.freeze` on a `Set` freezes the object's own properties and leaves
+     * `add`/`delete`/`clear` working, while `Object.isFrozen` returns true — so
+     * the obvious check passed on a mutable object. These decide what the parser
+     * reserves and what `isSiftQLNode` accepts, process-wide.
+     */
+    const sets: readonly (readonly [string, ReadonlySet<string>])[] = [
+      ['ROOT_NODE_TYPES', ROOT_NODE_TYPES],
+      ['RESERVED_WORDS', RESERVED_WORDS],
+      ['RESERVED_CHARACTERS', RESERVED_CHARACTERS],
+    ];
+    const violations: string[] = [];
+
+    for (const [name, set] of sets) {
+      const before = set.size;
+
+      for (const method of ['add', 'delete', 'clear'] as const) {
+        try {
+          (set as unknown as Record<string, (value?: string) => void>)[
+            method
+          ]?.('x');
+          violations.push(`${name}.${method}() was allowed`);
+        } catch {
+          // Refusing is the whole point.
+        }
+      }
+
+      if (set.size !== before) {
+        violations.push(`${name} changed size`);
+      }
+    }
+
+    didWork('published sets checked', sets.length, 3);
+    expect(violations).toEqual([]);
+  });
+
+  it('routes every tolerant-mode failure through the same catch', () => {
+    /*
+     * `repairUnresolvableHoles` catches only SiftQLOperandError. Any other
+     * SiftQLError raised while compiling escapes tolerant mode entirely, and
+     * that catch set IS the boundary of the tolerance promise — so it is worth
+     * an assertion rather than a reading of the source.
+     */
+    const engine = createEngine({ tolerant: true });
+    const rows = [{ a: 1, d: '2020-06-01', name: 'ada' }];
+    const violations: string[] = [];
+    let attempted = 0;
+
+    // Everything here is incomplete or malformed, which is what tolerant mode
+    // promises to absorb. Structural limits are deliberately absent: those
+    // throw by design, and the docs now say so.
+    for (const q of [
+      ':',
+      '+',
+      '[?',
+      '//=',
+      '/a/ii',
+      'a:[1 T',
+      'd:>=2020-',
+      'name:(ada OR /(a+)\\1/)',
+      'a:{}',
+      'a:[ TO 9]',
+      '}""x:',
+      'NOT',
+      'a AND',
+      'a OR OR b',
+    ]) {
+      attempted += 1;
+
+      try {
+        engine.filter(q, rows);
+        engine.highlight(q, rows[0]);
+      } catch (error) {
+        violations.push(`${JSON.stringify(q)}: ${(error as Error).name}`);
+      }
+    }
+
+    didWork('tolerant shapes', attempted, 14);
+    expect(violations.slice(0, 5)).toEqual([]);
   });
 });

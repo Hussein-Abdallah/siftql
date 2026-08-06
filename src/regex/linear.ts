@@ -52,15 +52,34 @@
  * The VM is `O(program × input)`, so the program has to be bounded for the time
  * bound to mean anything. Counted repetitions are compiled by DUPLICATION —
  * `a{3}` is three copies — so `(a{1,99}){1,99}` is about 9,800 instructions and
- * `a{1000}{1000}` is a million. Refusing past this point keeps the worst case at
- * roughly 4,000 × input steps, which is tens of milliseconds on a long value.
+ * `a{1000}{1000}` is a million.
  *
  * A pattern that exceeds it is refused, not silently truncated.
+ *
+ * BOUNDING THE COUNT OF STEPS IS NOT ENOUGH ON ITS OWN, which is a mistake this
+ * file made for a whole release cycle: the comment here used to promise "tens of
+ * milliseconds on a long value" and `[^\s×490]{900}` with `i` took 45 seconds
+ * inside `test()` at stock settings. Every step was counted; no step's COST was.
+ * A character class could hold thousands of ranges scanned linearly, and the
+ * case-fold closure was recomputed per character per instruction. So a step is
+ * now bounded too — see {@link MAX_CLASS_RANGES}, the binary search in
+ * {@link inRanges}, and the memo tables under {@link canonicalize} — and the
+ * claim above is measured rather than asserted.
  */
 const MAX_PROGRAM = 4000;
 
 /** Longest counted repetition, so `a{1000000}` fails fast rather than slowly. */
 const MAX_REPEAT = 1000;
+
+/**
+ * Most DISJOINT ranges one character class may hold once merged.
+ *
+ * Overlap is free — `[\s\s\s…]` collapses to the handful of ranges `\s` really
+ * covers — so this only bites a class that genuinely names hundreds of separate
+ * intervals, and it bounds the per-character cost of {@link inRanges} at
+ * `log2(512) = 9` comparisons no matter what the pattern says.
+ */
+const MAX_CLASS_RANGES = 512;
 
 /* ------------------------------------------------------------------------- *
  * 1. PARSE — regex source to a syntax tree
@@ -98,6 +117,39 @@ const fail = (reason: string): never => {
   throw new ParseFailure(reason);
 };
 
+/**
+ * Sort a set's ranges and fuse everything that touches or overlaps.
+ *
+ * Two things depend on this. {@link inRanges} binary-searches, which is only
+ * correct on sorted, disjoint ranges. And it is what makes a hostile class
+ * cheap: `[\s×490]` names 7,350 ranges and covers 15, so merging turns a
+ * 7,350-entry linear scan per character per instruction into a 15-entry one.
+ */
+const mergeRanges = (
+  ranges: readonly (readonly [number, number])[],
+): readonly (readonly [number, number])[] => {
+  if (ranges.length < 2) {
+    return ranges;
+  }
+
+  const sorted = [...ranges].sort((left, right) => left[0] - right[0]);
+  const merged: [number, number][] = [];
+
+  for (const [from, to] of sorted) {
+    const last = merged[merged.length - 1];
+
+    // `+ 1` fuses adjacency as well as overlap: [97,98] and [99,100] are [97,100].
+    if (last && from <= last[1] + 1) {
+      last[1] = Math.max(last[1], to);
+      continue;
+    }
+
+    merged.push([from, to]);
+  }
+
+  return merged;
+};
+
 const DIGIT: readonly (readonly [number, number])[] = [[48, 57]];
 const WORD: readonly (readonly [number, number])[] = [
   [48, 57],
@@ -110,10 +162,12 @@ const SPACE_CODES = [
   0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0xa0, 0x1680, 0x2028, 0x2029, 0x202f,
   0x205f, 0x3000, 0xfeff,
 ];
-const SPACE: readonly (readonly [number, number])[] = [
+// Merged because `inRanges` binary-searches: the literal list below is not in
+// ascending order, and an unsorted array silently makes the search miss.
+const SPACE: readonly (readonly [number, number])[] = mergeRanges([
   ...SPACE_CODES.map((code) => [code, code] as const),
   [0x2000, 0x200a],
-];
+]);
 
 const LINE_TERMINATORS = new Set([0x0a, 0x0d, 0x2028, 0x2029]);
 
@@ -121,7 +175,17 @@ const set = (
   ranges: readonly (readonly [number, number])[],
   negate = false,
   classes: readonly string[] = [],
-): CharSet => ({ classes, negate, ranges });
+): CharSet => {
+  const merged = mergeRanges(ranges);
+
+  if (merged.length > MAX_CLASS_RANGES) {
+    fail(
+      `a character class covering more than ${String(MAX_CLASS_RANGES)} separate ranges`,
+    );
+  }
+
+  return { classes, negate, ranges: merged };
+};
 
 const SINGLE_ESCAPES: Readonly<Record<string, number>> = {
   '0': 0,
@@ -580,12 +644,44 @@ interface Options {
   readonly dotAll: boolean;
 }
 
+/**
+ * Is `code` covered? `ranges` must be sorted and disjoint — {@link mergeRanges}.
+ *
+ * Linear below a handful of ranges because that is nearly every real class and
+ * the loop beats the branching; binary above it, so a class naming hundreds of
+ * intervals costs nine comparisons instead of hundreds. This is called once per
+ * live instruction per input character, so its constant is the VM's constant.
+ */
 const inRanges = (
   code: number,
   ranges: readonly (readonly [number, number])[],
 ): boolean => {
-  for (const [from, to] of ranges) {
-    if (code >= from && code <= to) {
+  if (ranges.length <= 8) {
+    for (const [from, to] of ranges) {
+      if (code >= from && code <= to) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  let low = 0;
+  let high = ranges.length - 1;
+
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const span = ranges[middle];
+
+    if (!span) {
+      break;
+    }
+
+    if (code < span[0]) {
+      high = middle - 1;
+    } else if (code > span[1]) {
+      low = middle + 1;
+    } else {
       return true;
     }
   }
@@ -606,16 +702,24 @@ const inRanges = (
  *
  * Folding with a bare `toUpperCase` produced exactly those over-matches.
  */
-const canonicalize = (code: number): number => {
-  const upper = String.fromCharCode(code).toUpperCase();
+const CANONICAL = new Map<number, number>();
 
-  if (upper.length !== 1) {
-    return code;
+const canonicalize = (code: number): number => {
+  const cached = CANONICAL.get(code);
+
+  if (cached !== undefined) {
+    return cached;
   }
 
+  const upper = String.fromCharCode(code).toUpperCase();
   const upperCode = upper.charCodeAt(0);
+  const folded =
+    upper.length !== 1 || (code >= 128 && upperCode < 128) ? code : upperCode;
 
-  return code >= 128 && upperCode < 128 ? code : upperCode;
+  // Bounded by the code-unit space, so this cannot grow without limit.
+  CANONICAL.set(code, folded);
+
+  return folded;
 };
 
 /**
@@ -626,7 +730,7 @@ const canonicalize = (code: number): number => {
  * twice — `ς` → `Σ` → `σ` — and then keeps only the members that really share a
  * canonical form, which is what keeps `ß`, `ı` and the Kelvin sign out.
  */
-const foldCandidates = (code: number): number[] => {
+const computeFoldCandidates = (code: number): readonly number[] => {
   const canonical = canonicalize(code);
   const found = new Set<number>([code]);
 
@@ -648,9 +752,31 @@ const foldCandidates = (code: number): number[] => {
   return [...found].filter((member) => canonicalize(member) === canonical);
 };
 
+const FOLD_CANDIDATES = new Map<number, readonly number[]>();
+
+/*
+ * MEMOISED because this runs per input character per live instruction on a
+ * miss, and each call allocates a Set and several strings. Under a NEGATED class
+ * every character is a miss, so `[^\s×490]{900}` over an 800-character value
+ * called it 720,000 times and took 45 seconds inside `test()`.
+ */
+const foldCandidates = (code: number): readonly number[] => {
+  const cached = FOLD_CANDIDATES.get(code);
+
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const computed = computeFoldCandidates(code);
+
+  FOLD_CANDIDATES.set(code, computed);
+
+  return computed;
+};
+
 /** Turn a set into a predicate, folding case and widening `.` under `s`. */
 
-const predicate = (
+const buildPredicate = (
   source: CharSet,
   options: Options,
 ): ((code: number) => boolean) => {
@@ -671,12 +797,12 @@ const predicate = (
    * fold candidates below.
    */
   const ranges = options.ignoreCase
-    ? [
+    ? mergeRanges([
         ...source.ranges,
         ...source.ranges
           .filter(([from, to]) => from === to)
           .map(([from]) => [canonicalize(from), canonicalize(from)] as const),
-      ]
+      ])
     : source.ranges;
 
   return (code: number): boolean => {
@@ -703,6 +829,42 @@ const predicate = (
 
     return source.negate ? !hit : hit;
   };
+};
+
+const PREDICATES = new WeakMap<CharSet, Map<string, (code: number) => boolean>>();
+
+/**
+ * {@link buildPredicate}, but built once per distinct set.
+ *
+ * Counted repetitions compile by duplicating the body, and every copy shares the
+ * SAME `CharSet` object — so `[…]{1000}` used to rebuild and re-merge the same
+ * range list a thousand times before the program-size limit refused the pattern.
+ * That is why a rejected pattern could still burn 2.7 seconds of uninterruptible
+ * CPU: the work happened on the way to the refusal.
+ */
+const predicate = (
+  source: CharSet,
+  options: Options,
+): ((code: number) => boolean) => {
+  const key = `${options.ignoreCase ? 'i' : ''}${options.dotAll ? 's' : ''}`;
+  let byOptions = PREDICATES.get(source);
+
+  if (!byOptions) {
+    byOptions = new Map();
+    PREDICATES.set(source, byOptions);
+  }
+
+  const cached = byOptions.get(key);
+
+  if (cached) {
+    return cached;
+  }
+
+  const built = buildPredicate(source, options);
+
+  byOptions.set(key, built);
+
+  return built;
 };
 
 class Program {
@@ -863,18 +1025,26 @@ const isWordCode = (code: number | undefined): boolean =>
   code !== undefined && inRanges(code, WORD);
 
 /**
- * Does `program` match anywhere in `input`?
+ * Does `program` match anywhere in `input` at or after `begin`?
  *
  * ONE pass. `clist` holds every instruction the pattern could be at right now;
  * `seen` keeps each instruction in it at most once, which is the entire reason
  * this cannot blow up — a pattern with exponentially many ways to match still
  * has only as many STATES as it has instructions.
+ *
+ * `begin` is an OFFSET, never a slice. Resuming a scan by passing
+ * `input.slice(at)` looks equivalent and is not: every assertion is positional,
+ * so a fresh string gives `^` a new start and `\b` an empty left context. That
+ * made `spans()` disagree with `RegExp` in both directions — `/^a/` over "aa"
+ * reported two matches where there is one, and `/\Ba/` over "aaa" dropped one —
+ * so the whole input is always passed and only the starting position moves.
  */
 const run = (
   code: readonly Inst[],
   input: string,
   options: Options,
   wantSpan: boolean,
+  begin = 0,
 ): { readonly start: number; readonly end: number } | boolean | null => {
   let clist: number[] = [];
   let nlist: number[] = [];
@@ -958,7 +1128,7 @@ const run = (
 
   let matched: { readonly start: number; readonly end: number } | null = null;
 
-  for (let position = 0; position <= input.length; position += 1) {
+  for (let position = begin; position <= input.length; position += 1) {
     /*
      * Unanchored: a fresh attempt may start at any position — but only until
      * something matches, or a later start could win over an earlier one and the
@@ -1107,24 +1277,26 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
           let at = 0;
 
           while (at <= input.length) {
-            const hit = run(code, input.slice(at), options, true);
+            const hit = run(code, input, options, true, at);
 
             if (hit === null || typeof hit === 'boolean') {
               break;
             }
 
-            const start = at + hit.start;
-            const end = at + hit.end;
+            const { end, start } = hit;
 
             found.push({ end, start });
 
-            // A zero-length match would otherwise pin the cursor forever — the
-            // same trap `matchesEmpty` exists to keep out of a caller's loop.
+            /*
+             * A zero-length match would otherwise pin the cursor forever — the
+             * same trap `matchesEmpty` exists to keep out of a caller's loop.
+             *
+             * `at` therefore rises by at least one every time round, so the walk
+             * runs at most `input.length + 1` times and needs no other cap. It
+             * used to stop after 10,001 spans, which silently returned a partial
+             * answer that a caller could not distinguish from a complete one.
+             */
             at = end > start ? end : start + 1;
-
-            if (found.length > 10_000) {
-              break;
-            }
           }
 
           return found;

@@ -13,6 +13,11 @@ import {
   type SiftQLAst,
 } from '../src/index.js';
 import { compileLinear } from '../src/regex/linear.js';
+import {
+  MAX_CLAUSES,
+  MAX_FIELD_SEGMENTS,
+  MAX_WILDCARD_SEGMENTS,
+} from '../src/limits.js';
 
 /**
  * EXECUTABLE PROPERTIES.
@@ -2138,5 +2143,101 @@ describe('P8: a built tree and a parsed one are the same tree', () => {
 
     didWork('builder round-trip', checked, RUNS / 2);
     expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+describe('P9: everything parse() accepts, the rest of the package accepts', () => {
+  it('holds for the largest query the parser can emit', () => {
+    /*
+     * The invariant `limits.ts` is designed around, asserted for the first time.
+     *
+     * `MAX_AST_NODES` was derived from parenthesis-heavy shapes only, and
+     * nothing capped field-path or wildcard segment counts — so a 990 kB query
+     * of 2,000 clauses with 120-segment paths parsed happily and was then
+     * refused by `serialize()`, `filter()`, `test()` AND `highlight()`, with an
+     * error whose own text says "this is a defect in siftql". The existing
+     * coverage exercised hand-built shared subtrees, which cannot find this.
+     *
+     * The maximal query is built from the caps themselves, so raising any of
+     * them without re-deriving the node budget fails here rather than in a
+     * consumer's application.
+     */
+    const path = Array.from(
+      { length: MAX_FIELD_SEGMENTS },
+      (_, index) => `f${String(index)}`,
+    ).join('.');
+    const failures: string[] = [];
+    let accepted = 0;
+
+    /*
+     * A LADDER, not one fixed "maximal" query, because what the parser accepts
+     * is the product of several caps and a node budget. The invariant is
+     * conditional and that is the point: whatever `parse()` accepts, every
+     * consumer of the AST must accept too. A query the parser refuses is fine;
+     * a query it accepts and `serialize()` then rejects is the defect.
+     */
+    for (const clauses of [1, 10, 100, 500, MAX_CLAUSES]) {
+      for (const stars of [1, 8, 64, 200]) {
+        const value = `${'a*'.repeat(stars)}b`;
+        const query = Array.from(
+          { length: clauses },
+          () => `${path}:${value}`,
+        ).join(' OR ');
+
+        let ast: SiftQLAst;
+
+        try {
+          ast = parse(query);
+        } catch {
+          // Refused up front, which is the correct outcome for anything past a
+          // cap — nothing downstream can then disagree about it.
+          continue;
+        }
+
+        accepted += 1;
+
+        for (const [label, act] of [
+          ['serialize', () => serialize(ast)],
+          ['filter', () => filter(ast, [{ f0: 'ab' }])],
+          ['test', () => matches(ast, { f0: 'ab' })],
+          ['highlight', () => highlight(ast, { f0: 'ab' })],
+        ] as const) {
+          try {
+            act();
+          } catch (error) {
+            failures.push(
+              `${String(clauses)} clauses x ${String(stars)} stars: parse() accepted it, ${label}() did not — ${(error as Error).message.slice(0, 60)}`,
+            );
+          }
+        }
+      }
+    }
+
+    didWork('parse-accepted queries checked downstream', accepted, 4);
+    expect(failures).toEqual([]);
+  });
+
+  it('refuses past each cap rather than emitting a tree nothing can use', () => {
+    // The other half: exceeding a cap must be a located parse error, not a tree
+    // that only fails later somewhere else.
+    const overPath = Array.from(
+      { length: MAX_FIELD_SEGMENTS + 1 },
+      (_, index) => `f${String(index)}`,
+    ).join('.');
+    const overGlob = `${'a*'.repeat(MAX_WILDCARD_SEGMENTS)}b`;
+    let refused = 0;
+
+    for (const query of [`${overPath}:x`, `v:${overGlob}`]) {
+      try {
+        parse(query);
+      } catch (error) {
+        if (isSiftQLError(error)) {
+          refused += 1;
+        }
+      }
+    }
+
+    didWork('cap refusals', refused, 2);
+    expect(refused).toBe(2);
   });
 });

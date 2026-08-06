@@ -43,6 +43,40 @@ export const MAX_CLAUSES = 2000;
 export const MAX_AST_DEPTH = MAX_CLAUSES + MAX_DEPTH;
 
 /**
+ * Most dotted segments one field path may have: `a.b.c` is three.
+ *
+ * Exists so {@link MAX_AST_NODES}'s derivation is true. Nothing capped this or
+ * {@link MAX_WILDCARD_SEGMENTS}, so the "largest tree `parse()` can emit" was
+ * not 11,996 visits — a 2,000-clause query of 120-segment paths is 990 kB of
+ * text, parses fine, and expands to over 500,000 visits, at which point
+ * `serialize()`, `filter()`, `test()` and `highlight()` all refuse the tree
+ * `parse()` had just produced. That is the exact failure this file's opening
+ * paragraph says it is designed to prevent.
+ *
+ * 32 is far past any real record shape — the deepest path in a typical document
+ * is single digits — while keeping the parser's output inside the node budget.
+ */
+export const MAX_FIELD_SEGMENTS = 32;
+
+/**
+ * Most segments one wildcard pattern may have: `a*b?c` is five.
+ *
+ * Same reason as {@link MAX_FIELD_SEGMENTS}. `*` runs are collapsed before this
+ * is counted, so it bounds meaningful alternation points rather than typing.
+ *
+ * 512 rather than something tighter because the README demonstrates 200 stars
+ * against a 5,000-character value — `'*a'.repeat(200)` is 402 segments — and a
+ * cap that quietly retired a documented capability would be the narrowing
+ * getting ahead of itself.
+ *
+ * Per-clause caps alone cannot bound the tree, because the PRODUCT with
+ * {@link MAX_CLAUSES} is what expands: 2,000 clauses of 512 segments is millions
+ * of visits whatever each cap says. {@link MAX_AST_NODES} is therefore checked
+ * by `parse()` itself, so the product is bounded where it actually matters.
+ */
+export const MAX_WILDCARD_SEGMENTS = 512;
+
+/**
  * Most node visits `serialize()` and the evaluator will spend on one tree.
  *
  * VISITS, not distinct nodes, and that distinction is the whole reason this
@@ -58,11 +92,20 @@ export const MAX_AST_DEPTH = MAX_CLAUSES + MAX_DEPTH;
  * What is refused is an EXPANSION too large to print or compile, which is the
  * quantity that actually hurts.
  *
- * The value is empirical: the largest tree `parse()` can emit — 199 levels of
- * parentheses around a 1,800-clause chain — expands to 11,194 visits, and the
- * true maximum over every paren/clause split is 11,996 (parentheses consume the
- * clause budget too, so the fully-nested shape is not the largest). 500,000
- * therefore leaves a factor of forty for hand-built trees, while capping a
- * serialized string at a few megabytes and this check at tens of milliseconds.
+ * The value is empirical, and the derivation below is only sound because
+ * {@link MAX_FIELD_SEGMENTS} and {@link MAX_WILDCARD_SEGMENTS} exist. Without
+ * them a query the parser accepts could expand past this cap, and every entry
+ * point would then refuse a tree `parse()` had just produced — see those two
+ * constants for the 990 kB query that did exactly that.
+ *
+ * Parenthesis-only shapes: 199 levels of parentheses around a 1,800-clause
+ * chain expands to 11,194 visits, and the true maximum over every paren/clause
+ * split is 11,996 (parentheses consume the clause budget too, so the fully
+ * nested shape is not the largest).
+ *
+ * The real ceiling is a maximal query of maximal clauses — MAX_CLAUSES tags,
+ * each with a MAX_FIELD_SEGMENTS path and a MAX_WILDCARD_SEGMENTS value. That
+ * is measured, not estimated, by `test/limits.test.ts`, and this constant is
+ * asserted there to sit above it with headroom.
  */
 export const MAX_AST_NODES = 500_000;

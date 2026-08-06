@@ -1,5 +1,11 @@
-import { MAX_CLAUSES, MAX_DEPTH } from '../limits.js';
-import { assertOptions, assertQuery } from '../validate.js';
+import {
+  MAX_AST_NODES,
+  MAX_CLAUSES,
+  MAX_DEPTH,
+  MAX_FIELD_SEGMENTS,
+  MAX_WILDCARD_SEGMENTS,
+} from '../limits.js';
+import { assertOptions, assertQuery, expansionOf } from '../validate.js';
 import { SiftQLSyntaxError } from '../errors.js';
 import type {
   BooleanOperator,
@@ -692,6 +698,13 @@ class Parser {
      * had one `quoted` flag for the whole token, so per-segment quoting — which
      * `types.ts` calls load-bearing — was always reported as false.
      */
+    if (token.segments.length > MAX_FIELD_SEGMENTS) {
+      this.fail(
+        `A field path may have at most ${String(MAX_FIELD_SEGMENTS)} segments; this one has ${String(token.segments.length)}`,
+        token,
+      );
+    }
+
     const segments = token.segments.map((segment): FieldSegment => ({
       location: span(segment.start, segment.end),
       name: segment.name,
@@ -914,6 +927,13 @@ class Parser {
         : { recovered: { reason: token.recovered, synthetic: false } };
 
     if (scanned.kind === 'wildcard') {
+      if (scanned.segments.length > MAX_WILDCARD_SEGMENTS) {
+        this.fail(
+          `A wildcard pattern may have at most ${String(MAX_WILDCARD_SEGMENTS)} segments; this one has ${String(scanned.segments.length)}`,
+          token,
+        );
+      }
+
       return {
         ...recovered,
         location,
@@ -1146,6 +1166,27 @@ export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
   // validating it let a throwing accessor escape from here raw.
   const tolerant = assertOptions(options, 'parse').tolerant ?? false;
   const tokens = new Tokenizer(source, { tolerant }).tokenize();
+  const ast = new Parser(source, tokens, tolerant).parse();
 
-  return new Parser(source, tokens, tolerant).parse();
+  /*
+   * THE PARSER MUST NOT EMIT A TREE ITS OWN CONSUMERS WILL REFUSE.
+   *
+   * Per-clause caps cannot enforce that on their own: what expands is the
+   * PRODUCT of clause count and segments per clause, so 2,000 clauses of
+   * 512-segment wildcards is millions of visits whatever each individual cap
+   * says. Checking the same budget here means a query is refused where it can
+   * be pointed at, rather than accepted and then rejected by `serialize()`,
+   * `filter()`, `test()` and `highlight()` alike — which is what happened, with
+   * an error whose own text says "this is a defect in siftql".
+   */
+  if (expansionOf(ast, MAX_AST_NODES) > MAX_AST_NODES) {
+    throw new SiftQLSyntaxError(
+      `This query expands to more than ${String(MAX_AST_NODES)} AST nodes, which is more than serialize() and the evaluator will walk`,
+      ast.location,
+      source,
+      { code: 'SYNTAX' },
+    );
+  }
+
+  return ast;
 };

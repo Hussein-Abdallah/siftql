@@ -429,6 +429,39 @@ const childrenOf = (node: object): object[] => {
   return children;
 };
 
+/**
+ * Count a tree's expansion the way {@link assertWalkable} does, without throwing.
+ *
+ * Exported so `parse()` can refuse a query whose tree its own consumers would
+ * reject. Nothing capped field-path or wildcard segment counts, so a 990 kB
+ * query parsed happily and was then refused by serialize/filter/test/highlight
+ * with an error whose text blames the caller for a tree `parse()` built.
+ */
+export const expansionOf = (root: SiftQLAst, budget: number): number => {
+  const stack: object[] = [root];
+  let visits = 0;
+
+  while (stack.length > 0) {
+    const node = stack.pop();
+
+    if (node === undefined) {
+      continue;
+    }
+
+    visits += 1;
+
+    if (visits > budget) {
+      return visits;
+    }
+
+    for (const child of childrenOf(node)) {
+      stack.push(child);
+    }
+  }
+
+  return visits;
+};
+
 const assertWalkable = (root: SiftQLAst, fn: string): void => {
   const stack: { readonly node: object; readonly depth: number }[] = [
     { depth: 0, node: root },

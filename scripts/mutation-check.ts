@@ -164,6 +164,49 @@ const MUTATIONS: readonly Mutation[] = [
     label: 'temporal: a non-finite instant is accepted',
     replace: 'Number.isNaN',
   },
+  /*
+   * Below: the surfaces a round-eleven auditor found uncovered. Fourteen
+   * mutations aimed at them were caught ZERO times, while the battery above
+   * reported 100% — the battery was measuring the corpus's own shape back at
+   * itself. A rate is only as honest as the surfaces its mutations reach.
+   */
+  {
+    file: 'src/errors.ts',
+    find: '    this.site = details.site;\n    this.raw = details.raw;',
+    label: 'errors: an operand error reports a different site and raw value',
+    replace: "    this.site = 'scan';\n    this.raw = 'MUTATED';",
+  },
+  {
+    file: 'src/errors.ts',
+    find: '    this.argument = details.argument;\n    this.received = details.received;',
+    label: 'errors: an argument error names a different argument',
+    replace:
+      "    this.argument = 'MUTATED';\n    this.received = details.received;",
+  },
+  {
+    file: 'src/engine/create.ts',
+    find: "createEngine({ ...options, ...assertOptions(extra, 'engine.extend') })",
+    label: 'engine: extend() resets instead of merging over the parent',
+    replace: "createEngine(assertOptions(extra, 'engine.extend'))",
+  },
+  {
+    file: 'src/engine/evaluate.ts',
+    find: 'return record(ordering > 0);',
+    label: 'evaluate: `:>` includes its own boundary',
+    replace: 'return record(ordering >= 0);',
+  },
+  {
+    file: 'src/engine/evaluate.ts',
+    find: 'return record(ordering <= 0);',
+    label: 'evaluate: `:<=` excludes its own boundary',
+    replace: 'return record(ordering < 0);',
+  },
+  {
+    file: 'src/parser/parser.ts',
+    find: 'if (token.segments.length > MAX_FIELD_SEGMENTS) {',
+    label: 'limits: the field-path cap moves while the message still says 32',
+    replace: 'if (token.segments.length > 16) {',
+  },
 ];
 
 const git = (cwd: string, ...args: readonly string[]): string =>

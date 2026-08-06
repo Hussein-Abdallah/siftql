@@ -121,8 +121,13 @@ const FIELDS = [
   'd:',
   'a.b:',
   'a.0:',
+  // ALL FOUR ordering operators. With only `>=` and `<`, a boundary flip on
+  // `>` or `<=` changed an answer and this reported nothing: half the operator
+  // surface was untestable, and the half that was covered certified the whole.
   'n:>=',
+  'n:>',
   'n:<',
+  'n:<=',
   'n:=',
   // A QUOTED PATH SEGMENT. Without one, the corpus cannot emit a dot followed
   // by a quote, and the path-folding branch is never exercised. A generator
@@ -130,6 +135,13 @@ const FIELDS = [
   "a.'b':",
   'a."b".c:',
   "'full name'.first:",
+  /*
+   * A path long enough to STRADDLE the cap. The corpus topped out at three
+   * segments and SCALE jumped straight to 60, so nothing sat between 17 and 32:
+   * halving MAX_FIELD_SEGMENTS moved the enforced boundary invisibly, and was
+   * only detected because the constant is interpolated into the message.
+   */
+  `${Array.from({ length: 24 }, (_, at) => `s${String(at)}`).join('.')}:`,
 ];
 
 /** Structural characters, emitted in RUNS — the shape a stack overflow needs. */
@@ -265,14 +277,16 @@ const SCALE: readonly string[] = [
  * Three things are deliberately IN it, each because leaving one out made this
  * tool report "no behavioural differences" for a change it was staring at:
  *
- *  - THE ERROR'S CLASS, CODE AND MESSAGE. Two round-nine regressions turned a
- *    located SiftQLSyntaxError into a raw RangeError; class alone catches that.
- *    But the message carries the caret and the offset, so without it the entire
- *    positional contract is uncovered — rewording a refusal, or moving a token's
- *    start from 1 to 0, both reported nothing.
+ *  - THE ERROR'S CLASS, MESSAGE AND EVERY OWN FIELD. Two round-nine regressions
+ *    turned a located SiftQLSyntaxError into a raw RangeError; class alone
+ *    catches that. The message carries the caret and the offset, so without it
+ *    the positional contract is uncovered. And comparing only class, code and
+ *    message left every other published field — `location` on the classes that
+ *    do not print it, `site`, `raw`, `candidates`, `reason`, `hint`,
+ *    `argument`, `received`, `expected`, `source` — replaceable in silence.
  *  - LOCATIONS. Both trees parse the same source, so a differing span IS a
- *    behavioural change. Stripping them was a choice made to reduce noise, and
- *    it removed the only signal for the caret contract.
+ *    behavioural change: they are compared inside the returned AST, and on the
+ *    error for a refusal.
  *  - A CYCLE-SAFE WALK. `JSON.stringify` THROWS on a cyclic value, and the
  *    corpus generates self-referential records on purpose; `filter` returns the
  *    item, so both trees produced `throw:TypeError` and compared equal. The one
@@ -286,10 +300,36 @@ const outcome = (act: () => unknown): string => {
     value = act();
   } catch (error) {
     const name = (error as Error).constructor.name;
-    const code = (error as { code?: unknown }).code;
     const message = (error as Error).message;
 
-    return `throw:${name}:${typeof code === 'string' ? code : '-'}:${
+    /*
+     * EVERY OWN FIELD, not just the code and the message.
+     *
+     * Comparing three properties meant `location`, `source`, `expected`,
+     * `site`, `raw`, `candidates`, `reason`, `hint`, `argument` and `received`
+     * could all be replaced wholesale and this reported "no behavioural
+     * differences". Only `SiftQLSyntaxError` was covered at all, and only by
+     * accident: it bakes the offset and the caret into its own message.
+     *
+     * `stack` is excluded because it carries absolute paths, which differ
+     * between the two worktrees for reasons that are not behaviour. `message`
+     * is already in the key.
+     */
+    const fields = Object.getOwnPropertyNames(error as object)
+      .filter((key) => key !== 'stack' && key !== 'message')
+      .sort()
+      .map((key) => {
+        const own = (error as Record<string, unknown>)[key];
+
+        try {
+          return `${key}=${JSON.stringify(own) ?? String(own)}`;
+        } catch {
+          return `${key}=<unserialisable>`;
+        }
+      })
+      .join(',');
+
+    return `throw:${name}:${fields}:${
       typeof message === 'string' ? message : '-'
     }`;
   }
@@ -369,6 +409,7 @@ interface Surface {
   filter(query: unknown, items: readonly unknown[], options?: unknown): unknown;
   highlight(query: unknown, item: unknown, options?: unknown): unknown;
   createEngine(options?: unknown): unknown;
+  extend(options: unknown): unknown;
 }
 
 const load = async (root: string): Promise<Surface> =>
@@ -485,29 +526,88 @@ const main = async (): Promise<void> => {
       differences.set(kind, entry);
     };
 
+    /*
+     * THE ENGINE SHAPES the corpus builds, cycled by run.
+     *
+     * Varying only `tolerant` left every other option uncovered, and that is
+     * most of the package: 14 mutations across `extend()`, the registry,
+     * `matchKeys`, `onValueError` routing, `typeStrategy` and the whole of
+     * `temporal/format.ts` were all invisible to this tool, because
+     * `readWithFormats` only runs when `dateFormat` is set and nothing here
+     * ever set it.
+     */
+    const ENGINES: readonly Record<string, unknown>[] = [
+      {},
+      { matchKeys: true },
+      { onValueError: 'throw' },
+      { onRecovered: 'prune' },
+      { regexGuard: false },
+      { dateFormat: ['DD-MM-YYYY', 'YYYY-MM-DD'] },
+      { onRecovered: 'throw' },
+      { maxPatternLength: 200 },
+    ];
+
+    /** Per-call overrides, which take a different route than engine options. */
+    const OVERRIDES: readonly Record<string, unknown>[] = [
+      {},
+      { matchKeys: true },
+      { onValueError: 'throw' },
+      {},
+    ];
+
     for (let run = 0; run < RUNS + SCALE.length; run += 1) {
       const q = SCALE[run] ?? query(next);
       const item = SCALE[run] === undefined ? record(next) : { name: 'ada' };
 
       for (const tolerant of [false, true]) {
-        const options = { tolerant };
+        const options = { ...ENGINES[run % ENGINES.length], tolerant };
+        const overrides = OVERRIDES[run % OVERRIDES.length];
 
         for (const [kind, act] of [
           ['parse', (s: Surface) => s.parse(q, options)],
           ['serialize', (s: Surface) => s.serialize(s.parse(q, options))],
           [
             'test',
-            (s: Surface) => (s.createEngine(options) as Surface).test(q, item),
+            (s: Surface) =>
+              (s.createEngine(options) as Surface).test(q, item, overrides),
           ],
           [
             'filter',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).filter(q, [item]),
+              (s.createEngine(options) as Surface).filter(q, [item], overrides),
           ],
           [
             'highlight',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).highlight(q, item),
+              (s.createEngine(options) as Surface).highlight(
+                q,
+                item,
+                overrides,
+              ),
+          ],
+          /*
+           * THE ENGINE'S OWN parse(), which applies the engine's `tolerant` and
+           * its recovery policy. A mutation that made it drop the engine's
+           * options was invisible while the only parse surface was the free
+           * function.
+           */
+          [
+            'engine.parse',
+            (s: Surface) => (s.createEngine(options) as Surface).parse(q),
+          ],
+          /*
+           * extend() MERGES over the parent. Nothing exercised it, so a
+           * mutation that made it reset instead reported nothing — and losing
+           * `onValueError: 'throw'` is a silent failure-policy downgrade.
+           */
+          [
+            'extend',
+            (s: Surface) =>
+              (
+                (s.createEngine(options) as Surface).extend({
+                  id: 'child',
+                }) as Surface
+              ).filter(q, [item]),
           ],
           /*
            * THE SAME QUERY AS AN AST, not a string.

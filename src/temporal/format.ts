@@ -64,15 +64,34 @@ interface CompiledFormat {
  * user input, so it is reported immediately and loudly rather than degrading to
  * "nothing matches".
  */
-export class InvalidDateFormatError extends SiftQLConfigError {
+export class SiftQLDateFormatError extends SiftQLConfigError {
   public constructor(format: string, reason: string) {
     super(`Invalid dateFormat ${JSON.stringify(format)}: ${reason}`);
     // Extends SiftQLConfigError so it satisfies the documented contract: every
     // error siftql throws is a SiftQLError and answers isSiftQLError(). A bare
     // TypeError escaped both, so a caller catching SiftQLError missed it.
-    this.name = 'InvalidDateFormatError';
+    //
+    // The NAME is prefixed for the other half of that contract — `errors.ts`
+    // states that every siftql error name is prefixed, and this class was called
+    // `InvalidDateFormatError`, which read like a host-application error in a
+    // stack trace and was the one subclass missing from the package's exports.
+    this.name = 'SiftQLDateFormatError';
   }
 }
+
+/**
+ * Check a layout without having a value to read through it.
+ *
+ * Exists so `createEngine` can refuse a malformed `dateFormat` up front.
+ * Validating only when a value arrives meant `dateFormat: 'QQQQ'` built an engine
+ * happily and then failed on whichever record first held something date-shaped —
+ * reported as an OPERAND error with the real cause demoted to `.cause`, so a
+ * caller checking for `code === 'CONFIG'` to detect a misconfigured engine never
+ * saw it.
+ */
+export const assertValidFormat = (format: string): void => {
+  compileFormat(format);
+};
 
 const compileCache = new Map<string, CompiledFormat>();
 
@@ -94,7 +113,7 @@ const compileFormat = (format: string): CompiledFormat => {
       const [literal, name, fragment] = token;
 
       if (seen.has(name)) {
-        throw new InvalidDateFormatError(
+        throw new SiftQLDateFormatError(
           format,
           `token "${literal}" appears more than once`,
         );
@@ -116,14 +135,14 @@ const compileFormat = (format: string): CompiledFormat => {
   const hasClockParts = seen.has('hour') && seen.has('minute');
 
   if (hasDateParts && !hasAllDateParts) {
-    throw new InvalidDateFormatError(
+    throw new SiftQLDateFormatError(
       format,
       'a calendar layout must include all of YYYY, MM and DD',
     );
   }
 
   if (!hasDateParts && !hasClockParts) {
-    throw new InvalidDateFormatError(
+    throw new SiftQLDateFormatError(
       format,
       'expected a calendar layout (YYYY, MM, DD) or a clock layout (HH, mm)',
     );

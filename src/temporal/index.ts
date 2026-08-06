@@ -12,7 +12,11 @@ export {
 } from './calendar.js';
 export { compareTemporal, equalsTemporal } from './compare.js';
 export { detectTemporalFormat } from './detect.js';
-export { InvalidDateFormatError, parseWithFormat } from './format.js';
+export {
+  assertValidFormat,
+  parseWithFormat,
+  SiftQLDateFormatError,
+} from './format.js';
 export { parseIso } from './iso.js';
 export { resolveTemporal, SUPPORTED_TEMPORAL_MESSAGE } from './resolve.js';
 export type {

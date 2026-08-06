@@ -157,17 +157,35 @@ const parseNumeric = (text: string): number | null => {
    * call them equal. Snowflake ids, database bigints and account numbers all
    * live here and all arrive as JSON strings.
    *
-   * The test is a round trip, not `Number.isSafeInteger`. Plenty of integers
-   * above 2^53 are still exactly representable -- 2^53 itself, and every power
-   * of two above it -- and refusing those made them unmatchable against a field
+   * The test is exactness, not `Number.isSafeInteger`. Plenty of integers above
+   * 2^53 are still exactly representable -- 2^53 itself, and every power of two
+   * above it -- and refusing those made them unmatchable against a field
    * genuinely holding that number, with no diagnostic at any setting.
+   *
+   * Compared as BIGINTS rather than as strings. `String(parsed) !== text` looks
+   * like a round trip and is really a test for CANONICAL SPELLING, so it refused
+   * every integer written any other way: `n:007` did not match 7, `n:-0` did not
+   * match 0, and because the token then fell through to `string`, `n:>007` did
+   * not merely fail to match — it THREW, since `string` has no ordering. Leading
+   * zeros arrive from forms, URLs, zero-padded ids and CSV columns constantly.
+   * `007` is exactly representable as a double, so the only honest question is
+   * whether the value survives the conversion, which is what comparing the
+   * integers rather than their spellings asks.
    *
    * Declining rather than erroring is what makes the refusal safe: the token
    * falls through to `string`, which compares the digits exactly. Only ordering
    * is lost, and no order is better than a wrong one.
    */
-  if (/^[+-]?\d+$/u.test(text) && String(parsed) !== text.replace(/^\+/u, '')) {
-    return null;
+  if (/^[+-]?\d+$/u.test(text)) {
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+
+    // BigInt(parsed), not BigInt(String(parsed)): above 1e21 the string form is
+    // exponential and BigInt refuses to parse it.
+    if (BigInt(text.replace(/^\+/u, '')) !== BigInt(parsed)) {
+      return null;
+    }
   }
 
   return parsed;

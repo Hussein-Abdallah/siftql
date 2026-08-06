@@ -5,7 +5,7 @@ import {
   daysInMonth,
   detectTemporalFormat,
   equalsTemporal,
-  InvalidDateFormatError,
+  SiftQLDateFormatError,
   isLeapYear,
   isValidCalendarDate,
   parseIso,
@@ -188,10 +188,10 @@ describe('dateFormat', () => {
 
   it('rejects a malformed layout immediately', () => {
     expect(() => resolveTemporal('x', { dateFormat: 'DD-MM' })).toThrow(
-      InvalidDateFormatError,
+      SiftQLDateFormatError,
     );
     expect(() => resolveTemporal('x', { dateFormat: 'YYYY-YYYY' })).toThrow(
-      InvalidDateFormatError,
+      SiftQLDateFormatError,
     );
   });
 });
@@ -216,12 +216,27 @@ describe('resolution order', () => {
     expect(resolved?.value).toBe(JUNE_1_2020);
   });
 
-  it('prefers canonical ISO over parseDate', () => {
+  it('lets parseDate override even a canonical ISO string', () => {
+    /*
+     * This test used to assert the opposite, and the opposite was wrong.
+     *
+     * `dateFormat` has to outrank the built-in ISO parser, or a declared layout
+     * is silently ignored for exactly the values both can read — under
+     * `YYYY-DD-MM`, `2020-11-06` was read as ISO and `2020-20-07` through the
+     * layout, so one column meant two things depending on whether the day was
+     * 12 or less. And `parseDate` has to outrank `dateFormat`, so a hook can
+     * override a declared layout while still deferring with `null`.
+     *
+     * Those two together force this one: an explicit instruction beats a
+     * built-in guess, at every level. Writing `parseDate: () => new Date(0)`
+     * says "read everything as the epoch", and quietly declining to do so for
+     * ISO-shaped input is the same defect in a different place.
+     */
     const resolved = resolveTemporal('2020-06-01', {
       parseDate: () => new Date(0),
     });
 
-    expect(resolved?.value).toBe(JUNE_1_2020);
+    expect(resolved?.value).toBe(0);
   });
 
   it('lets parseDate reinterpret numbers, e.g. epoch seconds', () => {
@@ -233,7 +248,17 @@ describe('resolution order', () => {
     expect(resolved?.value).toBe(JUNE_1_2020);
   });
 
-  it('does not consult the hook at all for canonical ISO', () => {
+  it('consults the hook first, then falls back to ISO when it defers', () => {
+    /*
+     * The COST of the ordering above, stated so it is a decision rather than a
+     * surprise: supplying `parseDate` means it is called once per value, ISO
+     * strings included. This test used to assert `calls === 0`.
+     *
+     * Worth it, because the alternative is a hook that is silently skipped for
+     * the most common shape of input it might want to handle. A hook that does
+     * not care returns `null` and the built-in parser takes over, which is the
+     * behaviour asserted here.
+     */
     let calls = 0;
 
     const resolved = resolveTemporal('2020-06-01', {
@@ -245,7 +270,7 @@ describe('resolution order', () => {
     });
 
     expect(resolved?.value).toBe(JUNE_1_2020);
-    expect(calls).toBe(0);
+    expect(calls).toBe(1);
   });
 
   it('trusts the instant a hook returns, even a mis-zoned one', () => {

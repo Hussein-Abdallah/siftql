@@ -483,12 +483,34 @@ export const compileExpression = (
       );
 
       if (node.operator.operator === 'AND') {
+        /*
+         * SHORT-CIRCUITING IS AN OPTIMISATION, AND ONLY WHEN FAILURES ARE SILENT.
+         *
+         * Under the default `onValueError: 'skip'` a dirty value is simply a
+         * non-match, so skipping the right operand cannot change the answer.
+         * Under `'throw'` it changes which failures the caller is TOLD about:
+         * `a:zzz AND b:>2020-01-01` quietly returned no rows while
+         * `b:>2020-01-01 AND a:zzz` threw, for the same data. Whether you hear
+         * that a column is unusable should not depend on the order you wrote
+         * your clauses in.
+         */
+        const exhaustive = context.options.onValueError === 'throw';
+
         return (item, sink) => {
           const checkpoint = sink?.mark() ?? 0;
+          const leftMatched = left(item, sink);
+
+          if (!leftMatched && !exhaustive) {
+            sink?.rollback(checkpoint);
+
+            return false;
+          }
+
+          const rightMatched = right(item, sink);
 
           // A failed conjunction contributed nothing, so neither side's
           // highlights survive.
-          if (!left(item, sink) || !right(item, sink)) {
+          if (!leftMatched || !rightMatched) {
             sink?.rollback(checkpoint);
 
             return false;
@@ -640,6 +662,40 @@ const anyCandidateMatches = (
 };
 
 /** Record a hit, asking the type what to light up inside the matched value. */
+/**
+ * Would iterating this pattern over this text produce a zero-length match?
+ *
+ * Runs the consumer's own loop. Checking only the FIRST match is not enough, and
+ * was the first attempt at this: the pattern `a*` over "abcdef" matches "a" at
+ * 0 — length one, perfectly well-behaved — and only then matches the empty
+ * string at 1, where `lastIndex` stops moving.
+ *
+ * Terminates on every input, because it returns at the first empty match and any
+ * other match advances `lastIndex` by at least one character.
+ */
+const matchesEmpty = (pattern: RegExp, value: unknown): boolean => {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const scanner = new RegExp(
+    pattern.source,
+    `${pattern.flags.replace(/[gy]/gu, '')}g`,
+  );
+
+  let match = scanner.exec(value);
+
+  while (match !== null) {
+    if (match[0].length === 0) {
+      return true;
+    }
+
+    match = scanner.exec(value);
+  }
+
+  return false;
+};
+
 const emit = (
   sink: HighlightSink,
   bound: BoundOperand,
@@ -668,8 +724,20 @@ const emit = (
     valueContext(site, caseSensitive, segments, isKey, context),
   );
 
+  // A pattern that can match ZERO CHARACTERS inside this value cannot be looped
+  // over. Global `a*` matches "a" at 0, then matches the empty string at 1, and
+  // `lastIndex` never advances again — so the `while ((m = query.exec(text)))`
+  // loop the contract tells consumers to write spins forever. Every highlighter
+  // component writes that loop.
+  //
+  // Tested against the ACTUAL value rather than guessed from the source, because
+  // the source cannot answer it: `a*` matches empty everywhere, `\b` matches
+  // empty only inside a word, and `a+` never does. One scan settles it for this
+  // value, which is the only value this highlight describes.
+  const loops = query !== null && !matchesEmpty(query, value);
+
   sink.add(
-    query
+    query && loops
       ? {
           path: formatPath(segments),
           // A FRESH instance per hit. The type compiles its highlighter once
@@ -689,8 +757,12 @@ const emit = (
           ),
           segments,
         }
-      : // A range or a boolean has no textual footprint, so the whole value is
-        // the match and there is no pattern to report.
+      : /*
+         * No pattern to report. Either the match has no textual footprint at all
+         * — a range, a boolean — or the pattern is zero-width here, in which case
+         * "the whole value matched" is both true and the only answer a consumer
+         * can act on without hanging.
+         */
         { path: formatPath(segments), segments },
   );
 };
@@ -737,7 +809,10 @@ const compileClause = (
         caseSensitive,
         context,
         node.expression.location,
-        node.expression.value,
+        // `:=` may compare against a boolean or null, whose `value` is not a
+        // string. This is the RAW text for diagnostics only, so the literal's own
+        // spelling is exactly right.
+        String(node.expression.value),
       );
       const operator = node.operator.operator;
 

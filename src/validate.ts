@@ -30,6 +30,7 @@ import type {
   TypeStrategy,
 } from './registry.js';
 import { MAX_AST_DEPTH, MAX_AST_NODES } from './limits.js';
+import { assertValidFormat } from './temporal/format.js';
 import { type SiftQLAst, isSiftQLNode } from './types.js';
 
 /**
@@ -438,7 +439,14 @@ const checkEnum = (
   }
 };
 
-/** A single format string must be non-empty; `''` matches nothing, silently. */
+/**
+ * A layout must be a non-empty string that actually compiles.
+ *
+ * Shape alone was not enough: `dateFormat: 'QQQQ'` and `dateFormat: []` both
+ * built an engine and then either failed on whichever record first held a date,
+ * or silently did nothing at all. A layout is a programming decision made once,
+ * so it is checked once, here.
+ */
 const checkDateFormat = (value: unknown): void => {
   if (value === undefined) {
     return;
@@ -452,6 +460,14 @@ const checkDateFormat = (value: unknown): void => {
     return;
   }
 
+  if (formats.length === 0) {
+    badOption(
+      'dateFormat',
+      'at least one format string (an empty array declares nothing and silently has no effect)',
+      value,
+    );
+  }
+
   for (const format of formats) {
     if (typeof format !== 'string' || format.length === 0) {
       badOption(
@@ -460,6 +476,10 @@ const checkDateFormat = (value: unknown): void => {
         format,
       );
     }
+
+    // Throws SiftQLDateFormatError, itself a SiftQLConfigError, naming the
+    // offending layout and why it could not be read.
+    assertValidFormat(format as string);
   }
 };
 

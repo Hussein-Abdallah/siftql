@@ -18,7 +18,6 @@ import type {
   SiftQLAst,
   SourceLocation,
   Tag,
-  TextLiteral,
   WildcardExpression,
 } from '../types.js';
 import { RECOVERY_REASONS } from '../types.js';
@@ -718,7 +717,7 @@ class Parser {
 
   private parseRelationalValue(
     operator: Extract<Token, { type: 'comparison' }>,
-  ): TextLiteral | Extract<Expression, { type: 'MissingExpression' }> {
+  ): LiteralExpression | Extract<Expression, { type: 'MissingExpression' }> {
     const next = this.peek();
 
     if (next.type !== 'literal') {
@@ -740,8 +739,24 @@ class Parser {
       this.advance() as Extract<Token, { type: 'literal' }>,
     );
 
-    if (parsed.type !== 'LiteralExpression' || parsed.literal !== 'text') {
-      // height:>true, height:>=null, name:>foo*bar -- none of these order.
+    if (parsed.type !== 'LiteralExpression') {
+      // name:>foo*bar and the like: a wildcard is a set, not a point.
+      return this.fail(
+        `"${operator.operator}" compares against a single value`,
+        next,
+        ['a value'],
+      );
+    }
+
+    /*
+     * `:=` accepts a boolean or null; the ORDERED operators do not.
+     *
+     * `:=` is strict equality, and `b:true` already worked, so refusing
+     * `b:=true` left the operator whose entire job is equality unable to state
+     * it against the two values that have nothing else. `height:>true` stays a
+     * syntax error, because there is no ordering to appeal to.
+     */
+    if (parsed.literal !== 'text' && operator.operator !== ':=') {
       return this.fail(
         `"${operator.operator}" compares against a single text or numeric value`,
         next,

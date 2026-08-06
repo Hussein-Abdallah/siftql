@@ -656,12 +656,18 @@ export interface RelationalTag extends TagBase {
   readonly kind: 'relational';
   readonly operator: RelationalOperator;
   /**
-   * Ordering and equality compare against ONE scalar point. Never a range,
-   * regex, wildcard, group, boolean or null. `MissingExpression` is admitted
-   * only so tolerant mode can represent the `height:>=` a user is mid-keystroke
-   * on.
+   * Ordering and equality compare against ONE scalar point — never a range,
+   * regex, wildcard or group. `MissingExpression` is admitted only so tolerant
+   * mode can represent the `height:>=` a user is mid-keystroke on.
+   *
+   * A BOOLEAN or NULL literal is admitted for `:=` alone. The README calls `:=`
+   * "equality (same as `:` for a fielded clause)", and it was not: `b:true`
+   * worked while `b:=true` was a syntax error, so the one operator whose whole
+   * job is strict equality could not express equality against the two values
+   * that have nothing but it. The ORDERED operators still take text or numbers
+   * only, and the parser refuses the rest — `b:>true` has no meaning to give.
    */
-  readonly expression: TextLiteral | MissingExpression;
+  readonly expression: LiteralExpression | MissingExpression;
 }
 
 export type Tag = MatchTag | RelationalTag;

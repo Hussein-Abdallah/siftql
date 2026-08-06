@@ -41,18 +41,20 @@ const fromHookResult = (
  *
  * 1. **`Date` instances.** Already an instant; there is no layout to interpret,
  *    so nothing can usefully override this. An Invalid Date resolves to `null`.
- * 2. **Canonical ISO 8601 strings**, via the built-in parser.
- * 3. **`options.parseDate`**, if supplied. Returning `null` means "not mine" and
+ * 2. **`options.parseDate`**, if supplied. Returning `null` means "not mine" and
  *    defers to the next step; it is never treated as an error.
- * 4. **`options.dateFormat`** declared layout(s), tried in order.
+ * 3. **`options.dateFormat`** declared layout(s), tried in order.
+ * 4. **Canonical ISO 8601 strings**, via the built-in parser.
  * 5. **Finite numbers**, read as milliseconds since the Unix epoch.
  * 6. Otherwise `null`.
  *
- * Two notes on that order. `parseDate` sits ahead of `dateFormat` so a hook can
- * override a declared layout while still deferring via `null`. Numbers sit
- * *behind* `parseDate` rather than in step 2, so that a project storing
- * timestamps in seconds can reinterpret them — treating every bare number as
- * milliseconds with no way to intervene would be a silent factor-of-1000 error.
+ * Three notes on that order. `parseDate` sits ahead of `dateFormat` so a hook
+ * can override a declared layout while still deferring via `null`. A DECLARED
+ * layout sits ahead of the built-in ISO parser, because anything else means
+ * siftql guessing against an instruction it was given. Numbers sit *behind*
+ * `parseDate` rather than near the top, so that a project storing timestamps in
+ * seconds can reinterpret them — treating every bare number as milliseconds with
+ * no way to intervene would be a silent factor-of-1000 error.
  *
  * There is deliberately no `new Date(string)` fallback anywhere in this chain,
  * for three separate reasons:
@@ -74,14 +76,6 @@ export const resolveTemporal = (
 ): ResolvedTemporal | null => {
   if (isDateLike(value)) {
     return asInstant(value.getTime());
-  }
-
-  if (typeof value === 'string') {
-    const iso = parseIso(value);
-
-    if (iso) {
-      return iso;
-    }
   }
 
   if (options.parseDate) {
@@ -115,6 +109,30 @@ export const resolveTemporal = (
 
     if (formatted) {
       return formatted;
+    }
+  }
+
+  /*
+   * The built-in ISO parser runs AFTER a declared layout, not before it.
+   *
+   * Running first, it silently overrode the layout for exactly the values both
+   * could read. Under `dateFormat: 'YYYY-DD-MM'`, `2020-11-06` came back as 6
+   * November — the ISO reading — while `2020-20-07` came back as 20 July,
+   * because a day of 20 fails the ISO month group and fell through to the
+   * layout. So one column was read two ways, split on whether the day happened
+   * to be 12 or less, and nothing reported a problem. `format.ts` promises the
+   * opposite in as many words: "siftql will not guess which you meant. You state
+   * the layout; siftql obeys it exactly."
+   *
+   * A string that does not match the declared layout still resolves as ISO, so
+   * declaring a layout for one column does not break an ISO timestamp in
+   * another.
+   */
+  if (typeof value === 'string') {
+    const iso = parseIso(value);
+
+    if (iso) {
+      return iso;
     }
   }
 

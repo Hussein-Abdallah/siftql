@@ -47,6 +47,7 @@ export {
 export {
   detectTemporalFormat,
   resolveTemporal,
+  SiftQLDateFormatError,
   type ParseDateHook,
   type ResolvedTemporal,
   type TemporalDomain,

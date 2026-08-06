@@ -1,6 +1,6 @@
 import { SiftQLRecoveredQueryError } from '../errors.js';
 import type { OnRecovered } from '../registry.js';
-import type { Expression, SiftQLAst } from '../types.js';
+import type { Expression, RangeBoundary, SiftQLAst } from '../types.js';
 
 /**
  * Eliminate tolerant-mode holes before evaluation.
@@ -126,6 +126,21 @@ const findRecovered = (
       return findRecovered(node.left) ?? findRecovered(node.right);
     case 'ParenthesizedExpression':
       return findRecovered(node.expression);
+    case 'RangeExpression':
+      /*
+       * BOUNDARIES CARRY RECOVERIES TOO, and missing them made the safety switch
+       * fail OPEN — the one direction it must never fail.
+       *
+       * `a:[1}`, `a:{}`, `a:[ TO 9]` and `a:[1 TO }` all mark the BOUNDARY rather
+       * than the range node, because that is where the invention happened. With
+       * no case here the walk stopped at the RangeExpression, `onRecovered:
+       * 'throw'` saw nothing to refuse, and the engine went on to evaluate an
+       * unbounded end that the user never typed. `a:[` and `a:` were refused
+       * correctly the whole time, which is what made this look fixed.
+       */
+      return (
+        findRecoveredBoundary(node.lower) ?? findRecoveredBoundary(node.upper)
+      );
     case 'Tag':
       return findRecovered(node.expression);
     case 'UnaryOperator':
@@ -133,6 +148,22 @@ const findRecovered = (
     default:
       return null;
   }
+};
+
+/** A boundary is not an Expression, so it needs its own two-line walk. */
+const findRecoveredBoundary = (
+  boundary: RangeBoundary,
+): { location: { start: number; end: number }; reason: string } | null => {
+  if (boundary.recovered) {
+    return { location: boundary.location, reason: boundary.recovered.reason };
+  }
+
+  return boundary.bounded && boundary.value.recovered
+    ? {
+        location: boundary.value.location,
+        reason: boundary.value.recovered.reason,
+      }
+    : null;
 };
 
 /**

@@ -1,3 +1,4 @@
+import { withoutFailurePolicy } from '../registry.js';
 import { resolveTypeInput } from './consumer.js';
 import { SiftQLConfigError } from '../errors.js';
 import type {
@@ -130,7 +131,10 @@ const makeEnvironment = (
   registry: () => ValueTypeRegistry | undefined,
 ): TypeEnvironment => ({
   lookup: (name) => registry()?.get(name),
-  options,
+  // Narrowed for the same reason the per-value contexts are: a FACTORY runs
+  // consumer code too, and could otherwise close over the failure policy and
+  // branch on it for the engine's whole lifetime.
+  options: withoutFailurePolicy(options),
   temporal: options.temporal,
 });
 

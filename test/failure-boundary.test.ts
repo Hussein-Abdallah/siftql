@@ -419,23 +419,38 @@ describe('a value type cannot rewrite engine policy from a callback', () => {
     ).toBe(true);
   });
 
-  it('leaves onValueError unchanged after an attempt to set it', () => {
-    // Asserted on the VALUE, not on a thrown TypeError: a frozen write throws
-    // only in strict mode, and whether the consumer's module is strict is not
-    // ours to decide. The value not changing is the property that matters.
+  it('does not expose the failure policy to a value type at all', () => {
+    /*
+     * Stronger than "the value does not change", which is what this test used to
+     * assert. `errors.ts` and `registry.ts` both state that a ValueType never
+     * SEES `onValueError` — the split-policy design rests on it, since a type
+     * that branched on the policy would decide for itself whether a dirty value
+     * is fatal. The key is now absent from the object, not merely read-only.
+     *
+     * Checked on the VALUE rather than on a thrown TypeError: a frozen write
+     * throws only in strict mode, and whether the consumer's module is strict is
+     * not ours to decide.
+     */
     expect(
       inspect((ctx) => {
-        const options = ctx.options as unknown as { onValueError: string };
+        const options = ctx.options as unknown as Record<string, unknown>;
 
         try {
           options.onValueError = 'throw';
         } catch {
-          // Strict-mode caller. Either way the value must not change.
+          // Strict-mode caller. Either way nothing must appear.
         }
 
-        return options.onValueError;
+        return [
+          'onValueError' in options,
+          'onRecovered' in options,
+          options.onValueError,
+          // Everything a type legitimately needs is still there.
+          typeof options.matchKeys,
+          typeof options.temporal,
+        ];
       }),
-    ).toBe('skip');
+    ).toEqual([false, false, undefined, 'boolean', 'object']);
   });
 
   it('leaves the path unchanged after an attempt to push onto it', () => {

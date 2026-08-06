@@ -26,10 +26,12 @@
  *
  * I4. ROUND-TRIP LAW.
  *       deepEqualIgnoring('location', parse(serialize(parse(q))), parse(q))
- *     for every `q` the parser accepts. `serialize()` normalises exactly three
- *     things and nothing else: whitespace runs, redundant escapes, and the
- *     bracket on an unbounded range end. Each provably carries no AST-visible
- *     information.
+ *     for every `q` the parser accepts. `serialize()` normalises exactly four
+ *     things and nothing else: whitespace runs, redundant escapes, quote style,
+ *     and the bracket on an unbounded range end. Each provably carries no
+ *     AST-visible information — quote style included, since `'` and `"` are
+ *     synonyms and the AST records only THAT a value was quoted, never with
+ *     which character.
  */
 
 /* ------------------------------------------------------------------------- *
@@ -343,20 +345,29 @@ export type LiteralExpression = TextLiteral | BooleanLiteral | NullLiteral;
  * and dissolves the index-array alternative whose sortedness and in-range
  * invariants no type could enforce.
  *
- * QUOTING AND WILDCARDS ARE INDEPENDENT AXES. Quoting decides CASE; wildcards
- * decide SCOPE. Both compose, which is what makes the whole grid reachable from
- * two rules:
+ * QUOTING AND WILDCARDS ARE INDEPENDENT AXES, and so is case. Quoting HOLDS A
+ * VALUE TOGETHER, wildcards decide SCOPE, and the doubled colon — and only the
+ * doubled colon — decides CASE. All three compose:
  *
- *              case-insensitive     case-sensitive
- *   exactly    status:active        status:'active'
- *   contains   status:*active*      status:'*active*'
- *   starts     status:active*       status:'active*'
- *   ends       status:*active       status:'*active'
+ *                  case-insensitive       case-sensitive
+ *   exactly        status:active          status::active
+ *   contains       status:*active*        status::*active*
+ *   starts         status:active*         status::active*
+ *   ends           status:*active         status::*active
+ *   with a space   status:"in progress"   status::"in progress"
  *
- * So a quoted pattern containing an unescaped `*` or `?` is a
- * QuotedWildcardExpression, NOT an ordinary literal — otherwise the entire
- * case-sensitive column would be unreachable. A literal asterisk is `\*` in
- * either form. (Classic Lucene reserves quotes for phrases and forbids
+ * An earlier version of this table put the QUOTED spellings in the
+ * case-sensitive column, which was wrong in a way worth recording: quoting has
+ * never affected case here, so `status:'active'` matches `ACTIVE` exactly as
+ * `status:active` does. Anyone following the table got silently wrong results,
+ * and it sat 260 lines above the correct statement in this same file.
+ *
+ * A quoted pattern containing an unescaped `*` or `?` is still a
+ * {@link WildcardExpression} — with `quoted: true` — rather than an ordinary
+ * literal. The reason is the last row: a pattern that contains a SPACE has no
+ * unquoted spelling, so if quotes suppressed metacharacters then
+ * `status:"in * progress"` could not be written at all. A literal asterisk is
+ * `\*` in either form. (Classic Lucene reserves quotes for phrases and forbids
  * wildcards inside them; phrase/proximity is v0.2, so the slot is free.)
  * ------------------------------------------------------------------------- */
 

@@ -1,5 +1,6 @@
 import { isSiftQLError, SiftQLArgumentError } from '../errors.js';
 import { parse, type ParseOptions } from '../parser/parser.js';
+import { withoutFailurePolicy } from '../registry.js';
 import type {
   EngineOptions,
   EvaluateOptions,
@@ -136,19 +137,23 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     options.typeStrategy ?? 'prepend',
   );
 
-  const contextFor = (overrides: EvaluateOptions): EvaluationContext => ({
+  const contextFor = (overrides: EvaluateOptions): EvaluationContext => {
     // Frozen for the same reason `resolved` is: per-call overrides produce a new
     // options object, and it reaches value types just as the engine's own does.
-    options: Object.freeze({
+    const options = Object.freeze({
       ...resolved,
       matchKeys: overrides.matchKeys ?? resolved.matchKeys,
       maxPatternLength: overrides.maxPatternLength ?? resolved.maxPatternLength,
       onRecovered: overrides.onRecovered ?? resolved.onRecovered,
       onValueError: overrides.onValueError ?? resolved.onValueError,
       regexGuard: overrides.regexGuard ?? resolved.regexGuard,
-    }),
-    registry,
-  });
+    });
+
+    // The failure policy is REMOVED, not just hidden by a type: see
+    // TypeVisibleOptions. Built once per call, then shared by every context
+    // handed to a value type.
+    return { options, registry, typeOptions: withoutFailurePolicy(options) };
+  };
 
   /**
    * Parse if needed, then apply the recovery policy. Tolerant-mode holes are

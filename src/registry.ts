@@ -302,9 +302,50 @@ export const dispositionFor = (
  * 4. CONTEXTS
  * ========================================================================= */
 
+/**
+ * The engine settings a value type can SEE.
+ *
+ * `onValueError` and `onRecovered` are withheld, and that withholding is the
+ * design rather than tidiness. `errors.ts` and this file both state that "a
+ * ValueType never sees `onValueError` and never throws" — the split-policy
+ * design rests on it, because a type that branched on the policy would make
+ * matching depend on a setting core cannot reason about, and would decide for
+ * itself whether a dirty value is fatal. That was simply untrue: `options` was
+ * the whole `ResolvedEngineOptions`, so any type could read both and act on
+ * them.
+ *
+ * A type still gets everything it legitimately needs — `matchKeys`,
+ * `regexGuard`, `maxPatternLength`, `id`, and the temporal options it must
+ * close over.
+ */
+export type TypeVisibleOptions = Omit<
+  ResolvedEngineOptions,
+  'onRecovered' | 'onValueError'
+>;
+
+/**
+ * Drop the failure policy, producing the object a value type is given.
+ *
+ * Written out key by key rather than as a rest-destructure, so that adding a
+ * setting later is a compile error here — the safe default for a NEW option is
+ * to be visible, and the unsafe one is to leak a policy knob by forgetting this
+ * function exists.
+ */
+export const withoutFailurePolicy = (
+  options: ResolvedEngineOptions,
+): TypeVisibleOptions =>
+  Object.freeze({
+    id: options.id,
+    matchKeys: options.matchKeys,
+    maxPatternLength: options.maxPatternLength,
+    regexGuard: options.regexGuard,
+    temporal: options.temporal,
+    tolerant: options.tolerant,
+  });
+
 export interface OperandContext {
   readonly site: OperandSite;
-  readonly options: ResolvedEngineOptions;
+  readonly options: TypeVisibleOptions;
   /**
    * Whether the enclosing clause was written with a doubled colon. Supplied
    * HERE, at operand-parse time, so a type can fold its operand once and keep
@@ -318,7 +359,8 @@ export interface OperandContext {
 
 export interface ValueContext {
   readonly site: OperandSite;
-  readonly options: ResolvedEngineOptions;
+  /** See {@link TypeVisibleOptions}: the failure policy is deliberately absent. */
+  readonly options: TypeVisibleOptions;
   /** The enclosing clause's collation; see {@link OperandContext.caseSensitive}. */
   readonly caseSensitive: boolean;
   /** Where this value lives in the record: `['name','first']`, `['tags',3]`. */
@@ -534,7 +576,8 @@ export type ValueTypeFactory = (env: TypeEnvironment) => AnyValueType;
 export type ValueTypeInput = AnyValueType | ValueTypeFactory;
 
 export interface TypeEnvironment {
-  readonly options: ResolvedEngineOptions;
+  /** See {@link TypeVisibleOptions}: the failure policy is deliberately absent. */
+  readonly options: TypeVisibleOptions;
   /** Resolved `dateFormat`/`parseDate`, ready to hand to `resolveTemporal`. */
   readonly temporal: TemporalOptions;
   /** Lazy peer lookup, so a factory may reference types declared after it. */

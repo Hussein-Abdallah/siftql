@@ -234,10 +234,18 @@ const escapeFieldSegment = (name: string): string => {
   return escaped;
 };
 
+/**
+ * An EMPTY segment name is printed as `""`.
+ *
+ * Unquoted it printed nothing at all, so a Field whose only segment was empty
+ * serialized to `:value` — which is not a query and does not re-parse, breaking
+ * the round-trip law for a tree the AST contract permits. `a..b` keeps working
+ * either way, since a quoted empty segment re-parses to the same empty step.
+ */
 const serializeField = (field: Field): string =>
   field.segments
     .map((segment) =>
-      segment.quoted
+      segment.quoted || segment.name.length === 0
         ? `"${escapeQuotedTerm(segment.name)}"`
         : escapeFieldSegment(segment.name),
     )

@@ -9,8 +9,13 @@ import type { NonEmptyArray, WildcardSegment } from '../types.js';
  * consumed, the character it protects is known to be literal.
  *
  * The result is either plain text (no metacharacters survived) or a segment
- * list. Adjacent literal segments are merged, so a given pattern has exactly one
- * representation and two spellings of the same pattern compare equal.
+ * list. Adjacent literal segments are merged and runs of `*` are collapsed, so a
+ * given pattern has exactly one representation and two spellings of it compare
+ * equal.
+ *
+ * That is a statement about SPELLING, not about meaning: `?*` and `*?` both
+ * denote "one character, then anything", and they remain two different patterns
+ * — as `a AND b` and `b AND a` remain two different queries.
  */
 export type ScannedPattern =
   | { readonly kind: 'text'; readonly value: string }
@@ -63,6 +68,30 @@ export const scanPattern = (raw: string, offset: number): ScannedPattern => {
 
     if (character === '*' || character === '?') {
       flushLiteral(offset + index);
+
+      /*
+       * A RUN of stars collapses to one, because `**` matches exactly what `*`
+       * matches and this file's own contract says a given pattern has exactly
+       * one representation. It did not: `a*b`, `a**b` and `a***b` produced three
+       * structurally different ASTs that behaved identically, so two spellings of
+       * one pattern did not compare equal and `compileWildcard` had to collapse
+       * the runs a second time, later, to get the right answer.
+       *
+       * Only `*` collapses. `??` is NOT `?`, since each one consumes exactly one
+       * character.
+       */
+      const previous = segments.at(-1);
+
+      if (character === '*' && previous?.type === 'WildcardAny') {
+        // Extend the existing segment so the location still spans the whole run.
+        segments[segments.length - 1] = {
+          location: { end: offset + index + 1, start: previous.location.start },
+          type: 'WildcardAny',
+        };
+        index += 1;
+        continue;
+      }
+
       segments.push({
         location: { end: offset + index + 1, start: offset + index },
         type: character === '*' ? 'WildcardAny' : 'WildcardSingle',

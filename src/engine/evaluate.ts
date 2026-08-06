@@ -16,6 +16,7 @@ import type {
   OperandSite,
   OperandToken,
   ResolvedEngineOptions,
+  TypeVisibleOptions,
   ValueContext,
   ValueTypeRegistry,
 } from '../registry.js';
@@ -65,6 +66,17 @@ interface BoundOperand {
 
 export interface EvaluationContext {
   readonly options: ResolvedEngineOptions;
+  /**
+   * The same settings with the failure policy removed, built ONCE per call and
+   * shared by every context handed to a value type.
+   *
+   * A separate object rather than a cast, because the claim is about runtime: a
+   * type authored in JavaScript has no types to stop it reading
+   * `ctx.options.onValueError`, and only actually withholding the key does.
+   * Built once because `valueContext` runs per candidate — narrowing there would
+   * allocate an object per value.
+   */
+  readonly typeOptions: TypeVisibleOptions;
   readonly registry: ValueTypeRegistry;
 }
 
@@ -125,7 +137,7 @@ const resolveOperand = (
       Object.freeze({
         caseSensitive,
         lookup: (name: string) => context.registry.get(name),
-        options: context.options,
+        options: context.typeOptions,
         site,
       }),
       location,
@@ -202,7 +214,7 @@ const valueContext = (
     caseSensitive,
     isKey,
     lookup: (name: string) => context.registry.get(name),
-    options: context.options,
+    options: context.typeOptions,
     path: Object.freeze([...path]),
     site,
   });

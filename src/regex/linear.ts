@@ -117,6 +117,28 @@ type Node =
       readonly at: 'start' | 'end' | 'word' | 'nonword';
     };
 
+/**
+ * Can this match without consuming anything?
+ *
+ * Assertions count, because they are width-zero — `(?:^)*` needs this as much
+ * as `(?:a?)*` does.
+ */
+const nullable = (node: Node): boolean => {
+  switch (node.kind) {
+    case 'empty':
+    case 'assert':
+      return true;
+    case 'char':
+      return false;
+    case 'concat':
+      return node.parts.every((part) => nullable(part));
+    case 'alt':
+      return node.options.some((option) => nullable(option));
+    default:
+      return node.min === 0 || nullable(node.body);
+  }
+};
+
 /** Thrown internally; callers see an {@link Unsupported} result instead. */
 class ParseFailure extends Error {}
 
@@ -347,6 +369,57 @@ class Parser {
       this.index += 1;
     }
 
+    /*
+     * A QUANTIFIER ON AN ASSERTION is a syntax error in JavaScript: the pattern
+     * `^*` does not compile there. This accepted it, with semantics no engine
+     * agrees with.
+     */
+    if (atom.kind === 'assert') {
+      fail('a quantifier applied to an assertion, which JavaScript rejects');
+    }
+
+    /*
+     * A NULLABLE BODY IS REFUSED, and this is the deliberate narrowing.
+     *
+     * `(a*)*`, `(?:a?)*`, `(?:a|)+` and friends can take an iteration without
+     * consuming anything. JavaScript's RepeatMatcher fails such an iteration
+     * once `min` is satisfied; this matcher has no per-thread state to detect
+     * it with, so the empty path wins on priority and match EXTENTS come out
+     * short — the pattern `(?:.*?)?\w+` over "a,b,,c" reported [0,1][1,3][3,6]
+     * where RegExp reports [0,3][3,6].
+     *
+     * Implementing the rule properly was tried and reverted. It needs a slot
+     * carried per epsilon path, which cost a 992-character pattern 2 seconds
+     * per kilobyte of value — reintroducing, through the fix, the exact
+     * uninterruptible hang this file exists to remove. Weakening the dedup that
+     * would make it cheap is weakening the linear-time guarantee itself.
+     *
+     * So the pattern is refused with a message instead of matched with subtly
+     * wrong spans. That is the same trade the file already makes for
+     * backreferences and lookaround, for the same reason: a refusal a caller
+     * can read beats a wrong answer they cannot see. `a*`, `(?:ab)*` and
+     * `(\s*,\s*)*` are all unaffected — only a body that can match nothing is.
+     */
+    if (nullable(atom)) {
+      fail(
+        'a quantifier whose body can match the empty string, which cannot be given JavaScript\'s iteration semantics in linear time',
+      );
+    }
+
+    // `a{2}{3}`, `a*?` followed by `?`: JavaScript rejects a quantifier applied
+    // to a quantifier, and this used to read the second one as literal text.
+    const trailing = this.peek();
+
+    if (
+      trailing === '*' ||
+      trailing === '+' ||
+      trailing === '?' ||
+      (trailing === '{' &&
+        /^\{\d+(,\d*)?\}/u.test(this.source.slice(this.index)))
+    ) {
+      fail('a quantifier applied to another quantifier, which JavaScript rejects');
+    }
+
     return { body: atom, kind: 'repeat', lazy, max, min };
   }
 
@@ -388,6 +461,15 @@ class Parser {
       fail(`a quantifier with nothing to repeat: ${JSON.stringify(character)}`);
     }
 
+    // `{2}` on its own is a quantifier with no atom, which JavaScript rejects;
+    // it used to be read as the three literal characters.
+    if (
+      character === '{' &&
+      /^\{\d+(,\d*)?\}/u.test(this.source.slice(this.index))
+    ) {
+      fail('a quantifier with nothing to repeat');
+    }
+
     this.index += 1;
 
     return {
@@ -415,6 +497,12 @@ class Parser {
 
         if (close === -1) {
           fail('an unterminated group name');
+        }
+
+        // `(?<>a)` is a syntax error in JavaScript; this read it as an ordinary
+        // non-capturing group.
+        if (close === this.index + 2) {
+          fail('an empty group name, which JavaScript rejects');
         }
 
         this.index = close + 1;
@@ -1160,21 +1248,66 @@ const isWordCode = (code: number | undefined): boolean =>
  * reported two matches where there is one, and `/\Ba/` over "aaa" dropped one —
  * so the whole input is always passed and only the starting position moves.
  */
+/**
+ * Scratch buffers, allocated once per compiled pattern and reused.
+ *
+ * The lists are STAMPED rather than cleared: an entry counts as visited only
+ * when its stamp equals the current one, so moving to the next position costs
+ * an increment instead of a fresh array.
+ *
+ * This is not a micro-optimisation. `run` used to allocate and zero-fill two
+ * arrays of `code.length` FOR EVERY INPUT CHARACTER, and `spans()` calls `run`
+ * once per match — so walking a 12,000-character value with `(?:.*q|)` took
+ * 10.6 seconds against native RegExp's 102 ms on the identical pattern, with
+ * identical results. Native is quadratic on that shape too; the gap was the
+ * constant, and nearly all of the constant was here.
+ */
+interface Scratch {
+  readonly seen: Int32Array;
+  readonly nextSeen: Int32Array;
+  readonly from: Int32Array;
+  readonly nextFrom: Int32Array;
+  stamp: number;
+  /** Positions stepped, so a multi-restart walk can bound its own total. */
+  steps: number;
+}
+
+const scratchFor = (size: number): Scratch => ({
+  from: new Int32Array(size),
+  nextFrom: new Int32Array(size),
+  nextSeen: new Int32Array(size).fill(-1),
+  seen: new Int32Array(size).fill(-1),
+  stamp: 0,
+  steps: 0,
+});
+
 const run = (
   code: readonly Inst[],
   input: string,
   options: Options,
   wantSpan: boolean,
   begin = 0,
+  scratch: Scratch = scratchFor(code.length),
 ): { readonly start: number; readonly end: number } | boolean | null => {
   let clist: number[] = [];
   let nlist: number[] = [];
-  let seen = new Uint8Array(code.length);
-  let nextSeen = new Uint8Array(code.length);
-  // Where the thread at each pc began. Threads are added in priority order and
-  // the first to claim a pc keeps it, so this holds the LEFTMOST start.
-  let from = new Int32Array(code.length);
-  let nextFrom = new Int32Array(code.length);
+  let seen = scratch.seen;
+  let nextSeen = scratch.nextSeen;
+  /*
+   * Where the thread at each pc began. Threads are added in priority order and
+   * the first to claim a pc keeps it, so this holds the LEFTMOST start.
+   *
+   * Never cleared, and does not need to be: a slot is only ever READ for a pc
+   * whose stamp is current, and every stamped pc is written on the same pass.
+   */
+  let from = scratch.from;
+  let nextFrom = scratch.nextFrom;
+  // Two stamps live at once — the current position's and the next one's — so
+  // they advance in pairs and can never collide across a swap.
+  scratch.stamp += 2;
+
+  let stamp = scratch.stamp;
+  let nextStamp = stamp + 1;
 
   const holds = (at: Inst & { op: 'assert' }, position: number): boolean => {
     const before = position > 0 ? input.charCodeAt(position - 1) : undefined;
@@ -1205,7 +1338,8 @@ const run = (
 
   const add = (
     list: number[],
-    marks: Uint8Array,
+    marks: Int32Array,
+    mark: number,
     starts: Int32Array,
     pc: number,
     position: number,
@@ -1219,11 +1353,11 @@ const run = (
     while (pending.length > 0) {
       const at = pending.pop();
 
-      if (at === undefined || marks[at] === 1) {
+      if (at === undefined || marks[at] === mark) {
         continue;
       }
 
-      marks[at] = 1;
+      marks[at] = mark;
       starts[at] = origin;
 
       const instruction = code[at];
@@ -1250,6 +1384,8 @@ const run = (
   let matched: { readonly start: number; readonly end: number } | null = null;
 
   for (let position = begin; position <= input.length; position += 1) {
+    scratch.steps += 1;
+
     /*
      * Unanchored: a fresh attempt may start at any position — but only until
      * something matches, or a later start could win over an earlier one and the
@@ -1257,7 +1393,7 @@ const run = (
      * the work.
      */
     if (matched === null) {
-      add(clist, seen, from, 0, position, position);
+      add(clist, seen, stamp, from, 0, position, position);
     }
 
     for (const pc of clist) {
@@ -1294,6 +1430,7 @@ const run = (
         add(
           nlist,
           nextSeen,
+          nextStamp,
           nextFrom,
           pc + 1,
           position + 1,
@@ -1303,11 +1440,20 @@ const run = (
     }
 
     clist = nlist;
+    nlist = [];
+
+    // Swap the two buffers and advance the stamps; nothing is reallocated and
+    // nothing is cleared.
+    const priorSeen = seen;
+    const priorFrom = from;
+
     seen = nextSeen;
     from = nextFrom;
-    nlist = [];
-    nextSeen = new Uint8Array(code.length);
-    nextFrom = new Int32Array(code.length);
+    nextSeen = priorSeen;
+    nextFrom = priorFrom;
+    stamp = nextStamp;
+    scratch.stamp = stamp;
+    nextStamp = stamp + 1;
 
     // Nothing left that could extend the match, and nothing new may start.
     if (clist.length === 0 && matched !== null) {
@@ -1387,6 +1533,12 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
     program.emit({ op: 'match' });
 
     const code = program.code;
+    /*
+     * ONE set of buffers per compiled pattern, shared by every `test()` and
+     * every restart inside a `spans()` walk. Safe because a matcher is
+     * synchronous and single-threaded: no two runs are ever in flight at once.
+     */
+    const scratch = scratchFor(code.length);
 
     return {
       matcher: {
@@ -1395,10 +1547,35 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
         spans: (input: string) => {
           const found: { start: number; end: number }[] = [];
 
+          /*
+           * A BUDGET ACROSS THE WHOLE WALK, not a cap on the number of spans.
+           *
+           * Each restart scans forward until no thread can extend, so a pattern
+           * that matches at every position AND keeps a thread alive to the right
+           * — `(?:.*q|)`, `(?:.*;)?` — costs O(input²) in total. Native RegExp
+           * is quadratic on the identical patterns and returns identical spans;
+           * the difference is a constant, and a constant is enough to turn 100 ms
+           * into six seconds on a 12,000-character value.
+           *
+           * So the walk is bounded by what a single left-to-right pass would
+           * cost, and on exceeding it reports NO spans rather than a truncated
+           * list. A highlight is cosmetic: the match itself is unaffected, and
+           * "this field matched, but not where" is an outcome the contract
+           * already defines — it is what a range, a boolean, and a
+           * length-changing case fold all produce. A truncated list, by
+           * contrast, is indistinguishable from a complete one, which is the
+           * defect the old 10,001-span cap actually had.
+           */
+          const budget = scratch.steps + 4 * input.length + 1000;
+
           let at = 0;
 
           while (at <= input.length) {
-            const hit = run(code, input, options, true, at);
+            if (scratch.steps > budget) {
+              return [];
+            }
+
+            const hit = run(code, input, options, true, at, scratch);
 
             if (hit === null || typeof hit === 'boolean') {
               break;
@@ -1423,7 +1600,7 @@ export const compileLinear = (source: string, flags: string): LinearResult => {
           return found;
         },
         test: (input: string): boolean =>
-          run(code, input, options, false) === true,
+          run(code, input, options, false, 0, scratch) === true,
       },
       ok: true,
     };

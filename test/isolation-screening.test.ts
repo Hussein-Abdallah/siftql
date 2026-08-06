@@ -67,20 +67,19 @@ describe('a regex that used to be refused now runs, safely', () => {
    * They are no longer refused, because they are no longer dangerous: the
    * matcher is an automaton, so every one of them is linear. Refusing a
    * legitimate pattern was always a cost; now there is nothing bought with it.
+   *
+   * The list below is deliberately the NON-NULLABLE half. A quantifier whose
+   * body can match the empty string is refused, separately and on purpose —
+   * see the block after this one for why, and note that the headline shapes
+   * `^(a|a)*$`, `^(a+)+$` and `^(a+){1,99}$` are all still here and still run.
    */
   const formerlyCatastrophic = [
     '(a+)+',
-    '(a*)*',
     '((a+))+',
     String.raw`(\d+){2,}`,
     '([a-z]+)*',
     '(a+)*b',
-    '(.*)*',
     '^(([a-z])+.)+[A-Z]([a-z])+$',
-    '(a?)*',
-    '^(a|a?)*$',
-    '(x|)*',
-    String.raw`(\w+\s?)*`,
     '^(a|a)*$',
     String.raw`^(\s|\s)*$`,
     '^(a+){1,99}$',
@@ -392,5 +391,70 @@ describe('two engines in one process cannot see each other', () => {
     createEngine({ types: [mine as never] });
 
     expect(Object.isFrozen(mine)).toBe(false);
+  });
+});
+
+describe('a quantifier whose body can match nothing is refused', () => {
+  /*
+   * THE ONE DELIBERATE NARROWING, and the reason for it.
+   *
+   * JavaScript's RepeatMatcher fails a loop iteration that consumes nothing
+   * once `min` is satisfied. This matcher holds no per-thread state, so it
+   * cannot detect that, and the empty path wins on priority: match EXTENTS come
+   * out short. `(?:.*?)?\w+` over "a,b,,c" reported [0,1][1,3][3,6] where
+   * RegExp reports [0,3][3,6].
+   *
+   * Implementing the rule was tried and reverted. It needs a slot carried per
+   * epsilon path, and that cost a 992-character pattern — inside the default
+   * maxPatternLength — two seconds per kilobyte of value, reintroducing through
+   * the fix the exact uninterruptible hang this matcher exists to remove. The
+   * cheap alternative is to weaken the deduplication that provides the
+   * linear-time guarantee, which is not an alternative at all.
+   *
+   * So these are refused with a readable message rather than matched with
+   * silently wrong spans — the same trade already made for backreferences and
+   * lookaround. `test()` was never wrong for them; only `spans()` was.
+   */
+  const nullableBody = [
+    '(a*)*',
+    '(.*)*',
+    '(a?)*',
+    '^(a|a?)*$',
+    '(x|)*',
+    '(?:a*?)*',
+    String.raw`(?:.*?)?\w+`,
+    '(a|b|)*',
+    '()*',
+    '(?:)+',
+  ];
+
+  for (const pattern of nullableBody) {
+    it(`refuses ${pattern} rather than mis-locating its matches`, () => {
+      const compiled = compileLinear(pattern, '');
+
+      expect(compiled.ok, pattern).toBe(false);
+
+      if (!compiled.ok) {
+        expect(compiled.reason).toContain('empty string');
+      }
+    });
+  }
+
+  it('leaves every non-nullable body alone', () => {
+    // The narrowing must not spread: a body that always consumes is unaffected,
+    // including the ones that look alarming.
+    for (const pattern of [
+      'a*',
+      '(?:ab)*',
+      String.raw`(\s*,\s*)+`,
+      '(ab+c)+',
+      // `\w+` must consume, so the body is not nullable however it looks.
+      String.raw`(\w+\s?)*`,
+      String.raw`(?:[^,]*,)*[^,]*x`,
+      '(foo|bar)+',
+      '^(a|a)*$',
+    ]) {
+      expect(compileLinear(pattern, '').ok, pattern).toBe(true);
+    }
   });
 });

@@ -1012,7 +1012,6 @@ describe('P5: cost stays bounded', () => {
     const suspects = [
       '^(a+)+$',
       '^(a+){1,99}$',
-      '^(a*){1,99}$',
       '^(a+){99}$',
       '^(a{1,3})+$',
       '^(a{1,99})+$',
@@ -1020,12 +1019,21 @@ describe('P5: cost stays bounded', () => {
       '^(a|a)*$',
       '^((a|a))*$',
       '^(?:(a|a))*$',
-      '^((a|a?))*$',
       '^([a-z]|[a-c])*$',
       '^((a|b)|(a|c))*$',
       String.raw`^(\w{1,50})+$`,
       '^(x+x+){1,99}y$',
     ];
+
+    /*
+     * `^(a*){1,99}$` and `^((a|a?))*$` used to be here and are now REFUSED —
+     * their loop bodies can match the empty string. That is a strictly stronger
+     * guarantee than the one this property checks, so they are asserted
+     * separately rather than dropped silently.
+     */
+    for (const refused of ['^(a*){1,99}$', '^((a|a?))*$']) {
+      expect(compileLinear(refused, '').ok, refused).toBe(false);
+    }
 
     const runaway: string[] = [];
 

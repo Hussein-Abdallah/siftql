@@ -33,7 +33,12 @@ export interface ResolvedTemporal {
   readonly kind: TemporalKind;
   /**
    * Milliseconds since the Unix epoch (`instant`) or since midnight
-   * (`timeOfDay`). Always a finite integer.
+   * (`timeOfDay`). Always finite.
+   *
+   * NOT always an integer, though this said so: `parseDate` returns whatever the
+   * caller's hook gives, and the README says that value is taken at face value,
+   * so `resolveTemporal(1.5)` yields 1.5. `asInstant` checks `Number.isFinite`
+   * and deliberately does not check `Number.isInteger`.
    */
   readonly value: number;
 }

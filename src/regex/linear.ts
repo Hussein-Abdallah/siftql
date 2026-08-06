@@ -5,8 +5,10 @@
  * patterns the number of ways to match a string grows exponentially with its
  * length, and on a FAILING match it must try all of them before it can answer.
  * `test()` is uninterruptible, so the process is simply gone —
- * `/^(a|a)*$/.test('a'.repeat(27) + 'b')` blocks for four seconds, and a few
- * more characters make it minutes. siftql accepts `field:/regex/` from whoever
+ * `/^(a|a)*$/.test('a'.repeat(27) + 'b')` blocks for about eight seconds on the
+ * machine this was measured on, and a few more characters make it minutes. The
+ * absolute figure is hardware-dependent; the doubling per added character is
+ * not. siftql accepts `field:/regex/` from whoever
  * is typing in the search box, so that is a denial of service with a
  * twelve-character payload.
  *
@@ -51,8 +53,11 @@
  *
  * The VM is `O(program × input)`, so the program has to be bounded for the time
  * bound to mean anything. Counted repetitions are compiled by DUPLICATION —
- * `a{3}` is three copies — so `(a{1,99}){1,99}` is about 9,800 instructions and
- * `a{1000}{1000}` is a million.
+ * `a{3}` is three copies — so `(a{1,99}){1,99}` reaches 19,602 instructions and
+ * is refused here. (`a{1000}{1000}` used to be the second example, described as
+ * "a million"; it was neither, because the trailing `{1000}` was being read as
+ * literal text. It is now refused as a quantifier applied to a quantifier,
+ * which is what JavaScript does with it.)
  *
  * A pattern that exceeds it is refused, not silently truncated.
  *
@@ -77,7 +82,9 @@ const MAX_REPEAT = 1000;
  * Overlap is free — `[\s\s\s…]` collapses to the handful of ranges `\s` really
  * covers — so this only bites a class that genuinely names hundreds of separate
  * intervals, and it bounds the per-character cost of {@link inRanges} at
- * `log2(512) = 9` comparisons no matter what the pattern says.
+ * `log2(512) = 9` comparisons. Under `i` a miss also walks the input's fold
+ * orbit, and the largest orbit in the BMP has four members, so the real ceiling
+ * is 36 — still a constant, but not the 9 this used to claim flatly.
  */
 const MAX_CLASS_RANGES = 512;
 
@@ -151,8 +158,9 @@ const fail = (reason: string): never => {
  *
  * Two things depend on this. {@link inRanges} binary-searches, which is only
  * correct on sorted, disjoint ranges. And it is what makes a hostile class
- * cheap: `[\s×490]` names 7,350 ranges and covers 15, so merging turns a
- * 7,350-entry linear scan per character per instruction into a 15-entry one.
+ * cheap: `\s` is spelled as 15 code points but covers 10 ranges once fused, so
+ * `[\s×490]` names 4,900 ranges and merging turns a 4,900-entry linear scan per
+ * character per instruction into a 10-entry one.
  */
 const mergeRanges = (
   ranges: readonly (readonly [number, number])[],
@@ -954,8 +962,8 @@ let ORBITS: Map<number, readonly number[]> | null = null;
  * The same hole covered `µ` MICRO SIGN, `ϕ/Φ`, `ϰ/Κ`, `ẚ/Ṡ` and Cyrillic U+1C80+.
  *
  * Built once, lazily, and only when an `i` pattern is first compiled — a pattern
- * without `i` never pays for it. Only orbits with more than one member are kept,
- * which is a few thousand entries out of the 65,536 scanned.
+ * without `i` never pays for it. Only orbits with more than one member are kept:
+ * 1,141 entries out of the 65,536 code units scanned.
  */
 const orbits = (): Map<number, readonly number[]> => {
   if (ORBITS) {

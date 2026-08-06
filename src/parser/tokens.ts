@@ -6,8 +6,14 @@ import type { SourceLocation } from '../errors.js';
  * Tokens are a discriminated union on `type`, so the parser cannot read a field
  * that does not exist on the token it is holding. Quoting is modelled as an
  * explicit `quote` kind rather than an optional flag: `'none'` is a real state
- * that changes matching behaviour (bare terms are case-insensitive, quoted terms
- * are not), so it deserves to be named rather than inferred from absence.
+ * that changes how the value is READ — `"in progress"` is one value rather than
+ * two terms, and `"true"` is text rather than the boolean — so it deserves to be
+ * named rather than inferred from absence.
+ *
+ * It does NOT change case sensitivity. This claimed quoted terms were
+ * case-sensitive and bare ones were not; both are case-insensitive, and only
+ * `::` says otherwise. The correct rule is stated sixty lines below, in this
+ * same file.
  */
 
 /** How a term was written. Bare terms match case-insensitively. */

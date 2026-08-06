@@ -73,7 +73,7 @@ export const isDateLike = (value: unknown): value is Date => {
  * that is true — but on a revoked Proxy it raises
  * `TypeError: Cannot perform 'IsArray' on a revoked proxy`. A revoked Proxy is
  * an ordinary thing to find in a record whose owner has torn down a scope, and
- * it reached seven call sites in the record walk and eight in the validator.
+ * it reached eight call sites in the record walk and nine in the validator.
  */
 export const safeIsArray = (value: unknown): value is readonly unknown[] => {
   try {

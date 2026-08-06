@@ -98,7 +98,7 @@ const boundary = (
 /**
  * The builders.
  *
- * A frozen object rather than 17 separate exports, so a consumer can pass the
+ * A frozen object rather than 16 separate exports, so a consumer can pass the
  * whole set to a function that assembles queries, and so the set is named in one
  * place when a builder is added.
  */
@@ -234,9 +234,14 @@ export const builders: AstBuilders = Object.freeze({
   }),
 
   /**
-   * Flags are sorted and de-duplicated, because `/a/gi` and `/a/ig` are the same
-   * regex and two ASTs that mean the same thing should compare equal. The parser
-   * does the same, so a built node and a parsed one match.
+   * Flags are sorted and de-duplicated here, because two ASTs that mean the same
+   * thing should compare equal.
+   *
+   * THE PARSER DOES NOT DO THIS, and this comment used to claim it did. The
+   * parser preserves written order on purpose — `types.ts` calls the array
+   * order-preserving so `/x/gi` never prints back as `/x/ig` — so a built node
+   * and a parsed one do NOT deep-equal when the flags were written out of order.
+   * Compare `new Set(node.flags)` if you need to check two nodes agree.
    */
   regex: (
     pattern: string,

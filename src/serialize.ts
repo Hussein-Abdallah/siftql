@@ -35,7 +35,8 @@ const KEYWORD_LITERALS: ReadonlySet<string> = new Set([
  *   parse(serialize(parse(q)))  deep-equals  parse(q)     ignoring `location`
  *
  * Note the law is about the AST, not the text. `serialize` is a CANONICALISER,
- * not an echo: it normalises exactly four things, each of which provably
+ * not an echo: it normalises exactly five things — the same five `types.ts`
+ * lists, which this said were four — each of which provably
  * carries no AST-visible information.
  *
  *   1. Whitespace runs between tokens.
@@ -347,7 +348,8 @@ const serializeBody = (
     case 'LogicalExpression': {
       // Operators are left-associative, so `a AND b AND c ...` is a LEFT SPINE
       // one node deep per term. parse() builds it with a loop and accepts
-      // 50,000 terms; recursing to print it costs one frame per term and
+      // MAX_CLAUSES terms — 2,000, not the 50,000 this used to say;
+      // recursing to print it costs one frame per term and
       // overflowed the stack at around 5,000 — a query the parser had just
       // accepted could not be serialized. The spine is walked iteratively so
       // the two agree on what is representable.
@@ -499,7 +501,12 @@ const wrap = (
 /**
  * Serialize an AST back to a query string.
  *
- * The result always re-parses to a deep-equal AST (locations aside). It is not
+ * The result re-parses to a deep-equal AST (locations aside) for every tree
+ * `parse()` produces. It is NOT guaranteed to for a hand-built tree using the
+ * forward-compatibility nodes: `BoostModifier` and `RequiredModifier` are
+ * printed as `a^2` and `+a`, which the v0.1 parser is required to reject. See
+ * the note on `MissingExpression` above, which states the same limit honestly.
+ * It is not
  * guaranteed to be byte-identical to the text originally parsed — see the
  * normalisation list above.
  */

@@ -642,7 +642,20 @@ export class Tokenizer {
     }
   }
 
-  /** A quoted word is either a quoted field name or a case-sensitive term. */
+  /**
+   * A quoted word: either a quoted field name, or a term held together as one
+   * value.
+   *
+   * QUOTING DOES NOT CONTROL CASE. `status:"active"` matches "Active" exactly as
+   * `status:active` does; only `::` asks for a case-sensitive comparison. What
+   * quotes buy is that `"in progress"` is one value rather than two terms, and
+   * that `"true"` is text rather than the boolean.
+   *
+   * This said "a case-sensitive term" until an audit caught it. `types.ts`
+   * records that an earlier table made the identical mistake and that anyone
+   * following it got silently wrong results; the same error was still live here,
+   * one layer down, sixty lines above the correct statement in `tokens.ts`.
+   */
   private readQuotedTerm(start: number, quoteCharacter: string): Token {
     const { quote, recovered, value } = this.readQuoted(start, quoteCharacter);
 

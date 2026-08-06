@@ -75,7 +75,7 @@ const span = (start: number, end: number): SourceLocation => ({ end, start });
 /**
  * How many clauses one query may contain.
  *
- * The parser builds a left spine with a loop and would happily accept 50,000
+ * The parser builds a left spine with a loop and would happily accept far more
  * terms, but `prune()` and `compileExpression()` walk that spine recursively
  * and a `serialize()` of a long unary chain does too — so a query the parser
  * accepted could blow the stack later with a raw RangeError escaping the
@@ -441,14 +441,38 @@ class Parser {
     }
 
     if (next.type === 'require') {
-      // Reserved for v0.2. Refused rather than silently ignored, because
-      // dropping it would make `+a b` and `a b` the same query.
-      throw new SiftQLSyntaxError(
-        'The required marker "+" is reserved and not supported in this version',
-        span(next.start, next.end),
-        this.source,
-        { code: 'UNSUPPORTED_SYNTAX' },
-      );
+      /*
+       * Reserved for v0.2. Refused rather than silently ignored, because
+       * dropping it would make `+a b` and `a b` the same query.
+       *
+       * In TOLERANT mode it is dropped and MARKED instead, exactly as `^boost`
+       * and `~fuzzy` already were. `+` had no tolerant branch at all, so a
+       * search box blanked out the moment someone typed it — the one thing
+       * tolerant mode exists to prevent, and the same gap the comment below
+       * describes closing for the other two markers.
+       */
+      if (!this.tolerant) {
+        throw new SiftQLSyntaxError(
+          'The required marker "+" is reserved and not supported in this version',
+          span(next.start, next.end),
+          this.source,
+          { code: 'UNSUPPORTED_SYNTAX' },
+        );
+      }
+
+      this.advance();
+
+      const required = this.parseUnary();
+
+      return required.recovered
+        ? required
+        : {
+            ...required,
+            recovered: {
+              reason: RECOVERY_REASONS.unsupportedModifier,
+              synthetic: false,
+            },
+          };
     }
 
     return this.parseModifiers(this.parsePrimary());
@@ -923,30 +947,52 @@ class Parser {
   ): RegexExpression {
     const seen = new Set<string>();
     const flags: RegexFlag[] = [];
+    /*
+     * A BAD FLAG IS DROPPED IN TOLERANT MODE, not thrown.
+     *
+     * `/a/ii` and `//=` are what a search box holds mid-keystroke, and both
+     * threw — so tolerant mode blanked out on the way to a valid pattern. The
+     * clause is marked instead, so `onRecovered: 'throw'` can still refuse to
+     * act on it and a UI can still grey it out.
+     */
+    let dropped = false;
 
     for (const flag of token.flags) {
       if (!REGEX_FLAGS.has(flag)) {
-        this.fail(`Unknown regular expression flag "${flag}"`, token, [
-          'a valid flag',
-        ]);
+        if (!this.tolerant) {
+          this.fail(`Unknown regular expression flag "${flag}"`, token, [
+            'a valid flag',
+          ]);
+        }
+
+        dropped = true;
+        continue;
       }
 
       if (seen.has(flag)) {
-        this.fail(`Duplicate regular expression flag "${flag}"`, token);
+        if (!this.tolerant) {
+          this.fail(`Duplicate regular expression flag "${flag}"`, token);
+        }
+
+        dropped = true;
+        continue;
       }
 
       seen.add(flag);
       flags.push(flag as RegexFlag);
     }
 
+    const recovered =
+      token.recovered ?? (dropped ? 'unsupported-modifier' : undefined);
+
     return {
       flags,
       location: span(token.start, token.end),
       // Preserved exactly as written: RegExp#source is lossy.
       pattern: token.pattern,
-      ...(token.recovered === undefined
+      ...(recovered === undefined
         ? {}
-        : { recovered: { reason: token.recovered, synthetic: false } }),
+        : { recovered: { reason: recovered, synthetic: false } }),
       type: 'RegexExpression',
     };
   }

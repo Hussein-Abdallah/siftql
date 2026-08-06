@@ -1559,8 +1559,25 @@ describe('P6: tolerant mode never throws at the ENGINE boundary', () => {
     const violations: string[] = [];
     let evaluated = 0;
 
-    for (let run = 0; run < RUNS; run += 1) {
-      const q = query(next);
+    /*
+     * Shapes the generator cannot spell, each of which threw at PARSE level
+     * until an audit found them: a half-typed regex flag, a duplicate one, and
+     * the reserved `+` marker, which had no tolerant branch at all while `^`
+     * and `~` both did.
+     */
+    const HAND = [
+      '//=',
+      '/a/ii',
+      '/a/x',
+      '+',
+      'a +',
+      '+name:ada',
+      '/ada/gg',
+      'name:ada AND +bob',
+    ];
+
+    for (let run = 0; run < RUNS + HAND.length; run += 1) {
+      const q = HAND[run] ?? query(next);
 
       for (let cut = 1; cut <= q.length; cut += 1) {
         const prefix = q.slice(0, cut);

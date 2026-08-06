@@ -10,7 +10,7 @@ shape is a breaking change and requires a major version bump.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-08-06
+## [0.1.0] - Unreleased
 
 Initial release.
 
@@ -36,8 +36,9 @@ Initial release.
   quantifier whose body can match the empty string (`(a*)*`, `(?:a?)+`). The `u`
   and `v` flags are refused too, since this matcher works on UTF-16 code units
   and accepting them while ignoring code-point semantics would give silently
-  different answers. `regexGuard: false` runs backreferences and lookaround on
-  `RegExp` for callers who accept the risk. Patterns `RegExp` itself rejects —
+  different answers. `regexGuard: false` runs every pattern this matcher refuses — all four
+  classes above, including `u`/`v` — on `RegExp` instead, for callers who
+  accept both the backtracking cost and the change in code-point semantics. Patterns `RegExp` itself rejects —
   `a{2}{3}`, `^*`, `{2}`, `(?<>x)` — are rejected here too, so a query cannot
   mean one thing under the guard and another without it.
 - `Highlight.ranges` — exact spans inside a matched value. Every built-in
@@ -71,5 +72,3 @@ Initial release.
   `FuzzyModifier`, `ProximityModifier`) can be built, type-checked and printed,
   but their printed form is syntax the v0.1 parser is required to reject.
 
-[unreleased]: https://github.com/Hussein-Abdallah/siftql/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Hussein-Abdallah/siftql/releases/tag/v0.1.0

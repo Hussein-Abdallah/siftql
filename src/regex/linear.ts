@@ -40,8 +40,8 @@
  * cannot.
  *
  * Wildcards take the same approach for the same reason: a two-pointer glob
- * rather than a compiled regex, which is why `name:*a*a*a*b` is flat at 0.02 ms
- * against a 5,000-character value.
+ * rather than a compiled regex, which is why `name:*a*a*a*b` is flat at 0.08 ms
+ * against a 5,000-character value (0.03 ms at 1,000, 0.27 ms at 20,000).
  */
 
 /* ------------------------------------------------------------------------- *
@@ -673,10 +673,10 @@ class Parser {
       case '7': {
         /*
          * A LEGACY OCTAL escape (Annex B), up to three digits and never above
-         * 0377. Inside a class `\1`-`\7` are octal escapes, not literal digits
-         * fell through to the literal digit, so `[\1]` matched "1" and not
-         * \x01 — wrong in both directions — and `[\x00-\1f]` built the range
-         * \x00 to "1" instead of \x00 to \x1f.
+         * 0377. Inside a class `\1`-`\7` are octal escapes, not literal digits:
+         * `[\1]` matches \x01 and not "1", and `[\x00-\1f]` is the range \x00
+         * to \x01 plus a literal "f", because the octal run stops at the first
+         * non-octal character. Both match native RegExp exactly.
          *
          * OUTSIDE a class only `\0` reaches here: `\1`-`\9` are backreferences
          * there and are refused before this point, which is what JavaScript

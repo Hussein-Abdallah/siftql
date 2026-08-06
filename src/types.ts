@@ -432,10 +432,10 @@ export type LiteralExpression = TextLiteral | BooleanLiteral | NullLiteral;
  *   ends           status:*active         status::*active
  *   with a space   status:"in progress"   status::"in progress"
  *
- * The QUOTED spellings belong in the case-INSENSITIVE column: quoting has
- * never affected case here, so `status:'active'` matches `ACTIVE` exactly as
- * `status:active` does. Anyone following the table got silently wrong results,
- * and it sat 260 lines above the correct statement in this same file.
+ * Quoting does not affect case, which is why the last row carries a quoted
+ * spelling in BOTH columns: `status:"in progress"` matches `IN PROGRESS` and
+ * `status::"in progress"` does not. `status:'active'` matches `ACTIVE` exactly
+ * as `status:active` does.
  *
  * A quoted pattern containing an unescaped `*` or `?` is still a
  * {@link WildcardExpression} — with `quoted: true` — rather than an ordinary

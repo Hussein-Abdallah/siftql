@@ -8,7 +8,8 @@ Use GitHub's private vulnerability reporting — the **Security** tab of this
 repository, then **Report a vulnerability**. That opens a private thread visible
 only to the maintainer.
 
-If that is unavailable to you, email **sain.abdallah@gmail.com** with `siftql
+That feature is a public-repository one, so while this repository is private it
+is not there. Until then, email **sain.abdallah@gmail.com** with `siftql
 security` in the subject.
 
 Please include a runnable repro: the query, the input it runs against, the
@@ -31,10 +32,11 @@ siftql parses untrusted query text and evaluates it against untrusted data, so
 input-driven failures are the interesting ones:
 
 - **Denial of service** — any input, query or record, that causes runaway time
-  or memory. The regex engine is a Thompson NFA rather than a backtracking
-  matcher specifically so a user-supplied pattern cannot blow up; a pattern that
-  defeats that is in scope, as is any query that gets past the structural limits
-  in `src/limits.ts`.
+  or memory, with `regexGuard` left at its default. The regex engine is a
+  Thompson NFA rather than a backtracking matcher specifically so a
+  user-supplied pattern cannot blow up; a pattern that defeats that is in
+  scope, as is any query that gets past the structural limits in
+  `src/limits.ts`.
 - **Prototype pollution** or any write to an object the caller did not hand in.
 - **Escaping the failure boundary** — a raw `RangeError`, a stack overflow, or
   any error that is not a `SiftQLError` reaching the caller.
@@ -47,10 +49,16 @@ input-driven failures are the interesting ones:
 
 ## What is not in scope
 
-- **Performance characteristics that are documented and bounded.** `spans()` has
-  a known constant factor, recorded under Known limitations in
-  [CHANGELOG.md](CHANGELOG.md). Bounded-but-slow is a limitation; unbounded is a
-  vulnerability, and the line between them is whether the work has a ceiling.
+- **Backtracking under `regexGuard: false`.** That option runs patterns this
+  matcher refuses on `RegExp` instead, so catastrophic backtracking comes back
+  with it — a 17-character pattern can take seconds. The default refuses those
+  patterns; turning the guard off is an explicit acceptance of `RegExp`'s cost
+  model, not a defect.
+- **Performance characteristics that are documented and bounded.** `spans()` is
+  quadratic in value length on a known pattern shape, and bounded so it cannot
+  run away — recorded under Known limitations in [CHANGELOG.md](CHANGELOG.md).
+  Bounded-but-slow is a limitation; unbounded is a vulnerability, and the line
+  between them is whether the work has a ceiling.
 - **A crash from an AST you hand-built that `parse()` would never produce.**
   Malformed input to the AST-in path is a programming error and is refused
   loudly by design.

@@ -832,7 +832,7 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    * option the caller had not restated with `undefined`. An extended engine
    * would silently lose `matchKeys`, drop `onValueError: 'throw'` to `'skip'`, and
    * dropped its custom value types, against a documented contract that says
-   * "merged over this one's". Nothing in 690 tests noticed.
+   * "merged over this one's".
    *
    * Unknown keys are dropped rather than copied. They were already documented as
    * accepted-and-ignored, and carrying an arbitrary accessor forward would

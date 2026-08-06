@@ -23,8 +23,8 @@ straight to a PR.
 A change that breaks one of these cannot be merged, however good it is
 otherwise.
 
-**Zero runtime dependencies.** `dependencies` in `package.json` is empty and
-stays empty. Anything the package needs at runtime is written here, in `src/`.
+**Zero runtime dependencies.** `package.json` has no `dependencies` field, and
+it stays that way. Anything the package needs at runtime is written here, in `src/`.
 Dev dependencies are fine.
 
 **The AST is a public contract.** Every exported name in `src/types.ts` is
@@ -46,8 +46,9 @@ that file:
   information; the list is in `src/types.ts`.
 
 **The failure boundary is split, and the split is deliberate.** A malformed
-_query_ always throws — it is a programming error, and swallowing it hides a
-bug. A dirty _value_ in the data follows the `onValueError` policy, because bad
+_query_ throws — it is a programming error, and swallowing it hides a bug.
+The one exception is `tolerant: true`, where a malformed query is repaired and
+marked instead, because a search box must not blank out mid-keystroke. A dirty _value_ in the data follows the `onValueError` policy, because bad
 rows in real data are normal and should not take down a search box.
 
 ## Verifying a change
@@ -64,6 +65,7 @@ Two further harnesses exist, and a change to `src/` should go through the first:
 ```
 npm run diff        # behavioural diff against HEAD~1, or any ref you pass
 npm run mutants     # measures whether that diff can actually see changes
+                    # (needs a clean tree; commit first)
 ```
 
 `npm run diff` runs a large generated corpus through both your working tree and

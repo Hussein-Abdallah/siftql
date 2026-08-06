@@ -48,8 +48,7 @@ import {
  *   4. The bracket on an UNBOUNDED range end, since `{* TO 2]` and `[* TO 2]`
  *      are deep-equal (an unbounded boundary has no inclusivity at all).
  *   5. The space after a sigil that precedes a digit: `-3` prints as `- 3`, so
- *      the `-` cannot be re-read as negation. (A previous fix corrected the
- *      count in the sentence above and left this item out of the list.)
+ *      the `-` cannot be re-read as negation.
  *
  * Everything else survives, including bare-vs-quoted, which is deliberately NOT
  * normalised because `quoted` is load-bearing: it decides fuzzy-vs-proximity
@@ -354,11 +353,11 @@ const serializeBody = (
     case 'LogicalExpression': {
       // Operators are left-associative, so `a AND b AND c ...` is a LEFT SPINE
       // one node deep per term. parse() builds it with a loop and accepts
-      // MAX_CLAUSES terms — 2,000 — and recursing to print one costs a frame
-      // per term, so
-      // overflowed the stack at around 5,000 — a query the parser had just
-      // accepted could not be serialized. The spine is walked iteratively so
-      // the two agree on what is representable.
+      // MAX_CLAUSES terms — 2,000 — and recursing to print one would cost a
+      // frame per term. The spine is walked iteratively instead, so what
+      // serialize() can print is bounded by MAX_AST_DEPTH rather than by the
+      // runtime's stack, which limits.ts is explicit is a coincidence and not
+      // a contract.
       const spine: LogicalNode[] = [];
 
       let deepest = node;
@@ -518,7 +517,9 @@ const wrap = (
  * comparison against the literal `x*`. A boundary tolerant mode explicitly
  * declined to interpret becomes a confident one. Pass the TREE to
  * `test`/`filter`/`highlight` rather than round-tripping it through text; they
- * all accept an AST, and the recovery policy is applied to it directly. It is NOT guaranteed to for a hand-built tree using the
+ * all accept an AST, and the recovery policy is applied to it directly.
+ *
+ * Round-tripping is NOT guaranteed for a hand-built tree using the
  * forward-compatibility nodes: `BoostModifier` and `RequiredModifier` are
  * printed as `a^2` and `+a`, which the v0.1 parser is required to reject. See
  * the note on `MissingExpression` above, which states the same limit honestly.

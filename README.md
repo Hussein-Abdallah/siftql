@@ -5,11 +5,12 @@
 > chronological date/time support. Zero runtime dependencies.
 
 [![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/siftql.svg)](https://www.npmjs.com/package/siftql)
-[![license](https://img.shields.io/npm/l/siftql.svg)](./LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
+Not yet published to npm. Until it is, install from the repository:
 
 ```sh
-npm install siftql
+npm install github:Hussein-Abdallah/siftql
 ```
 
 ```ts
@@ -342,7 +343,9 @@ reach one by accident.
 
 These are different failures and are handled differently.
 
-A **wrong query** always throws, and is not configurable:
+A **wrong query** throws, and that is not configurable — unless the caller
+opted into `tolerant: true`, which is exactly the opt-in that says a
+half-typed query should be repaired rather than refused:
 
 ```ts
 filter('name:>="m"', rows); // SiftQLOperandError — string has no ordering

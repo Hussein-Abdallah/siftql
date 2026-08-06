@@ -27,38 +27,57 @@ export const isDateLike = (value: unknown): value is Date => {
     return false;
   }
 
-  /*
-   * A CHEAP NEGATIVE FILTER FIRST, and it is not an optimisation detail.
-   *
-   * The slot probe below works by throwing, and `isPlainObject` calls this
-   * predicate on every object in every record — so the throw was being taken on
-   * the overwhelmingly common case. Constructing and unwinding an exception cost
-   * ~300x a successful call: 659 ms to test 300,000 plain objects, against 2 ms
-   * for `instanceof`. A whole `filter()` ran 4-12x slower than before the slot
-   * check was introduced, which is a correctness problem in a search box even
-   * though every answer was right.
-   *
-   * `Object.prototype.toString` reads the [[DateValue]] slot too — via
-   * Symbol.toStringTag's spec fallback — but REPORTS rather than throws, and it
-   * is cross-realm just like the probe. It is spoofable (an object may declare
-   * `Symbol.toStringTag = 'Date'`), which is exactly why it only filters
-   * NEGATIVES here: anything it rejects is certainly not a Date, and anything it
-   * accepts still has to survive the probe. 300,000 objects now cost 5 ms, and
-   * the classification is identical on all ten cases that distinguish the two
-   * (real, invalid, cross-realm and subclassed Dates; Object.create(Date
-   * .prototype); a toStringTag spoof; a Proxy wrapping a Date; plain objects;
-   * arrays; null-prototype objects).
-   */
-  if (Object.prototype.toString.call(value) !== '[object Date]') {
-    return false;
-  }
-
   try {
+    /*
+     * A CHEAP NEGATIVE FILTER FIRST, INSIDE THE GUARD.
+     *
+     * The slot probe below works by throwing, and `isPlainObject` calls this
+     * predicate on every object in every record — so the throw was being taken
+     * on the overwhelmingly common case, at roughly 300x the cost of a
+     * successful call. A whole `filter()` ran 4-12x slower.
+     *
+     * `Object.prototype.toString` reads the same [[DateValue]] slot and reports
+     * instead of throwing, so it makes a good prefilter — but it is NOT
+     * exception-free, which is how this line reopened the hole it was added
+     * beside. It looks up `Symbol.toStringTag`, and on a Proxy that runs the
+     * `get` trap; on a plain object it can run an accessor. Placed outside the
+     * try, it sent a raw `Error` out of `test()` and `highlight()` while the
+     * comment three lines above claimed every escape was a SiftQLError.
+     *
+     * Inside the guard it keeps the speed — a plain object still returns
+     * '[object Object]' without the probe ever running — and an object that
+     * fights back is simply not a Date, which is the correct answer.
+     *
+     * It is spoofable (`Symbol.toStringTag = 'Date'`), which is why it only
+     * filters NEGATIVES: anything it rejects is certainly not a Date, and
+     * anything it accepts still has to survive the probe.
+     */
+    if (Object.prototype.toString.call(value) !== '[object Date]') {
+      return false;
+    }
+
     // Reads the [[DateValue]] slot: throws for anything that merely inherits
     // from Date.prototype, succeeds for a real Date from any realm.
     Date.prototype.valueOf.call(value);
 
     return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * `Array.isArray`, surviving a revoked Proxy.
+ *
+ * `Array.isArray` is documented as never throwing, and for every ordinary value
+ * that is true — but on a revoked Proxy it raises
+ * `TypeError: Cannot perform 'IsArray' on a revoked proxy`. A revoked Proxy is
+ * an ordinary thing to find in a record whose owner has torn down a scope, and
+ * it reached seven call sites in the record walk and eight in the validator.
+ */
+export const safeIsArray = (value: unknown): value is readonly unknown[] => {
+  try {
+    return Array.isArray(value);
   } catch {
     return false;
   }

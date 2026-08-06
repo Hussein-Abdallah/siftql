@@ -811,6 +811,8 @@ export type AstVisitor<R = void> = {
  * {@link SiftQLAst}. `Field`, `RangeBoundary` and the other interior nodes are
  * absent: they are parts of an expression, never a query on their own.
  */
+import { safeIsArray } from './internal.js';
+
 export const ROOT_NODE_TYPES: ReadonlySet<string> = Object.freeze(
   new Set<string>([
     'EmptyExpression',
@@ -842,11 +844,25 @@ export const ROOT_NODE_TYPES: ReadonlySet<string> = Object.freeze(
  * some other library, and a mistyped `type` — the cases that otherwise surfaced
  * as a `TypeError` from deep inside a walk, or as a silently empty query.
  */
-export const isSiftQLNode = (value: unknown): value is SiftQLAst =>
-  typeof value === 'object' &&
-  value !== null &&
-  !Array.isArray(value) &&
-  ROOT_NODE_TYPES.has((value as { readonly type?: unknown }).type as string);
+export const isSiftQLNode = (value: unknown): value is SiftQLAst => {
+  if (typeof value !== 'object' || value === null || safeIsArray(value)) {
+    return false;
+  }
+
+  /*
+   * Reading `.type` is itself running consumer code when the node is a Proxy or
+   * has an accessor, so it is guarded. Unguarded, a Proxy AST sent a raw error
+   * out of `serialize`, `test`, `filter` and `highlight` — from inside the
+   * function whose job is to decide whether the argument is usable at all.
+   */
+  try {
+    return ROOT_NODE_TYPES.has(
+      (value as { readonly type?: unknown }).type as string,
+    );
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Binding power used by the serializer to insert the minimum parentheses that

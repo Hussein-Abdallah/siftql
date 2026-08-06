@@ -676,34 +676,52 @@ const anyCandidateMatches = (
 
 /** Record a hit, asking the type what to light up inside the matched value. */
 /**
- * Would iterating this pattern over this text produce a zero-length match?
- *
- * Runs the consumer's own loop. Checking only the FIRST match is not enough, and
- * was the first attempt at this: the pattern `a*` over "abcdef" matches "a" at
- * 0 — length one, perfectly well-behaved — and only then matches the empty
- * string at 1, where `lastIndex` stops moving.
- *
- * Terminates on every input, because it returns at the first empty match and any
- * other match advances `lastIndex` by at least one character.
+ * Can this pattern produce a zero-length match, and so trap a consumer's
+ * `exec` loop?
  */
-const matchesEmpty = (pattern: RegExp, value: unknown): boolean => {
-  if (typeof value !== 'string') {
-    return false;
-  }
+const matchesEmpty = (pattern: RegExp): boolean => {
+  /*
+   * PROBES, not a scan of the value — and the difference is a two-minute hang.
+   *
+   * The first version of this ran the consumer's regex over the whole record
+   * value, looking for a zero-length match. That put an ARBITRARY, UNSCREENED
+   * regex on the match path: a value type whose `highlight` returned `(a+)+$`
+   * blocked the process for 118 seconds on a 41-character value. `regexGuard`
+   * cannot help, because it screens QUERY patterns and this one arrives from a
+   * callback. Nor can a time check — a single `exec` is uninterruptible, so the
+   * budget is never consulted.
+   *
+   * The only safe amount of hostile regex to run is a bounded amount, so the
+   * pattern is tried against two tiny fixed strings instead. Backtracking is
+   * bounded by input length, so four characters cannot blow up.
+   *
+   * WHAT THIS CATCHES: `a*`, `(?:)`, `^`, `$`, `[0-9]*`, `\b` — every shape that
+   * makes the documented `while ((m = query.exec(text)))` loop spin forever,
+   * because a pattern that can match nothing at all will do so against one of
+   * these probes.
+   *
+   * WHAT IT MISSES: a pattern zero-width only in a context the probes lack, such
+   * as `(?<=x)`. Stated rather than papered over. The consequence is bounded —
+   * such a highlight keeps its regex, and the risk is the consumer's own loop,
+   * exactly as it was before this check existed at all.
+   */
+  const probes = ['', 'a1 A'];
 
-  const scanner = new RegExp(
-    pattern.source,
-    `${pattern.flags.replace(/[gy]/gu, '')}g`,
-  );
+  for (const probe of probes) {
+    const scanner = new RegExp(
+      pattern.source,
+      `${pattern.flags.replace(/[gy]/gu, '')}g`,
+    );
 
-  let match = scanner.exec(value);
+    let match = scanner.exec(probe);
 
-  while (match !== null) {
-    if (match[0].length === 0) {
-      return true;
+    while (match !== null) {
+      if (match[0].length === 0) {
+        return true;
+      }
+
+      match = scanner.exec(probe);
     }
-
-    match = scanner.exec(value);
   }
 
   return false;
@@ -747,7 +765,7 @@ const emit = (
   // the source cannot answer it: `a*` matches empty everywhere, `\b` matches
   // empty only inside a word, and `a+` never does. One scan settles it for this
   // value, which is the only value this highlight describes.
-  const loops = query !== null && !matchesEmpty(query, value);
+  const loops = query !== null && !matchesEmpty(query);
 
   sink.add(
     query && loops

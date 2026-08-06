@@ -29,6 +29,7 @@ import type {
   OnValueError,
   TypeStrategy,
 } from './registry.js';
+import { safeIsArray } from './internal.js';
 import { MAX_AST_DEPTH, MAX_AST_NODES } from './limits.js';
 import { assertValidFormat } from './temporal/format.js';
 import { type SiftQLAst, isSiftQLNode } from './types.js';
@@ -66,7 +67,7 @@ export const describeArgument = (value: unknown): string => {
     return 'undefined';
   }
 
-  if (Array.isArray(value)) {
+  if (safeIsArray(value)) {
     const length = peek(value, 'length');
 
     return typeof length === 'number'
@@ -139,7 +140,7 @@ export const assertQuery = (value: unknown, fn: string): string => {
  * cost.
  */
 export const assertItems = (value: unknown, fn: string): readonly unknown[] => {
-  if (!Array.isArray(value)) {
+  if (!safeIsArray(value)) {
     const hint =
       typeof value === 'object' && value !== null && Symbol.iterator in value
         ? ' Iterables are not accepted; spread it first: [...value].'
@@ -186,13 +187,13 @@ export const assertItems = (value: unknown, fn: string): readonly unknown[] => {
 type Check = (value: unknown) => boolean;
 
 const isObject: Check = (value) =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
+  typeof value === 'object' && value !== null && !safeIsArray(value);
 
 const isString: Check = (value) => typeof value === 'string';
 const isBool: Check = (value) => typeof value === 'boolean';
-const isArray: Check = (value) => Array.isArray(value);
+const isArray: Check = (value) => safeIsArray(value);
 const isNonEmptyArray: Check = (value) =>
-  Array.isArray(value) && value.length > 0;
+  safeIsArray(value) && value.length > 0;
 
 const oneOf =
   (...allowed: readonly string[]): Check =>
@@ -246,6 +247,21 @@ const BOUNDED_BOUNDARY: Readonly<Record<string, Check>> = Object.freeze({
 });
 
 /**
+ * What a literal's `value` must be, given its `literal` kind.
+ *
+ * Checking `literal` and `quoted` alone was not enough: a text literal with no
+ * `value` reached `serialize` and threw a raw `TypeError` reading `.length`,
+ * and the boolean and null variants serialized to the term `undefined` — which
+ * is a valid query meaning something else entirely, so the round-trip law broke
+ * silently. A truncated node is precisely the case this table exists for.
+ */
+const LITERAL_VALUE: Readonly<Record<string, Check>> = Object.freeze({
+  boolean: isBool,
+  null: (value: unknown) => value === null,
+  text: isString,
+});
+
+/**
  * Check one node's own shape. Returns the offending property, or `null`.
  *
  * A node whose `type` this does not recognise passes: interior shapes we have no
@@ -260,10 +276,18 @@ const shapeProblem = (node: object, type: string): string | null => {
     return null;
   }
 
-  const checks: Readonly<Record<string, Check>> =
-    type === 'RangeBoundary' && peek(node, 'bounded') === true
-      ? { ...required, ...BOUNDED_BOUNDARY }
-      : required;
+  let checks: Readonly<Record<string, Check>> = required;
+
+  if (type === 'RangeBoundary' && peek(node, 'bounded') === true) {
+    checks = { ...required, ...BOUNDED_BOUNDARY };
+  } else if (type === 'LiteralExpression') {
+    const kind = peek(node, 'literal');
+    const accepts = typeof kind === 'string' ? LITERAL_VALUE[kind] : undefined;
+
+    if (accepts) {
+      checks = { ...required, value: accepts };
+    }
+  }
 
   for (const [property, accepts] of Object.entries(checks)) {
     if (!accepts(peek(node, property))) {
@@ -317,6 +341,54 @@ const shapeProblem = (node: object, type: string): string | null => {
  * One pass per QUERY, not per item: `filter` over 10,000 records validates once
  * and then compiles once.
  */
+/**
+ * The object-valued properties of a node, wherever they live.
+ *
+ * `Object.values` was the obvious choice and the wrong one: it sees only OWN
+ * ENUMERABLE properties, so a node whose children are prototype accessors — a
+ * class instance with private fields, which is exactly the "rehydrated AST"
+ * this file's header names — walked as a single node with `visits === 1` and
+ * `depth === 1`. Both budgets were bypassed, and a 60,000-deep tree of those
+ * still threw a raw `RangeError` out of `prune`.
+ *
+ * So the prototype chain is walked too, and non-enumerable own properties are
+ * included. Every read goes through `peek`, because on such a node reading a
+ * property IS running consumer code.
+ *
+ * Stops at `Object.prototype`, so an ordinary parsed tree costs one
+ * `getOwnPropertyNames` call per node and nothing more.
+ */
+const childrenOf = (node: object): object[] => {
+  const names = new Set<string>();
+
+  try {
+    for (
+      let current: object | null = node;
+      current !== null && current !== Object.prototype;
+      current = Object.getPrototypeOf(current) as object | null
+    ) {
+      for (const name of Object.getOwnPropertyNames(current)) {
+        names.add(name);
+      }
+    }
+  } catch {
+    // A hostile getPrototypeOf or ownKeys trap. Whatever we already collected
+    // is still worth checking; what we cannot see, we cannot walk.
+  }
+
+  const children: object[] = [];
+
+  for (const name of names) {
+    const child = peek(node, name);
+
+    if (typeof child === 'object' && child !== null) {
+      children.push(child);
+    }
+  }
+
+  return children;
+};
+
 const assertWalkable = (root: SiftQLAst, fn: string): void => {
   const stack: { readonly node: object; readonly depth: number }[] = [
     { depth: 0, node: root },
@@ -361,21 +433,8 @@ const assertWalkable = (root: SiftQLAst, fn: string): void => {
       }
     }
 
-    let children: unknown[];
-
-    try {
-      children = Object.values(frame.node);
-    } catch {
-      // A throwing getter or ownKeys trap. Nothing to descend into; the walks
-      // downstream read only the properties they need, and if one of those
-      // throws it is reported where it is read.
-      continue;
-    }
-
-    for (const child of children) {
-      if (typeof child === 'object' && child !== null) {
-        stack.push({ depth: frame.depth + 1, node: child });
-      }
+    for (const child of childrenOf(frame.node)) {
+      stack.push({ depth: frame.depth + 1, node: child });
     }
   }
 };
@@ -417,6 +476,27 @@ const ON_VALUE_ERROR: readonly OnValueError[] = ['skip', 'throw'];
 const ON_RECOVERED: readonly OnRecovered[] = ['prune', 'throw'];
 const TYPE_STRATEGY: readonly TypeStrategy[] = ['prepend', 'append', 'replace'];
 
+/**
+ * Every option the engine understands.
+ *
+ * Named once, so the snapshot below and the checks above cannot drift apart —
+ * an option added to one and forgotten in the other is how a value reaches the
+ * engine unvalidated.
+ */
+const KNOWN_OPTIONS = [
+  'dateFormat',
+  'id',
+  'matchKeys',
+  'maxPatternLength',
+  'onRecovered',
+  'onValueError',
+  'parseDate',
+  'regexGuard',
+  'tolerant',
+  'types',
+  'typeStrategy',
+] as const;
+
 const badOption = (name: string, expected: string, got: unknown): never => {
   throw new SiftQLConfigError(
     `options.${name} must be ${expected}, received ${describeArgument(got)}.`,
@@ -454,7 +534,7 @@ const checkDateFormat = (value: unknown): void => {
 
   const formats = typeof value === 'string' ? [value] : value;
 
-  if (!Array.isArray(formats)) {
+  if (!safeIsArray(formats)) {
     badOption('dateFormat', 'a format string or an array of them', value);
 
     return;
@@ -488,7 +568,7 @@ const checkTypes = (value: unknown): void => {
     return;
   }
 
-  if (!Array.isArray(value)) {
+  if (!safeIsArray(value)) {
     const hint =
       typeof value === 'object' && value !== null
         ? ' It is an array, not a name-keyed object: types: [myType].'
@@ -499,7 +579,7 @@ const checkTypes = (value: unknown): void => {
     );
   }
 
-  for (const [index, input] of (value as readonly unknown[]).entries()) {
+  for (const [index, input] of value.entries()) {
     if (typeof input === 'function') {
       // A factory. It runs during createRegistry, where a throw is wrapped.
       continue;
@@ -542,7 +622,7 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
     return {};
   }
 
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (typeof value !== 'object' || value === null || safeIsArray(value)) {
     throw new SiftQLArgumentError(
       `${fn}() expects an options object, received ${describeArgument(value)}.`,
       { argument: 'options', received: value },
@@ -552,6 +632,22 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
   // Read through `peek`: an option may be an accessor, and a throwing one must
   // produce a config error rather than escape from the validator.
   const read = (key: string): unknown => peek(value, key);
+
+  /**
+   * Was this option supplied at all?
+   *
+   * `in` rather than a presence test on the value, so `{ tolerant: undefined }`
+   * and an omitted `tolerant` are treated alike — both mean "leave it alone".
+   * Guarded, because `in` runs a Proxy's `has` trap, and this is the function
+   * whose job is to turn bad options into errors rather than throw them.
+   */
+  const supplied = (key: string): boolean => {
+    try {
+      return key in value;
+    } catch {
+      return false;
+    }
+  };
 
   checkBoolean('tolerant', read('tolerant'));
   checkBoolean('matchKeys', read('matchKeys'));
@@ -597,23 +693,27 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    * read exactly once, here, behind a guard — after this the engine is reading
    * plain data and cannot be surprised.
    *
+   * ABSENT KEYS ARE OMITTED, not copied as `undefined`, and that distinction is
+   * load-bearing. Including them made the snapshot a complete object, so
+   * `engine.extend()` — which merges `{ ...parent, ...child }` — overwrote every
+   * option the caller had not restated with `undefined`. An extended engine
+   * silently lost `matchKeys`, reverted `onValueError: 'throw'` to `'skip'`, and
+   * dropped its custom value types, against a documented contract that says
+   * "merged over this one's". Nothing in 690 tests noticed.
+   *
    * Unknown keys are dropped rather than copied. They were already documented as
    * accepted-and-ignored, and carrying an arbitrary accessor forward would
    * reintroduce exactly the hazard this closes.
    */
-  return {
-    dateFormat: read('dateFormat') as EngineOptions['dateFormat'],
-    id: read('id') as EngineOptions['id'],
-    matchKeys: read('matchKeys') as EngineOptions['matchKeys'],
-    maxPatternLength: read(
-      'maxPatternLength',
-    ) as EngineOptions['maxPatternLength'],
-    onRecovered: read('onRecovered') as EngineOptions['onRecovered'],
-    onValueError: read('onValueError') as EngineOptions['onValueError'],
-    parseDate: read('parseDate') as EngineOptions['parseDate'],
-    regexGuard: read('regexGuard') as EngineOptions['regexGuard'],
-    tolerant: read('tolerant') as EngineOptions['tolerant'],
-    types: read('types') as EngineOptions['types'],
-    typeStrategy: read('typeStrategy') as EngineOptions['typeStrategy'],
-  };
+  const snapshot: EngineOptions = {};
+
+  for (const key of KNOWN_OPTIONS) {
+    if (supplied(key)) {
+      // Index through a widened view: the keys are known, the values are not
+      // yet narrowed, and every one has been checked above.
+      (snapshot as Record<string, unknown>)[key] = read(key);
+    }
+  }
+
+  return snapshot;
 };

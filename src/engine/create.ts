@@ -124,12 +124,19 @@ export interface Engine {
   extend(options: EngineOptions): Engine;
 }
 
-export const createEngine = (options: EngineOptions = {}): Engine => {
-  // Eagerly, before anything closes over it: a malformed `dateFormat` must be a
-  // createEngine() failure, not a surprise on whichever record first holds a
-  // date.
-  assertOptions(options, 'createEngine');
-
+export const createEngine = (raw: EngineOptions = {}): Engine => {
+  /*
+   * The SNAPSHOT is what the engine keeps, and every read below goes through it.
+   *
+   * Validating eagerly and then reading `raw` again was the whole of the bug:
+   * `assertOptions` was called for its side effect, its return value discarded,
+   * and `resolveOptions(raw)` / `raw.types` / `raw.typeStrategy` then read the
+   * caller's object directly — so an option implemented as a throwing accessor
+   * passed validation and escaped raw from the line after it. A malformed
+   * `dateFormat` must be a createEngine() failure, not a surprise on whichever
+   * record first holds a date.
+   */
+  const options = assertOptions(raw, 'createEngine');
   const resolved = resolveOptions(options);
   const registry = createRegistry(
     resolved,
@@ -182,6 +189,11 @@ export const createEngine = (options: EngineOptions = {}): Engine => {
     );
 
   return {
+    /*
+     * MERGED over this engine's options, which is what the contract says and
+     * what the snapshot now makes possible: `assertOptions` omits keys the
+     * caller did not supply, so spreading it can no longer blank the parent.
+     */
     extend: (extra) =>
       createEngine({ ...options, ...assertOptions(extra, 'engine.extend') }),
 

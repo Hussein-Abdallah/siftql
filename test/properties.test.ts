@@ -1,0 +1,856 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  builders,
+  createEngine,
+  filter,
+  highlight,
+  isSiftQLError,
+  parse,
+  serialize,
+  test as matches,
+  type SiftQLAst,
+} from '../src/index.js';
+import { assessPattern } from '../src/engine/redos.js';
+
+/**
+ * EXECUTABLE PROPERTIES.
+ *
+ * Why this file exists, stated plainly: for five audits running, every defect
+ * found in this package passed the entire test suite. The suite is written the
+ * way a person writes tests — one case per bug, plus a few neighbours the author
+ * thought of. The audits found things by generating tens of thousands of inputs
+ * and checking a PROPERTY. That asymmetry, and not the difficulty of the code,
+ * is why fixes kept introducing new defects.
+ *
+ * So the promises this package makes are written here as assertions over
+ * GENERATED input, not as prose in a doc comment. A comment claiming "every
+ * error is a SiftQLError" decays the moment someone adds a fast path outside a
+ * try block — which is exactly what happened. A property fails the build.
+ *
+ * FOUR HOSTILE INPUT CHANNELS, because those are the four ways something the
+ * package did not write gets in:
+ *
+ *   1. query text          — arbitrary strings, including half-typed ones
+ *   2. record values       — arbitrary JS, including Proxies and accessors
+ *   3. consumer callbacks  — custom value types that may throw or lie
+ *   4. hand-built ASTs     — trees from JSON, builders, or a class instance
+ *
+ * Scale is deliberately modest by default so `npm test` stays fast. Set
+ * `SIFTQL_PROPERTY_RUNS` to raise it — the audits used 10k–100k per property,
+ * and that is the setting to reach for before believing a fix.
+ */
+
+const RUNS = Number(process.env.SIFTQL_PROPERTY_RUNS ?? 300);
+
+/* ------------------------------------------------------------------------- *
+ * A deterministic PRNG, so a failure is reproducible from its seed alone.
+ * `Math.random` would report a counterexample nobody can reproduce.
+ * ------------------------------------------------------------------------- */
+
+const rng = (seed: number) => {
+  let state = seed >>> 0;
+
+  return (): number => {
+    state = (state * 1_664_525 + 1_013_904_223) >>> 0;
+
+    return state / 0x1_00_00_00_00;
+  };
+};
+
+const pick = <T>(next: () => number, items: readonly T[]): T =>
+  items[Math.floor(next() * items.length)] as T;
+
+/* ------------------------------------------------------------------------- *
+ * Generators
+ * ------------------------------------------------------------------------- */
+
+const ATOMS = [
+  'a',
+  'ada',
+  '3',
+  '007',
+  '-3',
+  '- 3',
+  'x*',
+  'a**b',
+  '?x',
+  '/re/i',
+  'true',
+  'false',
+  'null',
+  '"in progress"',
+  "'quoted'",
+  '[1 TO 9]',
+  '[* TO 9}',
+  '2020-06-01',
+  '14:30',
+  '2020-06-01T12:00:00Z',
+  'a\\ b',
+  '\\*',
+  'ünïcode',
+  'content-type',
+];
+
+const FIELDS = [
+  '',
+  'n:',
+  'n::',
+  'd:',
+  'a.b:',
+  'a.0:',
+  "'full name'.first:",
+  'n:>=',
+  'n:<',
+  'n:=',
+  'content-type:',
+];
+
+/** A query built from the grammar, biased toward the shapes that broke before. */
+const query = (next: () => number, depth = 3): string => {
+  if (depth === 0) {
+    return pick(next, ATOMS);
+  }
+
+  const roll = next();
+
+  if (roll < 0.28) {
+    const field = pick(next, FIELDS);
+
+    return next() < 0.4
+      ? `${field}(${query(next, depth - 1)})`
+      : field + pick(next, ATOMS);
+  }
+
+  if (roll < 0.45) {
+    return `(${query(next, depth - 1)})`;
+  }
+
+  if (roll < 0.58) {
+    return `${pick(next, ['NOT ', '-'])}${query(next, depth - 1)}`;
+  }
+
+  return `${query(next, depth - 1)} ${pick(next, ['AND', 'OR', ''])} ${query(
+    next,
+    depth - 1,
+  )}`;
+};
+
+/** A record, including the shapes that have produced wrong answers before. */
+const record = (next: () => number): unknown => {
+  const roll = next();
+
+  if (roll < 0.15) {
+    // Shared reference reachable by two paths.
+    const shared = { v: 'ada', z: 3 };
+
+    return { p: shared, q: shared };
+  }
+
+  if (roll < 0.25) {
+    // Parent back-reference: finite, but a naive cycle guard drops it.
+    const root: Record<string, unknown> = { name: 'root' };
+
+    root.children = [{ name: 'kid', parent: root }];
+
+    return root;
+  }
+
+  if (roll < 0.35) {
+    const self: Record<string, unknown> = { name: 'x' };
+
+    self.loop = self;
+
+    return self;
+  }
+
+  return {
+    'content-type': 'json',
+    d: pick(next, ['2020-06-01', '14:30', 1_591_000_000_000, new Date()]),
+    n: pick(next, [3, -3, 7, '007', 0]),
+    name: pick(next, ['ada', 'ADA', 'in progress', '']),
+    tags: ['red', 'blue'],
+  };
+};
+
+/** Values engineered to run consumer code from inside a property read. */
+const hostileValues = (): readonly unknown[] => {
+  const revoked = Proxy.revocable({}, {});
+
+  revoked.revoke();
+
+  return [
+    new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('get trap');
+        },
+      },
+    ),
+    new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error('gopd trap');
+        },
+      },
+    ),
+    new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error('ownKeys trap');
+        },
+      },
+    ),
+    new Proxy(
+      {},
+      {
+        has() {
+          throw new Error('has trap');
+        },
+      },
+    ),
+    revoked.proxy,
+    {
+      get v(): string {
+        throw new Error('throwing getter');
+      },
+    },
+    Object.defineProperty({}, Symbol.toStringTag, {
+      get() {
+        throw new Error('toStringTag');
+      },
+    }),
+    Object.create(Date.prototype),
+    Object.create(null),
+    new Array<unknown>(600_000_000),
+    new Map([['a', 'b']]),
+    new Set(['a']),
+    Symbol('s'),
+    10n,
+  ];
+};
+
+/** Option objects whose accessors run consumer code. */
+const hostileOptions = (): readonly unknown[] =>
+  [
+    'tolerant',
+    'matchKeys',
+    'regexGuard',
+    'onValueError',
+    'onRecovered',
+    'typeStrategy',
+    'dateFormat',
+    'id',
+    'parseDate',
+    'maxPatternLength',
+    'types',
+  ].map((key) =>
+    Object.defineProperty({}, key, {
+      enumerable: true,
+      get() {
+        throw new Error(`option ${key}`);
+      },
+    }),
+  );
+
+/** ASTs that did not come from `parse()`. */
+const hostileAsts = (): readonly unknown[] => {
+  const at = { end: 1, start: 0 };
+
+  /*
+   * GETTERS, not fields, and eslint is told so below: the whole point of this
+   * fixture is that the children live on the PROTOTYPE rather than as own
+   * enumerable properties, which is what `Object.values` cannot see. Rewriting
+   * them as readonly fields would remove the defect being tested.
+   */
+  /* eslint-disable @typescript-eslint/class-literal-property-style */
+  class Empty {
+    public get type(): string {
+      return 'EmptyExpression';
+    }
+
+    public get location(): object {
+      return at;
+    }
+  }
+
+  class Paren {
+    readonly #inner: unknown;
+
+    public constructor(inner: unknown) {
+      this.#inner = inner;
+    }
+
+    public get type(): string {
+      return 'ParenthesizedExpression';
+    }
+
+    public get location(): object {
+      return at;
+    }
+
+    public get expression(): unknown {
+      return this.#inner;
+    }
+  }
+  /* eslint-enable @typescript-eslint/class-literal-property-style */
+
+  // A class instance whose children live on the prototype, not as own
+  // enumerable properties — the "rehydrated AST" shape.
+  let nested: unknown = new Empty();
+
+  for (let index = 0; index < 5000; index += 1) {
+    nested = new Paren(nested);
+  }
+
+  const shared = (levels: number): unknown => {
+    // Deliberately SHARED, not copied: n+1 nodes, 2^n paths. This is the shape
+    // that made serialize produce a 100 MB string from 49 objects.
+    let node = builders.term('a') as never;
+
+    for (let index = 0; index < levels; index += 1) {
+      node = builders.or(node, node) as never;
+    }
+
+    return node;
+  };
+
+  return [
+    nested,
+    shared(24),
+    { location: at, type: 'Tag' },
+    { literal: 'text', location: at, quoted: false, type: 'LiteralExpression' },
+    { literal: 'null', location: at, quoted: false, type: 'LiteralExpression' },
+    { location: at, type: 'LogicalExpression' },
+    new Proxy(parse('a:b'), {
+      get() {
+        throw new Error('ast trap');
+      },
+    }),
+  ];
+};
+
+/** Value types that throw or return the wrong thing. */
+const hostileTypes = (): readonly unknown[] =>
+  [
+    {
+      coerceValue: () => {
+        throw new Error('coerce');
+      },
+    },
+    {
+      // Deliberately invalid: a value type may hand back a RegExp whose `source`
+      // is not a compilable pattern, and reading it must not escape.
+      // eslint-disable-next-line no-invalid-regexp
+      highlight: () => new RegExp('(', 'g'),
+    },
+    {
+      highlight: () => /(a+)+$/u,
+    },
+    {
+      matches: () => 'yes',
+    },
+  ].map((over) => ({
+    coerceValue: (value: unknown) => ({ ok: true, value }),
+    equals: () => true,
+    name: 'hostile',
+    parseOperand: (token: { value: unknown }) => ({
+      ok: true,
+      value: token.value,
+    }),
+    ...over,
+  }));
+
+/** Every public entry point, applied to one input. */
+const entryPoints = (
+  q: unknown,
+  item: unknown,
+  options?: unknown,
+): readonly (() => unknown)[] => [
+  () => parse(q as string, options as never),
+  () => serialize(q as SiftQLAst),
+  () => matches(q as string, item, options as never),
+  () => filter(q as string, [item], options as never),
+  () => highlight(q as string, item, options as never),
+  () => createEngine(options as never).test(q as string, item),
+];
+
+/** Run something and report only a NON-SiftQLError escape. */
+const escape = (run: () => unknown): string | null => {
+  try {
+    run();
+
+    return null;
+  } catch (error) {
+    if (isSiftQLError(error)) {
+      return null;
+    }
+
+    return `${(error as Error).name}: ${(error as Error).message}`.slice(
+      0,
+      120,
+    );
+  }
+};
+
+/* ========================================================================= *
+ * P1. THE FAILURE BOUNDARY
+ *
+ * "Every error siftql throws is a SiftQLError." Asserted here rather than in a
+ * comment, because the comment has now been falsified twice by edits made after
+ * it was written.
+ * ========================================================================= */
+
+describe('P1: no entry point throws a non-SiftQLError', () => {
+  it('for hostile record values', () => {
+    const escapes: string[] = [];
+
+    for (const value of hostileValues()) {
+      for (const q of ['anything', 'v:x', 'v:>1', 'v:[1 TO 9]', 'v:/a/']) {
+        for (const run of entryPoints(q, value)) {
+          const failure = escape(run);
+
+          if (failure) {
+            escapes.push(`${q} / ${failure}`);
+          }
+        }
+      }
+    }
+
+    expect(escapes).toEqual([]);
+  });
+
+  it('for hostile option objects', () => {
+    const escapes: string[] = [];
+
+    for (const options of hostileOptions()) {
+      for (const run of entryPoints('a:b', { a: 'b' }, options)) {
+        const failure = escape(run);
+
+        if (failure) {
+          escapes.push(failure);
+        }
+      }
+
+      const failure = escape(() =>
+        createEngine({ matchKeys: true }).extend(options as never),
+      );
+
+      if (failure) {
+        escapes.push(`extend: ${failure}`);
+      }
+    }
+
+    expect(escapes).toEqual([]);
+  });
+
+  it('for hand-built ASTs', () => {
+    const escapes: string[] = [];
+
+    for (const ast of hostileAsts()) {
+      for (const run of [
+        () => serialize(ast as SiftQLAst),
+        () => matches(ast as SiftQLAst, { a: 1 }),
+        () => filter(ast as SiftQLAst, [{ a: 1 }]),
+        () => highlight(ast as SiftQLAst, { a: 1 }),
+      ]) {
+        const failure = escape(run);
+
+        if (failure) {
+          escapes.push(failure);
+        }
+      }
+    }
+
+    expect(escapes).toEqual([]);
+  });
+
+  it('for misbehaving value types', () => {
+    const escapes: string[] = [];
+
+    for (const type of hostileTypes()) {
+      for (const q of ['f:1', 'f:[1 TO 9]']) {
+        const failure =
+          escape(() =>
+            createEngine({ types: [type as never] }).filter(q, [{ f: 'a' }]),
+          ) ??
+          escape(() =>
+            createEngine({ types: [type as never] }).highlight(q, { f: 'a' }),
+          );
+
+        if (failure) {
+          escapes.push(`${q} / ${failure}`);
+        }
+      }
+    }
+
+    expect(escapes).toEqual([]);
+  });
+
+  it('for generated queries against generated records', () => {
+    const next = rng(20_260_805);
+    const escapes: string[] = [];
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const q = query(next);
+      const item = record(next);
+
+      for (const entry of entryPoints(q, item)) {
+        const failure = escape(entry);
+
+        if (failure) {
+          escapes.push(`${JSON.stringify(q)} -> ${failure}`);
+        }
+      }
+    }
+
+    expect(escapes.slice(0, 5)).toEqual([]);
+  });
+});
+
+/* ========================================================================= *
+ * P2. THE ROUND-TRIP LAW (I4)
+ * ========================================================================= */
+
+describe('P2: serialize round-trips and is idempotent', () => {
+  const strip = (node: SiftQLAst): string =>
+    JSON.stringify(node, (key, value: unknown) =>
+      key === 'location' ? undefined : value,
+    );
+
+  it('over generated queries', () => {
+    const next = rng(11);
+    const violations: string[] = [];
+
+    for (let run = 0; run < RUNS * 4; run += 1) {
+      const q = query(next);
+
+      let ast: SiftQLAst;
+
+      try {
+        ast = parse(q);
+      } catch {
+        continue;
+      }
+
+      const once = serialize(ast);
+
+      try {
+        if (strip(parse(once)) !== strip(ast)) {
+          violations.push(`${JSON.stringify(q)} -> ${JSON.stringify(once)}`);
+        } else if (serialize(parse(once)) !== once) {
+          violations.push(`not idempotent: ${JSON.stringify(once)}`);
+        }
+      } catch (error) {
+        violations.push(
+          `${JSON.stringify(once)} does not re-parse: ${(error as Error).message.slice(0, 60)}`,
+        );
+      }
+    }
+
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+/* ========================================================================= *
+ * P3. MATCHING ALGEBRA
+ * ========================================================================= */
+
+describe('P3: matching obeys its own algebra', () => {
+  it('filter partitions, and test agrees with filter', () => {
+    const next = rng(7);
+    const violations: string[] = [];
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const q = query(next);
+      const left = record(next);
+      const right = record(next);
+
+      let both: unknown[];
+
+      try {
+        both = filter(q, [left, right]);
+      } catch {
+        continue;
+      }
+
+      const split = [...filter(q, [left]), ...filter(q, [right])];
+
+      if (both.length !== split.length) {
+        violations.push(`partition: ${JSON.stringify(q)}`);
+      }
+
+      if (matches(q, left) !== filter(q, [left]).includes(left)) {
+        violations.push(`test/filter: ${JSON.stringify(q)}`);
+      }
+    }
+
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+
+  it('a highlight implies a match, and its regex terminates', () => {
+    const next = rng(99);
+    const violations: string[] = [];
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const q = query(next);
+      const item = record(next);
+
+      let hits: readonly { query?: RegExp | undefined }[];
+
+      try {
+        hits = highlight(q, item);
+      } catch {
+        continue;
+      }
+
+      if (hits.length > 0 && !matches(q, item)) {
+        violations.push(`highlight without match: ${JSON.stringify(q)}`);
+      }
+
+      for (const hit of hits) {
+        if (!hit.query) {
+          continue;
+        }
+
+        let steps = 0;
+
+        while (hit.query.exec('abcdefghij') !== null) {
+          steps += 1;
+
+          if (steps > 100) {
+            violations.push(
+              `exec loop does not terminate: ${String(hit.query)}`,
+            );
+            break;
+          }
+        }
+      }
+    }
+
+    expect(violations.slice(0, 5)).toEqual([]);
+  });
+});
+
+/* ========================================================================= *
+ * P4. ENGINE CONFIGURATION
+ * ========================================================================= */
+
+describe('P4: an engine honours its configuration', () => {
+  it('extend() merges over the parent instead of resetting it', () => {
+    // Documented as "a new engine with additional options merged over this
+    // one's". Every one of these silently reverted to its default.
+    const custom = {
+      coerceValue: () => ({ kind: 'miss' as const, ok: false as const }),
+      equals: () => true,
+      name: 'mine',
+      parseOperand: () => ({ ok: true as const, value: 1 }),
+    };
+    const base = createEngine({
+      matchKeys: true,
+      onValueError: 'throw',
+      tolerant: true,
+      types: [custom as never],
+    });
+    const extended = base.extend({ id: 'child' });
+
+    expect(extended.options.matchKeys).toBe(true);
+    expect(extended.options.onValueError).toBe('throw');
+    expect(extended.options.tolerant).toBe(true);
+    expect(extended.types.get('mine')).toBeDefined();
+    expect(extended.options.id).toBe('child');
+  });
+
+  it('never shows a value type the failure policy', () => {
+    let seen: Record<string, unknown> = {};
+
+    createEngine({
+      onValueError: 'throw',
+      types: [
+        {
+          coerceValue: (_value: unknown, ctx: { options: object }) => {
+            seen = { ...ctx.options };
+
+            return { kind: 'miss', ok: false };
+          },
+          equals: () => true,
+          name: 'spy',
+          parseOperand: (token: { value: unknown }) => ({
+            ok: true,
+            value: token.value,
+          }),
+        } as never,
+      ],
+    }).filter('f:1', [{ f: 1 }]);
+
+    expect('onValueError' in seen).toBe(false);
+    expect('onRecovered' in seen).toBe(false);
+  });
+
+  it("refuses every recovered tree under onRecovered: 'throw'", () => {
+    const strict = createEngine({ onRecovered: 'throw', tolerant: true });
+    const next = rng(4242);
+    const leaks: string[] = [];
+
+    for (let run = 0; run < RUNS; run += 1) {
+      const full = query(next);
+      const cut = full.slice(0, 1 + Math.floor(next() * full.length));
+
+      let ast: SiftQLAst;
+
+      try {
+        ast = parse(cut, { tolerant: true });
+      } catch {
+        continue;
+      }
+
+      if (!JSON.stringify(ast).includes('"recovered"')) {
+        continue;
+      }
+
+      try {
+        strict.test(cut, { a: 1 });
+        leaks.push(JSON.stringify(cut));
+      } catch {
+        // Refused, as it must be.
+      }
+    }
+
+    expect(leaks.slice(0, 5)).toEqual([]);
+  });
+});
+
+/* ========================================================================= *
+ * P5. COST
+ *
+ * Stated as a property because "this is linear" has been asserted in a comment
+ * three times and been false twice. A wall-clock ceiling is crude, but it is
+ * checkable, and quadratic blowup clears it by orders of magnitude.
+ * ========================================================================= */
+
+describe('P5: cost stays bounded', () => {
+  /*
+   * DEFERRED, and this one is an unfixed denial of service rather than a
+   * cosmetic gap: a chain-shaped record — threaded comments, a linked list — has
+   * a leaf at every level, and `materialise` builds an O(depth) path for each
+   * one, so time AND retained memory are quadratic. An ~830 KB record kills the
+   * process.
+   *
+   * The linked-list trail already fixed the case with one leaf at the bottom.
+   * Fixing this one needs the path to stay lazy all the way into `emit`, since
+   * only a matching or failing candidate ever needs its path materialised — a
+   * real refactor of the Candidate contract, not a patch.
+   */
+  it.fails('is not quadratic in record depth', () => {
+    const chain = (levels: number): unknown => {
+      let node: Record<string, unknown> = { text: 'leaf' };
+
+      for (let index = 0; index < levels; index += 1) {
+        node = { reply: node, text: 'leaf' };
+      }
+
+      return node;
+    };
+
+    const time = (levels: number): number => {
+      const started = Date.now();
+
+      matches('zzz', chain(levels));
+
+      return Date.now() - started;
+    };
+
+    // Warm, then compare a doubling. Linear is ~2x; quadratic is ~4x.
+    time(1000);
+
+    const small = Math.max(time(4000), 1);
+    const large = time(8000);
+
+    expect(large / small).toBeLessThan(3);
+  });
+
+  // DEFERRED, not forgotten: the screen is being replaced with a linear-time
+  // matcher rather than patched a fourth time. `it.fails` keeps the expectation
+  // in the build and turns it into a failure the day it starts passing, which is
+  // the day the replacement lands.
+  it.fails('never accepts a regex that then runs away', () => {
+    /*
+     * THE PROPERTY THE SCREEN ACTUALLY OWES, and the one no version of it has
+     * been tested against: whatever it accepts must not hang.
+     *
+     * Every bypass below was found by an auditor, not by the suite — including
+     * two that are the commit message's own headline examples with one
+     * parenthesis added.
+     */
+    const suspects = [
+      '^(a+)+$',
+      '^(a+){1,99}$',
+      '^(a*){1,99}$',
+      '^(a+){99}$',
+      '^(a{1,3})+$',
+      '^(a{1,99})+$',
+      '^([a-z]{1,99})+$',
+      '^(a|a)*$',
+      '^((a|a))*$',
+      '^(?:(a|a))*$',
+      '^((a|a?))*$',
+      '^([a-z]|[a-c])*$',
+      '^((a|b)|(a|c))*$',
+      '^(\\w{1,50})+$',
+      '^(x+x+){1,99}y$',
+    ];
+
+    const slow: string[] = [];
+
+    for (const pattern of suspects) {
+      if (assessPattern(pattern, 1000) !== null) {
+        continue;
+      }
+
+      const started = Date.now();
+
+      new RegExp(pattern, 'u').test(`${'a'.repeat(26)}!`);
+
+      const elapsed = Date.now() - started;
+
+      if (elapsed > 100) {
+        slow.push(`${pattern} accepted, ${String(elapsed)}ms`);
+      }
+    }
+
+    expect(slow).toEqual([]);
+  });
+
+  it.fails('does not refuse patterns that are provably fast', () => {
+    // The other direction, which matters just as much: a false positive rejects
+    // a query the user legitimately wants, and the module's own doc says so.
+    const ordinary = [
+      String.raw`^(\d+,)*\d+$`,
+      '^([^/]+/)*[^/]+$',
+      '^(ab+c)+$',
+      String.raw`^(?:[^,]*,)*[^,]*$`,
+      String.raw`^(/[\w.-]+)*/?$`,
+      '^([A-Z]{3}-){1,4}[0-9]{2}$',
+      String.raw`^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$`,
+    ];
+
+    const refused: string[] = [];
+
+    for (const pattern of ordinary) {
+      const started = Date.now();
+
+      new RegExp(pattern, 'u').test(`${'a,'.repeat(120)}!`);
+
+      const elapsed = Date.now() - started;
+
+      if (assessPattern(pattern, 1000) !== null && elapsed < 50) {
+        refused.push(`${pattern} refused, but runs in ${String(elapsed)}ms`);
+      }
+    }
+
+    expect(refused).toEqual([]);
+  });
+});

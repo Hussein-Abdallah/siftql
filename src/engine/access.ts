@@ -51,7 +51,7 @@
  * outright, so both walks enumerate OWN KEYS and never the declared range.
  */
 
-import { isDateLike } from '../internal.js';
+import { isDateLike, safeIsArray } from '../internal.js';
 
 export type Candidate = readonly [
   path: readonly (string | number)[],
@@ -75,7 +75,7 @@ export type Candidate = readonly [
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' &&
   value !== null &&
-  !Array.isArray(value) &&
+  !safeIsArray(value) &&
   !isDateLike(value);
 
 type ReadResult =
@@ -244,7 +244,7 @@ export const valuesAtPath = (
 
       // A numeric segment INDEXES an array rather than flattening it, so
       // `tags.0` names one element.
-      if (index !== null && Array.isArray(value)) {
+      if (index !== null && safeIsArray(value)) {
         if (hasOwn(value, String(index))) {
           push(stepFrom(step.path, index, safeRead(value, index)));
         }
@@ -252,7 +252,7 @@ export const valuesAtPath = (
         continue;
       }
 
-      const holders: Step[] = Array.isArray(value) ? explode(step) : [step];
+      const holders: Step[] = safeIsArray(value) ? explode(step) : [step];
 
       for (const holder of holders) {
         if ('readError' in holder) {
@@ -284,7 +284,7 @@ export const valuesAtPath = (
   return [
     ...failed,
     ...frontier.flatMap((step): Candidate[] =>
-      Array.isArray(step.value)
+      safeIsArray(step.value)
         ? explode(step).map((leaf) => asCandidate(leaf))
         : [asCandidate(step)],
     ),
@@ -347,7 +347,7 @@ export const allLeafValues = (
 
     const { trail, value } = frame;
     const isContainer =
-      !('readError' in frame) && (Array.isArray(value) || isPlainObject(value));
+      !('readError' in frame) && (safeIsArray(value) || isPlainObject(value));
 
     if (isContainer) {
       const container = value as object;
@@ -358,7 +358,7 @@ export const allLeafValues = (
 
       visited.add(container);
 
-      const keys: (string | number)[] = Array.isArray(container)
+      const keys: (string | number)[] = safeIsArray(container)
         ? ownIndices(container)
         : safeKeys(container);
 
@@ -379,7 +379,7 @@ export const allLeafValues = (
         });
       }
 
-      if (matchKeys && !Array.isArray(container)) {
+      if (matchKeys && !safeIsArray(container)) {
         const base = materialise(trail);
 
         for (const key of keys) {

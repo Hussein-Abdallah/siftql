@@ -146,7 +146,7 @@ const nullable = (node: Node): boolean => {
   }
 };
 
-/** Thrown internally; callers see an {@link Unsupported} result instead. */
+/** Thrown internally; callers see a `{ ok: false, reason }` result instead. */
 class ParseFailure extends Error {}
 
 const fail = (reason: string): never => {

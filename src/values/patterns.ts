@@ -125,7 +125,7 @@ export const compileWildcard = (
  * Deliberately NOT a regular expression. Compiling `*a*a*a*b` to
  * `^[\s\S]*a[\s\S]*a[\s\S]*a[\s\S]*b$` contains no nested quantifier and
  * still backtracks catastrophically: when the match FAILS, every star must try
- * every split before the engine can conclude there is none. Measured at ~6x per
+ * every split before the engine can conclude there is none. Measured at 40-50x per
  * added star, and it did not return within five minutes on an ordinary
  * multi-star query against a 200-character value — a denial-of-service surface
  * reachable from any search box.

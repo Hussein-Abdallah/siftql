@@ -1094,7 +1094,8 @@ class Parser {
     if (token.type !== 'literal') {
       if (this.tolerant) {
         // Search-as-you-type sees `a:[` on the way to a real range. Recovering
-        // it as unbounded keeps the promise that a tolerant parse always
+        // it as unbounded keeps the promise that a tolerant parse returns a
+        // usable AST for incomplete input — always
         // returns a usable AST; the marker lets onRecovered refuse it.
         return {
           bounded: false,

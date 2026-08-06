@@ -102,7 +102,9 @@ class Registry implements ValueTypeRegistry {
     return this.types.map((type) => ({
       builtin: this.builtins.has(type),
       name: nameOf(type),
-      // A type is ordered if and only if it has an `ordering` object. That
+      // A type is ordered if and only if it has a WELL-FORMED `ordering` — an
+      // object carrying a callable `compare`. One without is a broken type and
+      // `readOrdering` refuses it rather than reporting either answer. That
       // absence is the single fact behind `name:>="m"` throwing.
       ordered: readOrdering(type) !== undefined,
     }));

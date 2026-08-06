@@ -83,7 +83,7 @@ export type PathRef = readonly (string | number)[] | PathTrail | null;
  * linked list, an ORM parent chain) has a leaf at every level, so the paths
  * summed to n²/2 entries. 16,000 levels took two seconds and 32,000 exhausted
  * the heap, from a record under a megabyte. A flat record with the same leaf
- * count took 19 ms, which is the tell: the cost was never the leaves.
+ * count took ~4.5 ms, which is the tell: the cost was never the leaves.
  */
 export const pathOf = (ref: PathRef): readonly (string | number)[] => {
   if (ref === null) {

@@ -51,8 +51,12 @@ import type { HighlightSink } from './highlight.js';
  *
  * The load-bearing property: there is NO per-type logic here. Matching,
  * ordering and range evaluation all go through the registry, so `datetime` is
- * reached by exactly the same code path as a consumer's `semver`. Grep this file
- * for "date" and you will find nothing.
+ * reached by exactly the same code path as a consumer's `semver`. There is no
+ * branch anywhere below on which type a value belongs to.
+ *
+ * (This used to say "grep this file for date and you will find nothing", which
+ * returns 76 hits — the claim is true of the LOGIC and false as an instruction,
+ * and an instruction is what a reader will actually follow.)
  *
  * Range evaluation in particular is implemented ONCE, on top of `compare` plus
  * per-boundary inclusivity, so no value type ever writes range code.
@@ -271,7 +275,9 @@ class LazyValueContext implements ValueContext {
  *
  * A CLASS rather than an object literal, because the accessor then lives on the
  * prototype instead of being installed per instance. An own accessor is roughly
- * 185x the allocation cost of a plain property and is created once per candidate,
+ * 20-50x the allocation cost of a plain property (it was measured at 185x by a
+ * microbenchmark that turned out to be measuring the benchmark) and is created
+ * once per candidate,
  * which made an ordinary `filter()` over 20,000 rows 2.4x slower than before the
  * path went lazy — paying for deep records with everybody else's common case.
  * On the prototype it is both lazy and cheaper than the eager version it replaced.

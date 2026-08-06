@@ -383,9 +383,14 @@ highlight('status:active OR status:done', row);
 ```
 
 Only clauses that actually contributed are reported: the losing branch of an
-`OR`, and everything under a satisfied `NOT`, contribute nothing. `ranges` is
-absent when the whole value is the match with no textual footprint to point at —
-a range, a comparison, a boolean.
+`OR`, and everything under a satisfied `NOT`, contribute nothing.
+
+`ranges` is absent whenever there is no substring to point at: a range, a
+comparison, a boolean, a number or date equality, `null` (including the absent
+key it matches), a `matchKeys` hit on the key itself, and any value whose case
+fold changes length — `name:*i*` against `İstanbul` matches, and no offset into
+the original value would be meaningful. Write `hit.ranges ?? []` and all of them
+fall out.
 
 **Positions, not patterns.** `ranges` are half-open offsets into the value, and
 they are what the built-in types report. That is not only about handing back a
@@ -411,7 +416,8 @@ parts.push(value.slice(at));
 ```
 
 A custom value type may still report a `query` instead, and `Highlight.query` is
-kept for that. Prefer `ranges` when both are present.
+kept for that. A hit never carries both: the evaluator emits `ranges` and stops,
+so a type defining `highlight` and `highlightSpans` reports only its spans.
 
 ## Comparison
 

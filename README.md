@@ -415,27 +415,26 @@ kept for that. Prefer `ranges` when both are present.
 
 ## Comparison
 
-Measured, not asserted — every row below was produced by running the same query
-through all three packages (`liqe@3.8.7`, `lucene-kit@1.3.0`, `siftql@0.1.0`).
+Measured against `liqe@3.8.7` and `lucene-kit@1.3.0`. The query-behaviour rows
+were produced by running the same query through all three packages; the last two
+rows are API-surface and manifest facts rather than query runs.
 
-|                                           | liqe           | lucene-kit         | siftql    |
-| ----------------------------------------- | -------------- | ------------------ | --------- |
-| date field as an ISO string               | throws         | ✅                 | ✅        |
-| date field as epoch **number**            | throws         | ✗ no match         | ✅        |
-| date field as a `Date` object             | throws         | ✅                 | ✅        |
-| timezone offset in the operand            | throws         | ✅                 | ✅        |
-| **refuses `2021-02-29`** (not a real day) | ✅ throws      | ✗ **returns rows** | ✅ throws |
-| declared `dateFormat`                     | ✗              | ✗                  | ✅        |
-| pluggable `parseDate`                     | ✗              | ✗                  | ✅        |
-| half-open range `[* TO 100]`              | ✗ syntax error | ✅                 | ✅        |
-| mixed brackets `[1 TO 3}`                 | ✅             | ✅                 | ✅        |
-| leading wildcard `*bar`                   | ✅             | ✅                 | ✅        |
-| refuses to order free text                | ✅             | ✗                  | ✅        |
-| custom value types                        | ✗              | ✗                  | ✅        |
-| explicit case control                     | quoting        | quoting            | `::`      |
-| tolerant parsing                          | ✗              | ✗                  | ✅        |
-| Regex cannot backtrack                    | ✗              | ✗                  | linear-time matcher |
-| runtime dependencies                      | 2              | 0                  | 0         |
+|                                                    | liqe                       | lucene-kit           | siftql           |
+| -------------------------------------------------- | -------------------------- | -------------------- | ---------------- |
+| date field as an ISO **string**                    | throws                     | ✗ compared as text   | ✅ chronological |
+| date field as an epoch **number**                  | throws                     | ✗ no match           | ✅               |
+| date field as a `Date` **object**                  | throws                     | ✅                   | ✅               |
+| timezone offset honoured                           | throws                     | `Date` fields only   | ✅ always        |
+| **refuses `2021-02-29`** (not a real day)          | n/a — throws on every date | ✗ **silently 1 Mar** | ✅ throws        |
+| declared `dateFormat`                              | ✗                          | ✗                    | ✅               |
+| pluggable `parseDate`                              | ✗                          | ✗                    | ✅               |
+| half-open range `[* TO 100]`                       | ✗ syntax error             | ✅                   | ✅               |
+| refuses to order free text                         | ✅                         | ✗ `localeCompare`    | ✅               |
+| value types with their own ordering (ranges free)  | ✗                          | ✗                    | ✅               |
+| explicit case control                              | quoting                    | quoting              | `::`             |
+| tolerant parsing (opt-in, recovered nodes flagged) | ✗                          | ✗                    | ✅               |
+| `/^(a\|a)*$/` vs 40,000 non-matching characters    | >15 s (killed)             | >15 s (killed)       | **10 ms**        |
+| runtime dependencies (direct / installed)          | 2 / 8                      | 0 / 0                | 0 / 0            |
 
 The single sharpest difference:
 
@@ -443,11 +442,27 @@ The single sharpest difference:
 query: created:>=2021-02-29        (a day that does not exist)
 
 lucene-kit  → returns rows, having silently become 1 March
-siftql      → SiftQLOperandError: "2021-02-29" is not a real date
+siftql      → SiftQLOperandError: datetime: "2021-02-29" is not a real date
 ```
 
-liqe throws `TypeError: Expected a number.` for _any_ date comparison — that gap
-is what prompted this package.
+liqe cannot compare dates at all: a date-only operand throws
+`TypeError: Expected a number.`, and one carrying a time or an offset —
+`created:>=2020-06-01T12:00:00+02:00` — fails earlier still, in its grammar.
+That gap is what prompted this package.
+
+**The regex row is a trade-off, not a free win.** The linear matcher refuses
+backreferences, lookaround, and quantifiers whose body can match the empty
+string (`(a*)*`) — all of which liqe and lucene-kit accept. `regexGuard: false`
+runs those on `RegExp` instead.
+
+Two rows were removed rather than kept, because a comparison that flatters is
+worth less than none. `mixed brackets [1 TO 3}` behaved identically in all three.
+`leading wildcard *bar` looked identical and was not: liqe's `*` is one-or-more,
+so `*bar` does not match `"bar"` there, and three ticks were hiding a real
+divergence. The leap-day row also credited liqe with a check it does not perform
+— it throws the same error for `2021-02-29`, for `2021-13-01` and for a
+perfectly valid date, because it never examines the value at all.
+
 
 ## Migrating from liqe
 

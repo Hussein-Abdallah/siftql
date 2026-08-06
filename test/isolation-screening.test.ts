@@ -10,11 +10,11 @@ import { compileLinear } from '../src/regex/linear.js';
  * engines in one process cannot see each other, and that a user-supplied regex is
  * screened for catastrophic backtracking.
  *
- * The regex tests are written as a CORPUS rather than as a list of shapes,
- * because the screen they replaced was wrong in both directions at once —
- * refusing `^([A-Z]{3}-){1,4}[0-9]{2}$`, which runs in 0.01 ms, while passing
- * `(a|a)*`, which blocks the event loop for four seconds. A test naming only the
- * shapes the implementation already knew about would have passed throughout.
+ * The regex tests are written as a CORPUS rather than as a list of shapes. A
+ * test naming only the shapes an implementation already knows about passes
+ * whatever that implementation does — including refusing
+ * `^([A-Z]{3}-){1,4}[0-9]{2}$`, which runs in 0.01 ms, while accepting
+ * `(a|a)*`, which blocks the event loop for seconds.
  */
 
 /** Does the linear matcher accept this pattern? */
@@ -56,17 +56,14 @@ describe('a regex the matcher must ACCEPT', () => {
   }
 });
 
-describe('a regex that used to be refused now runs, safely', () => {
+describe('the classic catastrophic shapes run in linear time', () => {
   /*
-   * These are the classic catastrophic shapes. Under `RegExp` each one takes
-   * seconds to minutes on a subject under 40 characters, which is why three
-   * successive versions of this package tried to SCREEN for them — and why all
-   * three were bypassable, the last accepting `^(a+){1,99}$` while refusing
-   * `^(a+)+$`.
+   * Under `RegExp` each of these takes seconds to minutes on a subject under 40
+   * characters. Screening for them by shape is not viable — any such screen is
+   * bypassable, and would accept `^(a+){1,99}$` while refusing `^(a+)+$`.
    *
-   * They are no longer refused, because they are no longer dangerous: the
-   * matcher is an automaton, so every one of them is linear. Refusing a
-   * legitimate pattern was always a cost; now there is nothing bought with it.
+   * The matcher is an automaton, so all of them are linear and none needs
+   * refusing. Refusing a legitimate pattern is a cost with nothing bought.
    *
    * The list below is deliberately the NON-NULLABLE half. A quantifier whose
    * body can match the empty string is refused, separately and on purpose —
@@ -176,16 +173,14 @@ describe('a regex the matcher cannot take is refused, not run', () => {
   });
 });
 
-describe('the cases an audit found after the fuzz reported none', () => {
+describe('escape-heavy patterns a naive generator does not reach', () => {
   /*
-   * Every one of these was found by an auditor writing their OWN generator after
-   * the author's reported 320,000 comparisons with zero mismatches. The author's
-   * generator was atom-first over eleven simple atoms; an escape-first one over
-   * control characters and non-ASCII found 244 distinct disagreements.
+   * An atom-first generator over simple atoms reports zero mismatches across
+   * hundreds of thousands of comparisons and still misses these entirely; an
+   * escape-first one over control characters and non-ASCII finds them.
    *
-   * They are pinned individually because that is the point: the fuzz now
-   * generates these shapes, but a regression should name itself rather than
-   * appear as one line in a counterexample list.
+   * Pinned individually so a regression names itself, rather than appearing as
+   * one line in a counterexample list.
    */
   const agrees = (source: string, flags: string, subject: string): void => {
     const compiled = compileLinear(source, flags);
@@ -404,12 +399,11 @@ describe('a quantifier whose body can match nothing is refused', () => {
    * out short. `(?:.*?)?\w+` over "a,b,,c" reported [0,1][1,3][3,6] where
    * RegExp reports [0,3][3,6].
    *
-   * Implementing the rule was tried and reverted. It needs a slot carried per
-   * epsilon path, and that cost a 992-character pattern — inside the default
-   * maxPatternLength — two seconds per kilobyte of value, reintroducing through
-   * the fix the exact uninterruptible hang this matcher exists to remove. The
-   * cheap alternative is to weaken the deduplication that provides the
-   * linear-time guarantee, which is not an alternative at all.
+   * Implementing the rule needs a slot carried per epsilon path, which costs a
+   * near-limit pattern seconds per kilobyte of value — reintroducing the
+   * uninterruptible hang this matcher exists to remove. The cheap alternative
+   * is to weaken the deduplication that provides the linear-time guarantee,
+   * which is not an alternative at all.
    *
    * So these are refused with a readable message rather than matched with
    * silently wrong spans — the same trade already made for backreferences and

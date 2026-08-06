@@ -118,7 +118,7 @@ describe('a declared dateFormat outranks the built-in ISO parser', () => {
 
 describe('a malformed dateFormat is refused when the engine is built', () => {
   it('refuses a layout with no recognisable token', () => {
-    // It used to build happily and fail on whichever record first held
+    // Building happily and failing on whichever record first holds
     // something date-shaped, reported as an OPERAND error with the real cause
     // demoted to `.cause` — so a caller checking for CONFIG never saw it.
     expect(() => createEngine({ dateFormat: 'QQQQ' })).toThrow(
@@ -219,10 +219,10 @@ describe('a highlight can always be iterated', () => {
 
   it('reports a user regex as RANGES, never as a RegExp', () => {
     /*
-     * This used to assert `hit.query` was a usable `RegExp`. Handing one out was
-     * the defect: the consumer runs it, on the backtracking engine, in the
-     * `exec` loop the contract tells them to write — so a pattern siftql matched
-     * in 3 ms could take them 8.8 seconds. Spans are data; nothing to run.
+     * Handing out a `RegExp` puts the consumer on the backtracking engine, in
+     * the `exec` loop the contract tells them to write — so a pattern this
+     * matcher runs in milliseconds can take them seconds. Spans are data;
+     * there is nothing in them to run.
      */
     const [hit] = highlight('v:/a+/', { v: 'aabca' });
 

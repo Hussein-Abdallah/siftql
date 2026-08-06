@@ -1222,8 +1222,8 @@ export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
    * 512-segment wildcards is millions of visits whatever each individual cap
    * says. Checking the same budget here means a query is refused where it can
    * be pointed at, rather than accepted and then rejected by `serialize()`,
-   * `filter()`, `test()` and `highlight()` alike — which is what happened, with
-   * an error whose own text says "this is a defect in siftql".
+   * `filter()`, `test()` and `highlight()` alike, with an error whose text
+   * blames the caller for a tree the parser built.
    */
   /*
    * SKIPPED when the source is too short to reach the budget, because the walk

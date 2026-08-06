@@ -25,12 +25,10 @@ import {
 /**
  * EXECUTABLE PROPERTIES.
  *
- * Why this file exists, stated plainly: for five audits running, every defect
- * found in this package passed the entire test suite. The suite is written the
- * way a person writes tests — one case per bug, plus a few neighbours the author
- * thought of. The audits found things by generating tens of thousands of inputs
- * and checking a PROPERTY. That asymmetry, and not the difficulty of the code,
- * is why fixes kept introducing new defects.
+ * Why this file exists: a case-per-bug suite tests the inputs someone thought
+ * of, and a defect that nobody thought of passes it. These assert PROPERTIES
+ * over tens of thousands of generated inputs instead, which is what closes the
+ * gap between "the cases we wrote" and "the cases that exist".
  *
  * So the promises this package makes are written here as assertions over
  * GENERATED input, not as prose in a doc comment. A comment claiming "every
@@ -144,11 +142,10 @@ const FIELDS = [
 /**
  * Structural characters that can appear where a clause is expected.
  *
- * The generator below always started a clause with a field or an atom, so it
- * could never emit a leading `:` or `+` — and an audit found roughly half the
- * inputs still escaping tolerant mode began with exactly those. A property that
- * cannot generate the failing shape is a property that passes for the wrong
- * reason, so the alphabet now includes them.
+ * Without these, a generated clause always starts with a field or an atom and
+ * can never emit a leading `:` or `+` — the shapes most likely to escape
+ * tolerant mode. A property that cannot generate the failing shape passes for
+ * the wrong reason.
  */
 const STRAY = [':', '+', '}', ']', ')', '~', '^', '=', '<', '>', '*', '?', '/'];
 
@@ -706,7 +703,7 @@ describe('P3: matching obeys its own algebra', () => {
 describe('P4: an engine honours its configuration', () => {
   it('extend() merges over the parent instead of resetting it', () => {
     // Documented as "a new engine with additional options merged over this
-    // one's". Every one of these silently reverted to its default.
+    // one's", so an unspecified option must keep the parent's value.
     const custom = {
       coerceValue: () => ({ kind: 'miss' as const, ok: false as const }),
       equals: () => true,
@@ -1063,10 +1060,10 @@ describe('P5: cost stays bounded', () => {
     ];
 
     /*
-     * `^(a*){1,99}$` and `^((a|a?))*$` used to be here and are now REFUSED —
-     * their loop bodies can match the empty string. That is a strictly stronger
-     * guarantee than the one this property checks, so they are asserted
-     * separately rather than dropped silently.
+     * `^(a*){1,99}$` and `^((a|a?))*$` are REFUSED rather than run — their loop
+     * bodies can match the empty string. That is a stronger guarantee than the
+     * one this property checks, so it is asserted separately below rather than
+     * left implicit.
      */
     for (const refused of ['^(a*){1,99}$', '^((a|a?))*$']) {
       expect(compileLinear(refused, '').ok, refused).toBe(false);
@@ -1128,18 +1125,13 @@ describe('P5: cost stays bounded', () => {
     let checked = 0;
 
     /*
-     * THIS PROPERTY WENT VACUOUS AND STAYED GREEN FOR TWO AUDITS.
+     * THE ABSENCE OF A `query` IS THE ASSERTION, not a reason to skip.
      *
-     * It used to read `if (!hit?.query) continue;` and then time the consumer's
-     * exec loop. When `regexType` moved to `highlightSpans` no hit carried a
-     * `query` any more, so all five patterns hit the `continue`, the loop body
-     * ran ZERO times, and the assertion became `expect([]).toEqual([])`. The
-     * hazard had not gone away — it had moved to `ranges`, where nothing was
-     * looking, and a real defect was later found there by someone else.
-     *
-     * So the absence of a `query` is now the ASSERTION rather than a reason to
-     * skip, and the work counter below fails the build if this ever empties out
-     * again.
+     * Written as `if (!hit?.query) continue;` this goes vacuous the moment no
+     * built-in publishes a `query`: every case hits the `continue`, the body
+     * runs zero times, and `expect([]).toEqual([])` passes forever while the
+     * hazard moves to `ranges` unwatched. The work counter below fails the
+     * build if that happens.
      */
     for (const query of hostile) {
       const started = Date.now();
@@ -1381,10 +1373,10 @@ describe('P5: cost stays bounded', () => {
 /* ========================================================================= *
  * P6. THE PROMISES THIS ROUND FOUND UNGUARDED
  *
- * Every property here corresponds to a defect that reached a release because
- * nothing asserted the promise it broke. They are grouped separately so the
- * provenance stays visible: this is the list an audit produced by diffing the
- * package's stated promises against what the harness actually checked.
+ * Promises stated in the README, the AST contract and the registry contract
+ * that no other property covers. Grouped separately so the set stays visible as
+ * a set: it is the result of diffing what the package claims against what the
+ * rest of this file checks.
  * ========================================================================= */
 
 describe('P6: spans say where the match really is', () => {
@@ -1598,10 +1590,9 @@ describe('P6: tolerant mode never throws at the ENGINE boundary', () => {
     let evaluated = 0;
 
     /*
-     * Shapes the generator cannot spell, each of which threw at PARSE level
-     * until an audit found them: a half-typed regex flag, a duplicate one, and
-     * the reserved `+` marker, which had no tolerant branch at all while `^`
-     * and `~` both did.
+     * Shapes the generator cannot spell, each of which reaches tolerance at
+     * PARSE level rather than at operand resolution: a half-typed regex flag, a
+     * duplicate one, and the reserved `+` marker.
      */
     const HAND = [
       '//=',

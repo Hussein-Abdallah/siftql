@@ -851,10 +851,9 @@ class Parser {
        * `[1-\d]` is `1`, `-`, `\d`.
        *
        * The dash has to be consumed here, by this branch. Leaving it for the
-       * next pass — which is what happened when only the left side was checked
-       * — let it become a fresh range start, so `[\d--z]` compiled to the range
-       * \x2D-\x7A and matched every letter. That is an OVER-match: a filter
-       * admitted records it was asked to reject.
+       * next pass lets it become a fresh range start, so `[\d--z]` compiles to
+       * the range \x2D-\x7A and matches every letter — an OVER-match, where a
+       * filter admits records it was asked to reject.
        */
       absorb(left);
       ranges.push([0x2d, 0x2d]);

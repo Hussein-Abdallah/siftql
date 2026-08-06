@@ -271,9 +271,8 @@ class LazyValueContext implements ValueContext {
  *
  * A CLASS rather than an object literal, because the accessor then lives on the
  * prototype instead of being installed per instance. An own accessor is roughly
- * 20-50x the allocation cost of a plain property (it was measured at 185x by a
- * microbenchmark that turned out to be measuring the benchmark) and is created
- * once per candidate,
+ * 20-50x the allocation cost of a plain property, and is created once per
+ * candidate,
  * which made an ordinary `filter()` over 20,000 rows 2.4x slower than before the
  * path went lazy — paying for deep records with everybody else's common case.
  * On the prototype it is both lazy and cheaper than the eager version it replaced.

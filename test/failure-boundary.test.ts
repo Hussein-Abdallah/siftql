@@ -472,9 +472,9 @@ describe('a value type cannot rewrite engine policy from a callback', () => {
 
 describe('the failure-policy table is looked up, not assumed', () => {
   it('reports undefined for a pair it does not cover', () => {
-    // This used to be typed as always returning a disposition. For an unknown
-    // kind it returned undefined, `undefined === 'value-error'` was false, and
-    // the strictest row in the table silently became the most lenient.
+    // Typed as always returning a disposition, an unknown kind yields undefined,
+    // `undefined === 'value-error'` is false, and the strictest row in the table
+    // silently becomes the most lenient.
     expect(dispositionFor('bogus' as never, 'miss')).toBeUndefined();
     expect(dispositionFor('scan', 'bogus' as never)).toBeUndefined();
   });
@@ -487,9 +487,9 @@ describe('the failure-policy table is looked up, not assumed', () => {
 
 describe('shared references in a record', () => {
   /*
-   * The audit that followed the first version of this file found the fix here
-   * had traded a denial of service for silently wrong answers. Both directions
-   * are pinned, because a fix for either alone is what went wrong twice.
+   * BOTH directions are pinned. A guard that refuses to revisit an object stops
+   * the denial of service and starts answering wrongly; one that always
+   * revisits does the reverse. Both have to hold at once.
    */
   it('follows a parent back-reference instead of refusing it', () => {
     const root: Record<string, unknown> = { name: 'root' };
@@ -690,7 +690,7 @@ describe('shared subtrees in an AST', () => {
 
   it('does not invoke getters on AST nodes', () => {
     // Object.values reads every own enumerable property, so an accessor-backed
-    // node threw a raw error out of serialize() for a tree that used to print.
+    // node would throw a raw error out of serialize().
     const withAccessor = {
       literal: 'text',
       location: { end: 1, start: 0 },

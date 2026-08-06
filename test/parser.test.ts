@@ -383,12 +383,11 @@ describe('field groups', () => {
      * The grammar has no `Tag` inside a group, so a colon in a body cannot be
      * starting a field — it is ordinary text, exactly as it is after `:`.
      *
-     * This test used to assert that `status:(a OR b:c)` THREW. Two attempts at
-     * enforcing that failed for the same reason: `14:30` and `b:c` are the same
-     * shape, so no rule can refuse one without refusing the other. The version
-     * that shipped refused `note:json` and accepted `content-type:json`, making
-     * the diagnostic depend on whether the name contained a hyphen, and refusing
-     * `http://example.com` outright.
+     * Refusing `status:(a OR b:c)` instead is not implementable: `14:30` and
+     * `b:c` are the same shape, so no rule refuses one without refusing the
+     * other. A heuristic that tries makes the diagnostic depend on punctuation
+     * in the name — refusing `note:json` while accepting `content-type:json`,
+     * and refusing `http://example.com` outright.
      */
     const ast = parse('status:(a OR b:c)') as {
       expression: { expression: unknown };

@@ -44,8 +44,8 @@ const repeat = (term: string, count: number): string =>
 
 describe('the negative fold inside a field group', () => {
   it('reads an adjacent sign as part of the number', () => {
-    // `n:(-3 OR -5)` used to parse as `n:(NOT 3 OR NOT 5)` and matched a row
-    // whose n was 7.
+    // A sign adjacent to a number is part of the number. Read as negation,
+    // `n:(-3 OR -5)` would become `n:(NOT 3 OR NOT 5)` and match n === 7.
     expect(matches('n:(-3)', { n: -3 })).toBe(true);
     expect(matches('n:(-3)', { n: 7 })).toBe(false);
     expect(matches('n:(-3 OR -5)', { n: 7 })).toBe(false);
@@ -128,15 +128,13 @@ describe('values inside a field group', () => {
 
   it('reads a colon in a body as a value, with no exceptions', () => {
     /*
-     * This test used to assert that `name:(first:ada)` was REFUSED, by a shape
-     * heuristic. The heuristic could not work — `14:30` and `first:ada` are the
-     * same shape — and what shipped refused `note:json` while accepting
-     * `content-type:json`, so whether a mistake was caught depended on the
-     * punctuation in the field name.
+     * The rule is the grammar's: a group body is a list of VALUES, so a colon
+     * in one is text. `name:(first:ada)` searches `name` for the literal
+     * `first:ada`, which is what `name:"first:ada"` already means.
      *
-     * The rule is now the grammar's: a group body is a list of VALUES, so a
-     * colon in one is text. `name:(first:ada)` searches `name` for the literal
-     * `first:ada`, which is what `name:"first:ada"` already meant.
+     * A shape heuristic cannot do better — `14:30` and `first:ada` are the same
+     * shape — and refusing by one would make catching a mistake depend on the
+     * punctuation in the field name.
      */
     expect(matches('name:(first:ada)', { name: 'first:ada' })).toBe(true);
     expect(matches('name:(first:ada)', { name: 'ada' })).toBe(false);

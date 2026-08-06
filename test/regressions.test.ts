@@ -76,7 +76,7 @@ describe('field groups carry the whole clause', () => {
   });
 
   it('evaluates a RANGE inside a group', () => {
-    // A range has no operand token, so it used to compile to constant false --
+    // A range has no operand token, so a token-driven compile yields constant false --
     // silently dropping its rows, and matching everything under NOT.
     const nums = [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }];
 
@@ -169,7 +169,7 @@ describe('reading values out of hostile data', () => {
 
   it('survives a circular reference instead of blowing the stack', () => {
     // A parent pointer or a graph node is ordinary application data, and one
-    // cyclic row used to abort the entire filter.
+    // cyclic row must not abort the entire filter.
     const cyclic: Record<string, unknown> = { name: 'ada' };
 
     cyclic.self = cyclic;
@@ -250,7 +250,7 @@ describe('serialize round-trips everything the parser accepts', () => {
   });
 
   it('refuses an oversized query at PARSE time, not with a stack overflow', () => {
-    // Every stage used to disagree about what was representable: parse took
+    // Every stage must agree on what is representable. Parse accepting morek
     // 50,000 terms, serialize died at 5,000 on unary chains, filter died at
     // 10,000 — and the failure was a raw RangeError escaping the error
     // contract. Now it is a located SiftQLSyntaxError from the first stage.
@@ -296,7 +296,7 @@ describe('ranges and unbounded ends', () => {
 
 describe('numbers', () => {
   it('does not collapse integers a double cannot hold', () => {
-    // Two visibly different snowflake ids used to compare equal.
+    // Two visibly different snowflake ids must not compare equal.
     const messages = [
       { body: 'first', id: '1234567890123456789' },
       { body: 'second', id: '1234567890123456780' },

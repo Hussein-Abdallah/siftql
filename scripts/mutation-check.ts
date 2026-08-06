@@ -62,9 +62,9 @@ const MUTATIONS: readonly Mutation[] = [
    * observed through any public entry point — an EQUIVALENT MUTANT. Chasing it
    * would have meant widening the corpus to reach something unreachable.
    *
-   * Two of the five original misses turned out this way, which is the standing
-   * hazard of this technique: a battery is only as honest as its mutations, and
-   * a "miss" is a claim to verify before it is a hole to fix.
+   * This is the standing hazard of the technique: a battery is only as honest
+   * as its mutations, and a reported "miss" is a claim to verify before it is a
+   * hole to fix.
    */
   {
     file: 'src/values/scalars.ts',

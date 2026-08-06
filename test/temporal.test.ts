@@ -218,8 +218,6 @@ describe('resolution order', () => {
 
   it('lets parseDate override even a canonical ISO string', () => {
     /*
-     * This test used to assert the opposite, and the opposite was wrong.
-     *
      * `dateFormat` has to outrank the built-in ISO parser, or a declared layout
      * is silently ignored for exactly the values both can read — under
      * `YYYY-DD-MM`, `2020-11-06` was read as ISO and `2020-20-07` through the
@@ -252,7 +250,7 @@ describe('resolution order', () => {
     /*
      * The COST of the ordering above, stated so it is a decision rather than a
      * surprise: supplying `parseDate` means it is called once per value, ISO
-     * strings included. This test used to assert `calls === 0`.
+     * strings included.
      *
      * Worth it, because the alternative is a hook that is silently skipped for
      * the most common shape of input it might want to handle. A hook that does

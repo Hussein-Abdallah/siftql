@@ -368,8 +368,8 @@ const shapeProblem = (node: object, type: string): string | null => {
  *
  * Together they also subsume the cycle check. A node that points back at an
  * ancestor produces unbounded paths, so it exhausts the visit budget and is
- * refused — no ancestor set required, and no risk of the mistake that cost
- * `access.ts` two attempts, where refusing a repeated object threw away
+ * refused — no ancestor set required, and none of the risk that comes with
+ * refusing a repeated object, which throws away
  * legitimate finite paths.
  *
  * Generic over properties rather than switching on `node.type`, because the point

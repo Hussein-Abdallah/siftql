@@ -29,7 +29,7 @@ const strip = (node: unknown): string =>
   );
 
 describe('I4: serialize normalises exactly four things', () => {
-  // The invariant used to say three, and omitted quote style — which the same
+  // Quote style is one of them: the same
   // file then listed as normalised, 280 lines further down.
   it('normalises whitespace runs', () => {
     expect(serialize(parse('a    b'))).toBe('a b');

@@ -152,8 +152,7 @@ const query = (next: () => number, depth = 3): string => {
      * by a FIELD — and the regression live in this very commit pair needed a
      * stray followed by a dotted-quoted path (`:a.'b':c`). Adding quoted paths
      * to FIELDS was not enough on its own: the two halves have to be able to
-     * meet. That took two attempts, which is the point — a corpus is only as
-     * good as the combinations it can actually form.
+     * meet: a corpus is only as good as the combinations it can form.
      */
     const strays = Array.from({ length: run }, () => pick(next, STRAY)).join(
       '',

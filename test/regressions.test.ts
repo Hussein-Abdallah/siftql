@@ -625,3 +625,30 @@ describe('a discarded stray is not reported as trailing input', () => {
     expect(reasons('a AND b )')).toContain('trailing-input');
   });
 });
+
+describe('an option is read once, so validation and the engine agree', () => {
+  it('keeps the value it validated, not a later one', () => {
+    // `assertOptions` validated from one read and built its snapshot from a
+    // second, so an accessor could answer twice: 'throw' to the validator and
+    // 'garbage' to the engine. The failure policy the engine ran under was
+    // then one no check had ever seen.
+    let reads = 0;
+    const twoFaced = {
+      get onValueError(): string {
+        reads += 1;
+
+        return reads === 1 ? 'throw' : 'garbage';
+      },
+    };
+
+    const engine = createEngine(twoFaced as never);
+
+    expect(engine.options.onValueError).toBe('throw');
+  });
+
+  it('still refuses a value that was invalid on that one read', () => {
+    expect(() => createEngine({ onValueError: 'garbage' } as never)).toThrow(
+      /onValueError/,
+    );
+  });
+});

@@ -739,39 +739,56 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
     }
   };
 
-  checkBoolean('tolerant', read('tolerant'));
-  checkBoolean('matchKeys', read('matchKeys'));
-  checkBoolean('regexGuard', read('regexGuard'));
-  checkEnum('onValueError', read('onValueError'), ON_VALUE_ERROR);
-  checkEnum('onRecovered', read('onRecovered'), ON_RECOVERED);
-  checkEnum('typeStrategy', read('typeStrategy'), TYPE_STRATEGY);
-  checkDateFormat(read('dateFormat'));
+  /*
+   * ONE read per option, before any of it is inspected.
+   *
+   * Validating straight from `read()` and then reading again to build the
+   * snapshot gave an accessor two chances to answer, and only the FIRST was
+   * checked: a getter returning `'throw'` to the validator and `'garbage'`
+   * afterwards put `'garbage'` in the engine. Everything below — every check
+   * and the snapshot alike — now works from this map, so what was validated is
+   * necessarily what is kept.
+   */
+  const values = new Map<string, unknown>();
 
-  const id = read('id');
+  for (const key of KNOWN_OPTIONS) {
+    if (supplied(key)) {
+      values.set(key, read(key));
+    }
+  }
+
+  const once = (key: string): unknown => values.get(key);
+
+  checkBoolean('tolerant', once('tolerant'));
+  checkBoolean('matchKeys', once('matchKeys'));
+  checkBoolean('regexGuard', once('regexGuard'));
+  checkEnum('onValueError', once('onValueError'), ON_VALUE_ERROR);
+  checkEnum('onRecovered', once('onRecovered'), ON_RECOVERED);
+  checkEnum('typeStrategy', once('typeStrategy'), TYPE_STRATEGY);
+  checkDateFormat(once('dateFormat'));
+
+  const id = once('id');
 
   if (id !== undefined && typeof id !== 'string') {
     badOption('id', 'a string', id);
   }
 
-  const parseDate = read('parseDate');
+  const parseDate = once('parseDate');
 
   if (parseDate !== undefined && typeof parseDate !== 'function') {
     badOption('parseDate', 'a function', parseDate);
   }
 
-  if (read('maxPatternLength') !== undefined) {
-    const length = read('maxPatternLength');
+  const length = once('maxPatternLength');
 
-    if (
-      typeof length !== 'number' ||
-      !Number.isSafeInteger(length) ||
-      length < 1
-    ) {
-      badOption('maxPatternLength', 'a positive integer', length);
-    }
+  if (
+    length !== undefined &&
+    (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 1)
+  ) {
+    badOption('maxPatternLength', 'a positive integer', length);
   }
 
-  checkTypes(read('types'));
+  checkTypes(once('types'));
 
   /*
    * A SNAPSHOT, not the caller's object.
@@ -779,9 +796,9 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    * Validating in place and then handing the original back was not enough:
    * `parse` went on to read `options.tolerant`, and `contextFor` to read
    * `options.matchKeys`, so an option implemented as a throwing accessor passed
-   * validation and then escaped raw from the code that used it. Every value is
-   * read exactly once, here, behind a guard — after this the engine is reading
-   * plain data and cannot be surprised.
+   * validation and then escaped raw from the code that used it. The values come
+   * from the single read pass above, not from the caller's object — after this
+   * the engine is reading plain data and cannot be surprised.
    *
    * ABSENT KEYS ARE OMITTED, not copied as `undefined`, and that distinction is
    * load-bearing. Including them made the snapshot a complete object, so
@@ -797,12 +814,10 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
    */
   const snapshot: EngineOptions = {};
 
-  for (const key of KNOWN_OPTIONS) {
-    if (supplied(key)) {
-      // Index through a widened view: the keys are known, the values are not
-      // yet narrowed, and every one has been checked above.
-      (snapshot as Record<string, unknown>)[key] = read(key);
-    }
+  for (const [key, value_] of values) {
+    // Index through a widened view: the keys are known, the values are not
+    // yet narrowed, and every one has been checked above.
+    (snapshot as Record<string, unknown>)[key] = value_;
   }
 
   return snapshot;

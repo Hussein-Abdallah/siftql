@@ -187,8 +187,8 @@ class Parser {
     }
 
     // Only if nothing deeper already explained itself: a dropped `^2` is a more
-    // useful reason than "there was trailing input", and the spread used to
-    // overwrite it.
+    // useful reason than "there was trailing input", so it must not be
+    // overwritten here.
     return result.recovered
       ? result
       : {
@@ -438,16 +438,18 @@ class Parser {
       this.advance();
       this.enterDepth(next);
 
-      const operand = this.parseUnary();
+      try {
+        const operand = this.parseUnary();
 
-      this.depth -= 1;
-
-      return {
-        location: span(next.start, operand.location.end),
-        operand,
-        operator: next.type === 'not' ? 'NOT' : '-',
-        type: 'UnaryOperator',
-      };
+        return {
+          location: span(next.start, operand.location.end),
+          operand,
+          operator: next.type === 'not' ? 'NOT' : '-',
+          type: 'UnaryOperator',
+        };
+      } finally {
+        this.depth -= 1;
+      }
     }
 
     if (next.type === 'require') {
@@ -474,27 +476,28 @@ class Parser {
       /*
        * THROUGH `enterDepth`, exactly as the `not`/`-` branch above does.
        *
-       * Without it `+` bypassed MAX_DEPTH entirely — `'+'.repeat(20000) + 'a'`
-       * overflowed the stack and escaped as a raw RangeError, while the same
-       * shape written with `NOT` or `-` was refused at 201. It also falsified
-       * the line added to this file's options doc in the same change set, which
-       * says structural limits still throw in tolerant mode.
+       * Without it `+` bypasses MAX_DEPTH entirely: `'+'.repeat(20000) + 'a'`
+       * overflows the stack and escapes as a raw RangeError, while the same
+       * shape written with `NOT` or `-` is refused at 201. Structural limits
+       * throw in tolerant mode too, and this branch is no exception.
        */
       this.enterDepth(next);
 
-      const required = this.parseUnary();
+      try {
+        const required = this.parseUnary();
 
-      this.depth -= 1;
-
-      return required.recovered
-        ? required
-        : {
-            ...required,
-            recovered: {
-              reason: RECOVERY_REASONS.unsupportedModifier,
-              synthetic: false,
-            },
-          };
+        return required.recovered
+          ? required
+          : {
+              ...required,
+              recovered: {
+                reason: RECOVERY_REASONS.unsupportedModifier,
+                synthetic: false,
+              },
+            };
+      } finally {
+        this.depth -= 1;
+      }
     }
 
     return this.parseModifiers(this.parsePrimary());

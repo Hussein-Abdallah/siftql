@@ -647,6 +647,69 @@ describe('a discarded stray is not reported as trailing input', () => {
   });
 });
 
+/*
+ * The THIRD axis: what KIND of token follows the discard.
+ *
+ * Two earlier repairs of this label were tested only over stray count and
+ * stray position, and both shipped a regression the tests could not see. The
+ * deciding token can be consumed by either branch of the tolerant loop, so the
+ * follower kind is what the classification actually turns on.
+ */
+describe('the recovery reason follows what comes after the discard', () => {
+  const reasonsOf = (query: string): string[] => {
+    const seen: string[] = [];
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== 'object') {
+        return;
+      }
+
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+
+        return;
+      }
+
+      const info = (node as { recovered?: { reason?: string } }).recovered;
+
+      if (info?.reason !== undefined) {
+        seen.push(info.reason);
+      }
+
+      Object.values(node).forEach(walk);
+    };
+
+    walk(parse(query, { tolerant: true }));
+
+    return seen;
+  };
+
+  it.each([
+    ['an operand', 'a ) b'],
+    ['an OR', 'a ) OR b'],
+    ['an AND', 'a ) AND b'],
+    ['a modifier', 'a ) ^2'],
+    ['a fielded clause', 'a:b } OR zzz'],
+    ['a NOT', 'a ) NOT b'],
+    ['a group', 'a ) (b OR c)'],
+    ['a stray then an operand', 'a )) b'],
+    ['an OR after two strays', 'a )) OR b'],
+  ])('is stray-input when %s follows', (_kind, query) => {
+    expect(reasonsOf(query)).toContain('stray-input');
+    expect(reasonsOf(query)).not.toContain('trailing-input');
+  });
+
+  it.each([
+    ['nothing', 'a )'],
+    ['another stray', 'a ))'],
+    ['three strays', 'a AND b )))'],
+    ['only strays', ':'],
+    ['a stray run at the end', 'a:b } }'],
+  ])('is trailing-input when %s follows', (_kind, query) => {
+    expect(reasonsOf(query)).toContain('trailing-input');
+    expect(reasonsOf(query)).not.toContain('stray-input');
+  });
+});
+
 describe('a discarded stray does not rewrite OR into AND', () => {
   it('keeps the operator the user typed', () => {
     // The tolerant loop rejoined with parseAnd, which stops at `or`, so the

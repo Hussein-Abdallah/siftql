@@ -95,6 +95,9 @@ const ATOMS = [
   '/a{2}{3}/',
   'true',
   'null',
+  // Claimed by the custom `sku` type, so the registry's resolution ORDER
+  // decides the answer rather than being a choice between identical arrays.
+  'sku-42',
   '"in progress"',
   '[1 TO 9]',
   '[* TO 9}',
@@ -121,6 +124,9 @@ const FIELDS = [
   'd:',
   'a.b:',
   'a.0:',
+  'sku:',
+  'tags:',
+  'tags.0:',
   // ALL FOUR ordering operators. With only `>=` and `<`, a boundary flip on
   // `>` or `<=` changed an answer and this reported nothing: half the operator
   // surface was untestable, and the half that was covered certified the whole.
@@ -219,7 +225,16 @@ const record = (next: () => number): unknown => {
 
   return {
     a: { b: pick(next, ['ada', 3, null]) },
-    d: pick(next, ['2020-06-01', '14:30', 1_591_000_000_000, new Date(0)]),
+    d: pick(next, [
+      '2020-06-01',
+      '14:30',
+      1_591_000_000_000,
+      new Date(0),
+      // Claimable by the `parseDate` hook and the `DD-MM-YYYY` layout in
+      // ENGINES. Without a value they can read, both options are inert.
+      'epoch',
+      '01-06-2020',
+    ]),
     n: pick(next, [3, -3, '007', 0]),
     name: pick(next, [
       'ada',
@@ -235,6 +250,9 @@ const record = (next: () => number): unknown => {
       'aaab',
       '',
     ]),
+    sku: pick(next, ['sku-42', '42', 'sku-7']),
+    // `tags:red` — array flattening under a terminal array is a documented
+    // headline and had no corpus value to exercise it.
     tags: ['red', 'blue'],
   };
 };
@@ -416,7 +434,41 @@ interface Surface {
   highlight(query: unknown, item: unknown, options?: unknown): unknown;
   createEngine(options?: unknown): unknown;
   extend(options: unknown): unknown;
+  /*
+   * Enough to build a CUSTOM VALUE TYPE from each tree's own exports.
+   *
+   * Without one, `types` is always empty, so `createRegistry` runs with
+   * `added.length === 0` on every call: the dedup check, the append/prepend
+   * order and the `lookup` bridge are all unreachable, and `typeStrategy` picks
+   * between two identical arrays. Six registry mutations were invisible.
+   *
+   * The type has to be constructed PER TREE, like `handBuilt` does with
+   * `builders` — a type built from one tree's `claimed`/`DECLINED` sentinels is
+   * not comparable against the other tree's registry.
+   */
+  defineValueType(definition: unknown): unknown;
+  claimed(value: unknown): unknown;
+  resolved(value: unknown): unknown;
+  DECLINED: unknown;
+  MISS: unknown;
 }
+
+/** A custom type built from ONE tree's exports, so both sides are comparable. */
+const customType = (surface: Surface): unknown =>
+  surface.defineValueType({
+    coerceValue: (value: unknown) =>
+      typeof value === 'string' && value.startsWith('sku-')
+        ? surface.claimed(value.slice(4))
+        : surface.MISS,
+    equals: (value: unknown, operand: unknown) => value === operand,
+    matches: (value: unknown, operand: unknown) =>
+      String(value).includes(String(operand)),
+    name: 'sku',
+    parseOperand: (token: { kind: string; text?: string }) =>
+      token.kind === 'text' && token.text?.startsWith('sku-') === true
+        ? surface.resolved(token.text.slice(4))
+        : surface.DECLINED,
+  });
 
 const load = async (root: string): Promise<Surface> =>
   (await import(`${root}/src/index.ts`)) as Surface;
@@ -552,13 +604,20 @@ const main = async (): Promise<void> => {
       { onRecovered: 'throw' },
       { maxPatternLength: 200 },
       /*
-       * typeStrategy and parseDate reach code nothing else does: the registry's
-       * resolution ORDER, and the hook consulted before any built-in layout.
-       * Six registry mutations and four temporal ones were invisible without
-       * them.
+       * CUSTOM TYPES, in both resolution orders.
+       *
+       * `typeStrategy` decides nothing while `types` is empty — the append and
+       * prepend branches build identical arrays — so these two entries are what
+       * make the registry reachable at all: its dedup check, its ordering, and
+       * the `lookup` bridge a type uses to delegate to a built-in.
+       *
+       * `__types` is a marker the loop replaces with a type built from the tree
+       * being called, since a type carrying one tree's sentinels is not
+       * comparable against the other tree's registry.
        */
-      { typeStrategy: 'append' },
-      { dateFormat: 'DD-MM-YYYY', typeStrategy: 'prepend' },
+      { __types: true, typeStrategy: 'append' },
+      { __types: true, typeStrategy: 'prepend' },
+      { dateFormat: 'DD-MM-YYYY' },
       {
         parseDate: (value: unknown) =>
           value === 'epoch' ? new Date(0) : undefined,
@@ -590,7 +649,22 @@ const main = async (): Promise<void> => {
       const item = SCALE[run] === undefined ? record(next) : { name: 'ada' };
 
       for (const tolerant of [false, true]) {
-        const options = { ...ENGINES[run % ENGINES.length], tolerant };
+        const shape = ENGINES[run % ENGINES.length] ?? {};
+        /*
+         * The engine options FOR ONE SIDE. A custom type must come from the
+         * tree being called, so this is resolved per surface rather than once.
+         */
+        const engineOptions = (surface: Surface): Record<string, unknown> =>
+          shape.__types === true
+            ? {
+                ...shape,
+                __types: undefined,
+                tolerant,
+                types: [customType(surface)],
+              }
+            : { ...shape, tolerant };
+        // `parse` takes no types, so the shared shape is fine for it.
+        const options = { ...shape, __types: undefined, tolerant };
         const overrides = OVERRIDES[run % OVERRIDES.length];
 
         for (const [kind, act] of [
@@ -599,17 +673,25 @@ const main = async (): Promise<void> => {
           [
             'test',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).test(q, item, overrides),
+              (s.createEngine(engineOptions(s)) as Surface).test(
+                q,
+                item,
+                overrides,
+              ),
           ],
           [
             'filter',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).filter(q, [item], overrides),
+              (s.createEngine(engineOptions(s)) as Surface).filter(
+                q,
+                [item],
+                overrides,
+              ),
           ],
           [
             'highlight',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).highlight(
+              (s.createEngine(engineOptions(s)) as Surface).highlight(
                 q,
                 item,
                 overrides,
@@ -623,7 +705,8 @@ const main = async (): Promise<void> => {
            */
           [
             'engine.parse',
-            (s: Surface) => (s.createEngine(options) as Surface).parse(q),
+            (s: Surface) =>
+              (s.createEngine(engineOptions(s)) as Surface).parse(q),
           ],
           /*
            * extend() MERGES over the parent. Nothing exercised it, so a
@@ -634,7 +717,7 @@ const main = async (): Promise<void> => {
             'extend',
             (s: Surface) =>
               (
-                (s.createEngine(options) as Surface).extend({
+                (s.createEngine(engineOptions(s)) as Surface).extend({
                   id: 'child',
                 }) as Surface
               ).filter(q, [item]),
@@ -648,7 +731,7 @@ const main = async (): Promise<void> => {
           [
             'test (ast)',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).test(
+              (s.createEngine(engineOptions(s)) as Surface).test(
                 s.parse(q, options),
                 item,
               ),
@@ -656,7 +739,7 @@ const main = async (): Promise<void> => {
           [
             'highlight (ast)',
             (s: Surface) =>
-              (s.createEngine(options) as Surface).highlight(
+              (s.createEngine(engineOptions(s)) as Surface).highlight(
                 s.parse(q, options),
                 item,
               ),

@@ -162,8 +162,13 @@ class Parser {
      * user typed, so both are kept and joined implicitly.
      */
     let result = expression;
-    // Set when a discarded stray had more query after it, which is what
-    // separates the two reasons — see RECOVERY_REASONS.
+    /*
+     * Which of the two reasons applies, per RECOVERY_REASONS: `stray-input`
+     * when query text follows a discarded stray, `trailing-input` when nothing
+     * does. Both flags are needed because the deciding token can be consumed
+     * by either branch below.
+     */
+    let discarded = false;
     let midQuery = false;
 
     while (this.peek().type !== 'eof') {
@@ -179,6 +184,12 @@ class Parser {
        * to keep a half-typed query usable.
        */
       if (next.type === 'or' || next.type === 'and') {
+        // Reached only after a stray was discarded, so this operator and its
+        // operand ARE the query text following it.
+        if (discarded) {
+          midQuery = true;
+        }
+
         this.advance();
 
         const operand = this.parseAnd();
@@ -200,22 +211,28 @@ class Parser {
       }
 
       this.advance();
+      discarded = true;
 
       if (this.peek().type === 'eof') {
         break;
       }
 
+      /*
+       * DID THE INDEX MOVE — not "is there a next token", and not "is the
+       * operand a hole".
+       *
+       * `peek() !== 'eof'` counted a second stray as query text, so `a ))` was
+       * `stray-input` with nothing after it. Testing the operand instead only
+       * moved the error: `parseAnd` stops at `or` WITHOUT consuming it and
+       * hands back a hole, so `a ) OR b` became `trailing-input` while a whole
+       * clause followed. Consumption is the thing that actually distinguishes
+       * them, and `^2` — swallowed by parseModifiers over a hole — is the case
+       * that neither of the other two tests gets right.
+       */
+      const before = this.index;
       const right = this.parseAnd();
 
-      /*
-       * Only a real operand counts as "query follows".
-       *
-       * Testing `peek() !== 'eof'` counted a SECOND STRAY as query text, so a
-       * run of trailing junk — `a ))`, and `a AND b ))`, which is the example
-       * RECOVERY_REASONS gives for `trailing-input` — was labelled
-       * `stray-input` with nothing after it at all.
-       */
-      if (right.type !== 'MissingExpression') {
+      if (this.index > before) {
         midQuery = true;
       }
 
@@ -394,11 +411,7 @@ class Parser {
    * AND-level operand rather than to the whole tree.
    */
   private joinImplicitly(left: Expression, right: Expression): Expression {
-    if (
-      left.type === 'LogicalExpression' &&
-      left.operator.operator === 'OR' &&
-      !left.recovered
-    ) {
+    if (left.type === 'LogicalExpression' && left.operator.operator === 'OR') {
       return {
         ...left,
         location: span(left.location.start, right.location.end),

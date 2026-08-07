@@ -5,10 +5,9 @@
  * `serialize()` and the evaluator will accept, and MAX_AST_DEPTH is DERIVED
  * from the parser's own caps rather than chosen independently — that derivation
  * is the point. An AST limit set below what the parser can emit would make
- * `serialize(parse(q))`
- * throw for a query siftql had just accepted, breaking the round-trip law; set
- * above, and a hand-built tree could still exhaust the call stack, which is what
- * these exist to prevent.
+ * `serialize(parse(q))` throw for a query siftql had just accepted, breaking
+ * the round-trip law; set above, and a hand-built tree could still exhaust the
+ * call stack, which is what these exist to prevent.
  *
  * WHY A DECLARED NUMBER RATHER THAN A MEASURED ONE. The obvious alternative is
  * to find the depth at which the stack actually overflows and stop just short.

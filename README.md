@@ -222,8 +222,13 @@ createEngine({
 > result. siftql takes the instant your hook returns at face value — it is the
 > one place the fail-loud guarantee cannot reach.
 
-Resolution order: `Date` objects → canonical ISO → `parseDate` → `dateFormat` →
+Resolution order: `Date` objects → `parseDate` → `dateFormat` → canonical ISO →
 epoch milliseconds → refuse.
+
+A declared layout and the `parseDate` hook are both consulted **before** ISO,
+deliberately: a column you have declared as `DD-MM-YYYY` must not have some of
+its values read as ISO because they happen to look like it, which would leave
+one column holding two calendars.
 
 ## Custom value types
 
@@ -365,8 +370,7 @@ All errors extend `SiftQLError` and carry a machine-readable `code`;
 `SiftQLSyntaxError` also carries a source span and prints a caret:
 
 ```
-Expected a value immediately after the operator; a space here ends the clause.
-Did you mean status:"in progress"? (at 7)
+Expected a value immediately after the operator; a space here ends the clause. Did you mean status:"in progress"? (at 7)
 status: in progress
        ^
 ```

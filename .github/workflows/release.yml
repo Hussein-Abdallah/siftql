@@ -37,6 +37,19 @@ jobs:
           # trusted-publisher connection lives.
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing — the OIDC exchange that authenticates this job to the
+      # registry — needs npm 11.5.1 or newer. Node 22 bundles npm 10, which
+      # supports `--provenance` but has no OIDC exchange, so it signs the
+      # attestation and then uploads with no credential at all. The registry
+      # answers 404 rather than 401, because it will not confirm a package
+      # exists to a caller who cannot publish it, which makes the real cause
+      # very hard to see from the error alone.
+      - name: Use an npm that can do trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Versions
+        run: node --version && npm --version
+
       - run: npm ci
 
       # The same gate every push runs. A release is the worst possible moment

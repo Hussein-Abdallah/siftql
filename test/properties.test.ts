@@ -83,10 +83,27 @@ const pick = <T>(next: () => number, items: readonly T[]): T =>
  * green through two audits while the risk it was written for moved to `ranges`,
  * where a real defect was then found by someone else.
  *
- * So every property below counts the comparisons it genuinely made and states a
- * floor. A refactor that silently empties one now fails the build, which is the
- * only reason to trust a green run.
+ * So MOST properties below count the work they genuinely did and state a floor,
+ * and a refactor that empties one fails the build.
+ *
+ * Not all of them, and the exceptions matter more than the count. Six tests
+ * assert directly over a fixed fixture with no loop, where a guard adds
+ * nothing. Of the guarded ones, some count a fixture list rather than a check
+ * — those detect the fixture being emptied and nothing subtler. A guard is
+ * only as good as WHAT it counts, and a count taken at a loop head measures
+ * iterations, not comparisons: if the body skips its check, the number is
+ * unchanged. Before trusting one, read what its counter is incremented past.
  */
+/**
+ * The floor every generative guard uses.
+ *
+ * Deliberately low. This catches a loop that STOPPED, which is the failure
+ * mode that stays green; it is not a claim about how much work is enough. A
+ * floor tuned near the observed count breaks whenever a generator is retuned,
+ * and a guard that cries wolf gets deleted.
+ */
+const PROBE_FLOOR = 5;
+
 const didWork = (label: string, count: number, floor: number): void => {
   expect(
     count,
@@ -469,9 +486,12 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
   it('for hostile record values', () => {
     const escapes: string[] = [];
 
+    let probed = 0;
     for (const value of hostileValues()) {
       for (const q of ['anything', 'v:x', 'v:>1', 'v:[1 TO 9]', 'v:/a/']) {
         for (const run of entryPoints(q, value)) {
+          probed += 1;
+
           const failure = escape(run);
 
           if (failure) {
@@ -481,14 +501,18 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
       }
     }
 
+    didWork('for hostile record values', probed, PROBE_FLOOR);
     expect(escapes).toEqual([]);
   });
 
   it('for hostile option objects', () => {
     const escapes: string[] = [];
 
+    let probed = 0;
     for (const options of hostileOptions()) {
       for (const run of entryPoints('a:b', { a: 'b' }, options)) {
+        probed += 1;
+
         const failure = escape(run);
 
         if (failure) {
@@ -505,12 +529,14 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
       }
     }
 
+    didWork('for hostile option objects', probed, PROBE_FLOOR);
     expect(escapes).toEqual([]);
   });
 
   it('for hand-built ASTs', () => {
     const escapes: string[] = [];
 
+    let probed = 0;
     for (const ast of hostileAsts()) {
       for (const run of [
         () => serialize(ast as SiftQLAst),
@@ -518,6 +544,7 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
         () => filter(ast as SiftQLAst, [{ a: 1 }]),
         () => highlight(ast as SiftQLAst, { a: 1 }),
       ]) {
+        probed += 1;
         const failure = escape(run);
 
         if (failure) {
@@ -526,14 +553,18 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
       }
     }
 
+    didWork('for hand-built ASTs', probed, PROBE_FLOOR);
     expect(escapes).toEqual([]);
   });
 
   it('for misbehaving value types', () => {
     const escapes: string[] = [];
 
+    let probed = 0;
     for (const type of hostileTypes()) {
       for (const q of ['f:1', 'f:[1 TO 9]']) {
+        probed += 1;
+
         const failure =
           escape(() =>
             createEngine({ types: [type as never] }).filter(q, [{ f: 'a' }]),
@@ -548,6 +579,7 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
       }
     }
 
+    didWork('for misbehaving value types', probed, 3);
     expect(escapes).toEqual([]);
   });
 
@@ -555,11 +587,14 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
     const next = rng(20_260_805);
     const escapes: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS; run += 1) {
       const q = query(next);
       const item = record(next);
 
       for (const entry of entryPoints(q, item)) {
+        probed += 1;
+
         const failure = escape(entry);
 
         if (failure) {
@@ -568,6 +603,11 @@ describe('P1: no entry point throws a non-SiftQLError', () => {
       }
     }
 
+    didWork(
+      'for generated queries against generated reco',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(escapes.slice(0, 5)).toEqual([]);
   });
 });
@@ -586,6 +626,7 @@ describe('P2: serialize round-trips and is idempotent', () => {
     const next = rng(11);
     const violations: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS * 4; run += 1) {
       const q = query(next);
 
@@ -596,6 +637,11 @@ describe('P2: serialize round-trips and is idempotent', () => {
       } catch {
         continue;
       }
+
+      // PAST the continue. Counting iterations counted queries the parser
+      // refused, which are not checks — the property would still report work
+      // with every single generated query being rejected.
+      probed += 1;
 
       const once = serialize(ast);
 
@@ -612,6 +658,7 @@ describe('P2: serialize round-trips and is idempotent', () => {
       }
     }
 
+    didWork('over generated queries', probed, PROBE_FLOOR);
     expect(violations.slice(0, 5)).toEqual([]);
   });
 });
@@ -625,7 +672,9 @@ describe('P3: matching obeys its own algebra', () => {
     const next = rng(7);
     const violations: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS; run += 1) {
+      probed += 1;
       const q = query(next);
       const left = record(next);
       const right = record(next);
@@ -649,6 +698,11 @@ describe('P3: matching obeys its own algebra', () => {
       }
     }
 
+    didWork(
+      'filter partitions, and test agrees with filt',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(violations.slice(0, 5)).toEqual([]);
   });
 
@@ -670,7 +724,9 @@ describe('P3: matching obeys its own algebra', () => {
     const next = rng(99);
     const violations: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS; run += 1) {
+      probed += 1;
       const q = query(next);
       const item = record(next);
 
@@ -687,6 +743,7 @@ describe('P3: matching obeys its own algebra', () => {
       }
     }
 
+    didWork('a highlight implies a match', probed, PROBE_FLOOR);
     expect(violations.slice(0, 5)).toEqual([]);
   });
 });
@@ -760,7 +817,9 @@ describe('P4: an engine honours its configuration', () => {
     const next = rng(31_337);
     const throwing: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS; run += 1) {
+      probed += 1;
       const full = query(next);
 
       for (let cut = 1; cut <= full.length; cut += 1) {
@@ -774,6 +833,11 @@ describe('P4: an engine honours its configuration', () => {
       }
     }
 
+    didWork(
+      'never throws in tolerant mode, for any prefi',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(throwing.slice(0, 5)).toEqual([]);
   });
 
@@ -792,7 +856,9 @@ describe('P4: an engine honours its configuration', () => {
     const next = rng(4242);
     const leaks: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS; run += 1) {
+      probed += 1;
       const full = query(next);
       const cut = full.slice(0, 1 + Math.floor(next() * full.length));
 
@@ -816,6 +882,11 @@ describe('P4: an engine honours its configuration', () => {
       }
     }
 
+    didWork(
+      'refuses every recovered tree under onRecover',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(leaks.slice(0, 5)).toEqual([]);
   });
 });
@@ -826,6 +897,7 @@ describe('P4: an engine honours its configuration', () => {
 
 describe('P3b: a node location slices back to its own source', () => {
   it('holds for every field segment of every generated query', () => {
+    let probed = 0;
     /*
      * `SourceLocation` is contractually "a half-open character range into the
      * original query string", and consumers slice it — a caret excerpt, a
@@ -865,6 +937,7 @@ describe('P3b: a node location slices back to its own source', () => {
       }
 
       for (const value of Object.values(record)) {
+        probed += 1;
         check(value, source);
       }
     };
@@ -879,6 +952,11 @@ describe('P3b: a node location slices back to its own source', () => {
       }
     }
 
+    didWork(
+      'holds for every field segment of every gener',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(wrong.slice(0, 5)).toEqual([]);
   });
 
@@ -916,11 +994,16 @@ describe('P4b: a declared dateFormat is never silently overridden', () => {
     const layout = 'YYYY-DD-MM';
     const wrong: string[] = [];
 
+    let probed = 0;
     for (let day = 1; day <= 28; day += 1) {
       for (let month = 1; month <= 28; month += 1) {
         const text = `2020-${String(day).padStart(2, '0')}-${String(
           month,
         ).padStart(2, '0')}`;
+        // Counted per READING. The outer loop is a fixed 28 and advanced
+        // whether or not the inner loop resolved anything.
+        probed += 1;
+
         const resolved = resolveTemporal(text, { dateFormat: layout });
 
         if (resolved === null) {
@@ -943,6 +1026,11 @@ describe('P4b: a declared dateFormat is never silently overridden', () => {
       }
     }
 
+    didWork(
+      'reads every value through the layout, or ref',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(wrong.slice(0, 5)).toEqual([]);
   });
 
@@ -977,6 +1065,7 @@ describe('P4b: a declared dateFormat is never silently overridden', () => {
 
 describe('P5: cost stays bounded', () => {
   it('is not quadratic in record depth', () => {
+    let probed = 0;
     /*
      * A chain-shaped record — threaded comments, a linked list, an ORM parent
      * chain — has a leaf at EVERY level, so its paths sum to n²/2 entries. It
@@ -994,6 +1083,7 @@ describe('P5: cost stays bounded', () => {
       let node: Record<string, unknown> = { text: 'leaf' };
 
       for (let index = 0; index < levels; index += 1) {
+        probed += 1;
         node = { reply: node, text: 'leaf' };
       }
 
@@ -1020,6 +1110,7 @@ describe('P5: cost stays bounded', () => {
     const small = Math.max(time(4000), 1);
     const large = time(16_000);
 
+    didWork('is not quadratic in record depth', probed, PROBE_FLOOR);
     expect(large / small).toBeLessThan(8);
   });
 
@@ -1060,7 +1151,9 @@ describe('P5: cost stays bounded', () => {
      * one this property checks, so it is asserted separately below rather than
      * left implicit.
      */
+    let probed = 0;
     for (const refused of ['^(a*){1,99}$', '^((a|a?))*$']) {
+      probed += 1;
       expect(compileLinear(refused, '').ok, refused).toBe(false);
     }
 
@@ -1093,6 +1186,7 @@ describe('P5: cost stays bounded', () => {
       }
     }
 
+    didWork('never accepts a regex that then runs away', probed, 2);
     expect(runaway).toEqual([]);
   });
 
@@ -1310,7 +1404,9 @@ describe('P5: cost stays bounded', () => {
 
     const disagreements: string[] = [];
 
+    let probed = 0;
     for (let run = 0; run < RUNS * 20; run += 1) {
+      probed += 1;
       const source = build(3);
       const flags = pick(next, ['', '', 'i', 'm', 's', 'im', 'is', 'ms']);
 
@@ -1339,6 +1435,11 @@ describe('P5: cost stays bounded', () => {
       }
     }
 
+    didWork(
+      'agrees with RegExp on patterns RegExp can sa',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(disagreements.slice(0, 8)).toEqual([]);
   });
 
@@ -1357,7 +1458,9 @@ describe('P5: cost stays bounded', () => {
 
     const refused: string[] = [];
 
+    let probed = 0;
     for (const pattern of ordinary) {
+      probed += 1;
       const started = Date.now();
 
       new RegExp(pattern, 'u').test(`${'a,'.repeat(120)}!`);
@@ -1369,6 +1472,11 @@ describe('P5: cost stays bounded', () => {
       }
     }
 
+    didWork(
+      'does not refuse patterns that are provably f',
+      probed,
+      PROBE_FLOOR,
+    );
     expect(refused).toEqual([]);
   });
 });

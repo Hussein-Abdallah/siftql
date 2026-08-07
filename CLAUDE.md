@@ -7,9 +7,7 @@ serializer, in-memory engine, and a linear-time regex matcher, all hand-written.
 
 - **Zero runtime dependencies.** `dependencies` in `package.json` must stay empty.
   Anything the package needs at runtime gets written here, in `src/`.
-- **Never run `npm publish`**, or any command that would publish, tag a release,
-  or push to a registry. This package is not published. There is no exception to
-  this, including when a task looks complete and the version number looks ready.
+- **Never run `npm publish`**, and never create a GitHub release. The package IS published, as `@siftql/core`, and a release now triggers a publish — `.github/workflows/release.yml` fires on `release: published` and pushes to the registry via OIDC. So `gh release create` is a publish, not a bookkeeping step. There is no exception to this, including when a task looks complete and the version number looks ready. Publishing is Hussein's action.
 - **`/Users/sam/Desktop/Dev/CBSA` is read-only.** It is referenced only to compare
   behaviour against an existing app. Never edit, stage, or commit anything under it.
 - Commit and push only when explicitly asked.
@@ -22,6 +20,15 @@ npm run typecheck && npm run lint && npm test && npm run build
 
 The property harness lives in `test/properties.test.ts` and runs as part of
 `npm test`. Increase its sample count with `SIFTQL_PROPERTY_RUNS=5000 npm test`.
+
+## Releasing
+
+The pipeline is proven — `0.1.1` went out through it — but the first two attempts failed, so:
+
+- `npm version patch` rewrites `package.json` and **nothing else**. `VERSION` in `src/index.ts` is a separate literal, and a test asserts the two agree, so a bump that forgets it fails the build rather than shipping a constant that lies.
+- Tag with `git tag -a`, not `git tag`. A lightweight tag is silently skipped by `git push --follow-tags`, and GitHub renders the commit message in place of release notes.
+- The release workflow upgrades npm before publishing. Node 22 bundles npm 10, which implements `--provenance` but not the OIDC exchange trusted publishing needs — it signs the attestation and then uploads with no credential, and npm answers that with `404`, not `401`.
+- Provenance records the source commit, so the tag must point at exactly what is published. Move the tag before republishing rather than publishing from a different commit.
 
 ## If you are an auditor or a review agent
 

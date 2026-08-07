@@ -12,7 +12,7 @@
  * A test asserts the two agree rather than pinning a literal, because pinning
  * one catches the drift a release late — after the wrong number has shipped.
  */
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 
 export { parse, type ParseOptions } from './parser/parser.js';
 export {

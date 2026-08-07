@@ -1,6 +1,6 @@
 {
   "name": "@siftql/core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A complete, extensible Lucene-like query language: hand-written parser, serializer, and in-memory search engine with real chronological date/time support. Zero dependencies.",
   "keywords": [
     "lucene",

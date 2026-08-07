@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Note: the AST is a **documented public contract**. Any change to an exported node
 shape is a breaking change and requires a major version bump.
 
+## 0.1.2 — 2026-08-07
+
+Documentation only. Diffed against the 0.1.1 tarball downloaded from the registry: the single change in every built file is the `VERSION` string itself. Nothing about parsing, matching or serialization has moved.
+
+### Added
+
+- A **[browser playground](https://hussein-abdallah.github.io/siftql/)**, linked from the top of this README and from `homepage`. Seventy worked examples across fourteen groups, an editable dataset, and every engine option as a live control. It loads the published package from a CDN rather than a build of the source, so what it demonstrates is what `npm install` gives you.
+- Two things on that page are worth the click even if you already know the library. The **date inspector** runs `detectTemporalFormat` and `resolveTemporal` side by side, so the gap between *ISO-shaped* and *actually a date* — the reason `created:>=2021-02-29` is refused rather than compared as text — is one row rather than a paragraph. The **regex race** measures `^(a+)+$` live, with the native `RegExp` in a Web Worker on a hard timeout, because on the main thread it freezes the tab.
+- Every caption on the page states a result, and each was produced by running the query rather than by hand; `?selftest` re-runs all seventy in the browser and reports mismatches.
+
 ## 0.1.1 — 2026-08-07
 
 No change to matching, parsing or serialization. The only behavioural

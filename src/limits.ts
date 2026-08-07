@@ -2,9 +2,10 @@
  * The structural limits, in one place because they have to agree.
  *
  * Two of these bound what `parse()` will accept. The other two bound what
- * `serialize()` and the evaluator will accept, and MAX_AST_DEPTH is DERIVED from
- * the parser's own caps rather than chosen independently — that derivation is the point. An AST
- * limit set below what the parser can emit would make `serialize(parse(q))`
+ * `serialize()` and the evaluator will accept, and MAX_AST_DEPTH is DERIVED
+ * from the parser's own caps rather than chosen independently — that derivation
+ * is the point. An AST limit set below what the parser can emit would make
+ * `serialize(parse(q))`
  * throw for a query siftql had just accepted, breaking the round-trip law; set
  * above, and a hand-built tree could still exhaust the call stack, which is what
  * these exist to prevent.
@@ -103,10 +104,11 @@ export const MAX_WILDCARD_SEGMENTS = 512;
  * split is 11,996 (parentheses consume the clause budget too, so the fully
  * nested shape is not the largest).
  *
- * THIS CONSTANT DOES NOT SIT ABOVE THE MAXIMAL QUERY. A maximal shape (MAX_CLAUSES tags, each with a MAX_FIELD_SEGMENTS
- * path and a MAX_WILDCARD_SEGMENTS value) is accepted at 453 clauses and 499,202
- * visits and refused at 454, so the budget is roughly a quarter of what the per-clause caps alone
- * would permit.
+ * THIS CONSTANT DOES NOT SIT ABOVE THE MAXIMAL QUERY. A maximal shape
+ * (MAX_CLAUSES tags, each with a MAX_FIELD_SEGMENTS path and a
+ * MAX_WILDCARD_SEGMENTS value) is accepted at 453 clauses and 499,202 visits,
+ * and refused at 454 — so the budget is roughly a quarter of what the
+ * per-clause caps alone would permit.
  *
  * That is not a defect, but it is the whole reason `parse()` checks this at
  * runtime rather than trusting the caps: what expands is the PRODUCT of clause

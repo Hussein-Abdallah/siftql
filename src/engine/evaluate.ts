@@ -594,34 +594,31 @@ const literalOf = (boundary: RangeBoundary): TextLiteral | null =>
  * Turn half-typed clauses that cannot be compiled into holes, so `prune` can
  * remove them.
  *
- * Tolerant mode promises that a query being typed does not blow up, and `prune`
- * delivered that only for `MissingExpression`. A range carries its invention on
- * itself or its boundaries and fell straight through to the evaluator, where the
- * INVENTED bound then failed to resolve: the tolerant tokenizer reads a
- * half-typed `TO` as a literal upper bound, so `n:[1 T` became `n:[1 TO T]` and
- * threw UNORDERED_TYPE. Typing `d:[2020-01-01 TO 2020-12-31]` one character at a
- * time threw on 15 of its 28 prefixes — before any record was read, so no data
- * could avoid it. `parse()` never threw, which is exactly why the property
- * asserting tolerance at `parse()` stayed green.
+ * Tolerant mode promises that a query being typed does not blow up, and holes
+ * are not the only way it can. A range carries its invention on itself or on
+ * its boundaries, and an INVENTED bound reaches the evaluator looking ordinary:
+ * the tolerant tokenizer reads a half-typed `TO` as a literal upper bound, so
+ * `n:[1 T` is `n:[1 TO T]`, whose upper bound is the string "T" and has no
+ * ordering. Nothing throws at `parse()`, so a check there cannot see it.
  *
- * The test is UNRESOLVABLE, not "recovered", and that is deliberately wider
- * than the defect that prompted it. Being recovered is neither necessary nor
- * sufficient:
+ * The test is UNRESOLVABLE, not "recovered", which is deliberately wider.
+ * Being recovered is neither necessary nor sufficient:
  *
  *   - not sufficient — `d:[2020-01-01 TO 2020-12-31`, missing only its `]`, is
  *     recovered and resolves fine. Dropping it would throw away a working live
  *     filter at the last keystroke before the user finishes.
  *   - not necessary — `d:>=2020-` carries no recovery at all. It is a perfectly
  *     well-formed clause comparing against the string "2020-", which has no
- *     ordering, so it threw from the middle of an ordinary date being typed.
+ *     ordering, so it throws from the middle of an ordinary date being typed.
  *
- * So the rule tolerant mode actually needs is the simpler one: A TOLERANT QUERY
- * NEVER THROWS FOR BEING INCOMPLETE OR MALFORMED. What cannot be used is
- * dropped, and a clause that constrains nothing constrains nothing. Structural
- * limits still throw — they guard resources, not syntax. Strict mode is unchanged — there, an operand that
- * cannot resolve is still a hard error, because a caller who did not ask for
- * leniency should hear about a broken query rather than silently get more rows
- * than they asked for.
+ * So the rule tolerant mode needs is the simpler one: A TOLERANT QUERY NEVER
+ * THROWS FOR BEING INCOMPLETE OR MALFORMED. What cannot be used is dropped, and
+ * a clause that constrains nothing constrains nothing. Structural limits still
+ * throw — they guard resources, not syntax.
+ *
+ * Strict mode differs: there, an operand that cannot resolve is a hard error,
+ * because a caller who did not ask for leniency should hear about a broken
+ * query rather than silently get more rows than they asked for.
  *
  * This is the same lesson `findRecoveredBoundary` learned for the `throw`
  * policy, which failed OPEN on boundaries for the same reason: the walk stopped

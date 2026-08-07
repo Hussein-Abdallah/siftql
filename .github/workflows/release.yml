@@ -1,0 +1,64 @@
+name: Release
+
+# Publishing from CI rather than a laptop is what makes PROVENANCE possible:
+# npm asks Sigstore to attest that this exact tarball was built by this repo,
+# from a named commit, by a named workflow. A publish from a developer machine
+# cannot be attested, because nothing outside that machine saw it happen.
+on:
+  release:
+    types: [published]
+  # Manual re-run, for when a publish fails after the release already exists.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # REQUIRED for provenance. This is what lets the job mint the short-lived
+  # OIDC token Sigstore signs with; without it `--provenance` fails outright.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # A named environment gives the publish an approval gate and somewhere to
+    # scope the npm token, so a compromised workflow on another branch cannot
+    # reach it.
+    environment: npm
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          # Points npm at the public registry so NODE_AUTH_TOKEN is used.
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # The same gate every push runs. A release is the worst possible moment
+      # to discover the build is broken, and the tarball is built from `dist/`
+      # which this produces.
+      - name: Verify
+        run: npm run verify
+
+      # A tag that disagrees with package.json publishes the wrong version
+      # under the right name, and npm versions are immutable — so this is
+      # checked before anything is sent, not after.
+      - name: Tag matches package.json
+        if: github.event_name == 'release'
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag $GITHUB_REF_NAME implies $TAG, package.json says $PKG"
+            exit 1
+          fi
+          echo "both agree on $PKG"
+
+      - name: Publish
+        run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

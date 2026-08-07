@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/%40siftql%2Fcore.svg)](https://www.npmjs.com/package/@siftql/core)
-[![license](https://img.shields.io/npm/l/%40siftql%2Fcore.svg)](./LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 ```sh
 npm install @siftql/core

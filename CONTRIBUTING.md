@@ -5,8 +5,9 @@ wrong answer is the most useful thing anyone can send.
 
 ## Where the project is
 
-`0.1.0`, not yet published to npm. The API is stabilising, so it can still
-change in response to a good argument.
+`0.1.0` on npm. The API is stabilising rather than settled — 0.x means it can
+still change in response to a good argument, and nobody has used it in anger
+yet.
 
 ## Issues first, then code
 

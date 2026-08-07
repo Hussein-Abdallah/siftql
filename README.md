@@ -5,11 +5,12 @@
 > chronological date/time support. Zero runtime dependencies.
 
 [![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![npm](https://img.shields.io/npm/v/siftql.svg)](https://www.npmjs.com/package/siftql)
+[![license](https://img.shields.io/npm/l/siftql.svg)](./LICENSE)
 
-Not yet published to npm, and the repository is private, so there is no
-install command that works for a reader today. Both land together with the
-first release.
+```sh
+npm install siftql
+```
 
 ```ts
 import { filter } from 'siftql';

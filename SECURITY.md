@@ -8,8 +8,7 @@ Use GitHub's private vulnerability reporting — the **Security** tab of this
 repository, then **Report a vulnerability**. That opens a private thread visible
 only to the maintainer.
 
-That feature is a public-repository one, so while this repository is private it
-is not there. Until then, email **sain.abdallah@gmail.com** with `siftql
+If that is unavailable to you, email **sain.abdallah@gmail.com** with `siftql
 security` in the subject.
 
 Please include a runnable repro: the query, the input it runs against, the
@@ -23,8 +22,9 @@ that I will not quietly ignore it.
 
 ## Supported versions
 
-`0.1.0` is pre-release and **not yet published to npm**. Until a release is
-tagged, the supported version is whatever is currently on `main`.
+Fixes land on the latest `0.x` release. There is no back-porting to earlier
+0.x versions — while the API is still settling, the supported version is the
+most recent one.
 
 ## What is in scope
 

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Note: the AST is a **documented public contract**. Any change to an exported node
 shape is a breaking change and requires a major version bump.
 
-## 0.1.0 — unreleased
+## 0.1.0 — 2026-08-06
 
 Initial release.
 

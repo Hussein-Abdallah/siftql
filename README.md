@@ -1,12 +1,10 @@
-# siftql
+# @siftql/core
 
 > A complete, extensible Lucene-like query language for JavaScript and TypeScript —
 > hand-written parser, serializer, and in-memory search engine, with real
 > chronological date/time support. Zero runtime dependencies.
 
-[![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/%40siftql%2Fcore.svg)](https://www.npmjs.com/package/@siftql/core)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/%40siftql%2Fcore.svg)](https://www.npmjs.com/package/@siftql/core) [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 ```sh
 npm install @siftql/core
@@ -22,15 +20,9 @@ filter('status:active AND created:>=2020-06-01', tasks);
 
 ## What it is
 
-`siftql` turns a Lucene-style query string into a documented AST, evaluates it
-against plain JavaScript objects, and serializes it back to a string.
+`@siftql/core` turns a Lucene-style query string into a documented AST, evaluates it against plain JavaScript objects, and serializes it back to a string. The package is scoped; the library it ships is siftql, and the rest of this page calls it that.
 
-It is a **query-language parser and in-memory filter engine**, not a full-text
-search index. If you want relevance-ranked fuzzy search over a document corpus,
-reach for [Fuse.js](https://fusejs.io), [MiniSearch](https://lucaong.github.io/minisearch/)
-or [Lunr](https://lunrjs.com). If you want a person to type
-`status:active AND created:>=2020-06-01` into a box and have it filter an array
-correctly, this is the package.
+It is a **query-language parser and in-memory filter engine**, not a full-text search index. If you want relevance-ranked fuzzy search over a document corpus, reach for [Fuse.js](https://fusejs.io), [MiniSearch](https://lucaong.github.io/minisearch/) or [Lunr](https://lunrjs.com). If you want a person to type `status:active AND created:>=2020-06-01` into a box and have it filter an array correctly, this is the package.
 
 ## Two rules that explain most of the language
 
@@ -42,10 +34,7 @@ name:ada     exactly "ada"         →  does NOT match "Ada Lovelace"
 name:*ada*   contains, explicitly  →  matches "Ada Lovelace"
 ```
 
-A bare word is browsing, so it matches anywhere. Naming a field is an assertion,
-so it matches the whole value. This is why `status:active` never matches
-`"inactive"` — a class of wrong result that substring-by-default produces
-constantly.
+A bare word is browsing, so it matches anywhere. Naming a field is an assertion, so it matches the whole value. This is why `status:active` never matches `"inactive"` — a class of wrong result that substring-by-default produces constantly.
 
 **2. Everything ignores case unless you double the colon.**
 
@@ -54,8 +43,7 @@ status:active      ignores capitals
 status::Active     respects them
 ```
 
-Quotes hold a value together so it can contain spaces and reserved characters.
-They say nothing about case:
+Quotes hold a value together so it can contain spaces and reserved characters. They say nothing about case:
 
 ```
 status:"in progress"      finds "In Progress"
@@ -133,8 +121,7 @@ name:foo AND (bio:bar OR bio:baz)
 status:(active OR pending)     # field group — the field distributes
 ```
 
-Precedence, loosest to tightest: `OR` < `AND` < `NOT`/`-`. All binary operators
-are left-associative. `AND` and implicit AND bind identically.
+Precedence, loosest to tightest: `OR` < `AND` < `NOT`/`-`. All binary operators are left-associative. `AND` and implicit AND bind identically.
 
 ### Dates
 
@@ -149,9 +136,7 @@ date:[2020-01-01 TO *]                # half-open temporal
 
 ### Escaping
 
-A backslash protects the next character, and is itself structural. Space,
-`\ ( ) [ ] { } " ' : / ^ ~ * ? < > =` and a leading `-` or `+` are structural;
-everything else is ordinary.
+A backslash protects the next character, and is itself structural. Space, `\ ( ) [ ] { } " ' : / ^ ~ * ? < > =` and a leading `-` or `+` are structural; everything else is ordinary.
 
 ```rb
 status:in\ progress     # an escaped space, instead of quoting
@@ -164,10 +149,7 @@ a\.b:x                  # a field key that literally contains a dot
 
 ## Real dates
 
-This is the reason the package exists. Dates are resolved to real timestamps and
-compared chronologically, so timezone offsets, mixed precision and several
-storage shapes all work — and a date that does not exist is refused rather than
-quietly rolled over.
+This is the reason the package exists. Dates are resolved to real timestamps and compared chronologically, so timezone offsets, mixed precision and several storage shapes all work — and a date that does not exist is refused rather than quietly rolled over.
 
 ```ts
 filter('created:>=2020-01-01', [
@@ -183,19 +165,14 @@ filter('created:>=2020-01-01', [
 test('t:2020-06-01T12:00:00Z', { t: '2020-06-01T14:00:00+02:00' }); // true
 ```
 
-**No `new Date(string)` anywhere.** Native parsing rolls impossible dates over
-instead of rejecting them (`new Date("2021-02-29")` is 1 March 2021), and it is
-inconsistent about zones within one API — `new Date("2020-06-01")` is midnight
-UTC while `new Date("2020-06-01T00:00:00")` is midnight _local_. siftql refuses
-what it cannot resolve:
+**No `new Date(string)` anywhere.** Native parsing rolls impossible dates over instead of rejecting them (`new Date("2021-02-29")` is 1 March 2021), and it is inconsistent about zones within one API — `new Date("2020-06-01")` is midnight UTC while `new Date("2020-06-01T00:00:00")` is midnight _local_. siftql refuses what it cannot resolve:
 
 ```ts
 filter('created:>=2021-02-29', rows);
 // SiftQLOperandError: datetime: "2021-02-29" is not a real date
 ```
 
-Offset-less values are read as UTC, deliberately, so the same query cannot
-return different rows on a London server and a Tokyo browser.
+Offset-less values are read as UTC, deliberately, so the same query cannot return different rows on a London server and a Tokyo browser.
 
 ### Other layouts
 
@@ -203,9 +180,7 @@ return different rows on a London server and a Tokyo browser.
 createEngine({ dateFormat: 'DD-MM-YYYY' }).filter('created:>=01-06-2020', rows);
 ```
 
-`DD-MM-YYYY` and `MM-DD-YYYY` are different declarations and siftql never guesses
-between them. An array is tried in order. Tokens: `YYYY MM DD HH mm ss SSS`.
-Two-digit years are deliberately unsupported — a century pivot is a guess.
+`DD-MM-YYYY` and `MM-DD-YYYY` are different declarations and siftql never guesses between them. An array is tried in order. Tokens: `YYYY MM DD HH mm ss SSS`. Two-digit years are deliberately unsupported — a century pivot is a guess.
 
 For anything else, plug in a date library:
 
@@ -223,19 +198,13 @@ createEngine({
 > result. siftql takes the instant your hook returns at face value — it is the
 > one place the fail-loud guarantee cannot reach.
 
-Resolution order: `Date` objects → `parseDate` → `dateFormat` → canonical ISO →
-epoch milliseconds → refuse.
+Resolution order: `Date` objects → `parseDate` → `dateFormat` → canonical ISO → epoch milliseconds → refuse.
 
-A declared layout and the `parseDate` hook are both consulted **before** ISO,
-deliberately: a column you have declared as `DD-MM-YYYY` must not have some of
-its values read as ISO because they happen to look like it, which would leave
-one column holding two calendars.
+A declared layout and the `parseDate` hook are both consulted **before** ISO, deliberately: a column you have declared as `DD-MM-YYYY` must not have some of its values read as ISO because they happen to look like it, which would leave one column holding two calendars.
 
 ## Custom value types
 
-`datetime` is not special-cased anywhere in the engine — it is a registration
-like any other. The same extension point is public, so a `semver`, `ipaddress`
-or `currency` type is a first-class citizen without forking.
+`datetime` is not special-cased anywhere in the engine — it is a registration like any other. The same extension point is public, so a `semver`, `ipaddress` or `currency` type is a first-class citizen without forking.
 
 ```ts
 import { createEngine, defineValueType, claimed, DECLINED, MISS, resolved } from '@siftql/core';
@@ -260,14 +229,9 @@ engine.filter('v:>=1.2.3', releases);          // 1.2.3, 1.10.0, 2.0.0
 engine.filter('v:[1.0.0 TO 1.99.99]', releases); // ranges, for free
 ```
 
-Lexically `"1.10.0" < "1.2.3"`; semantically it is greater. **Ranges are
-implemented once in core** on top of `compare`, so the type above never writes
-range code and gets `[a TO b]`, `{a TO b}`, `[a TO *]` and every mixed form
-automatically.
+Lexically `"1.10.0" < "1.2.3"`; semantically it is greater. **Ranges are implemented once in core** on top of `compare`, so the type above never writes range code and gets `[a TO b]`, `{a TO b}`, `[a TO *]` and every mixed form automatically.
 
-Registries are **per engine**. A library using siftql internally and an
-application using it in the same process cannot see each other's types — and
-that is what lets two engines disagree about what `01-06-2020` means:
+Registries are **per engine**. A library using siftql internally and an application using it in the same process cannot see each other's types — and that is what lets two engines disagree about what `01-06-2020` means:
 
 ```ts
 createEngine({ dateFormat: 'DD-MM-YYYY' }); // 1 June
@@ -280,10 +244,7 @@ Built-in resolution order, first non-declining type wins:
 regex → null → boolean → wildcard → datetime → number → string
 ```
 
-`string` is last because it claims every text operand. It deliberately has **no
-ordering**, which is the entire mechanism behind `name:>="m"` throwing: free text
-has no defensible order, so rather than inventing one the type does not support
-the operators.
+`string` is last because it claims every text operand. It deliberately has **no ordering**, which is the entire mechanism behind `name:>="m"` throwing: free text has no defensible order, so rather than inventing one the type does not support the operators.
 
 ## API
 
@@ -297,9 +258,7 @@ the operators.
 | `createEngine(options?)`           | an engine with its own registry and options. |
 | `isSafeUnquotedExpression(value)`  | does this string need quoting?               |
 
-Every AST node type is exported and documented. The AST is **pure JSON** — no
-`RegExp`, no `Date`, no parsed numbers — so it can be cached, hashed as a query
-key, and posted to a worker.
+Every AST node type is exported and documented. The AST is **pure JSON** — no `RegExp`, no `Date`, no parsed numbers — so it can be cached, hashed as a query key, and posted to a worker.
 
 ### Options
 
@@ -318,10 +277,7 @@ key, and posted to a worker.
 
 ### Limits
 
-A query is refused past any of these, with a located `SiftQLSyntaxError`. They
-exist so that a tree the parser produces is always one the serializer and the
-evaluator can walk — a query that parses and then fails downstream would be the
-worst of both. All are exported.
+A query is refused past any of these, with a located `SiftQLSyntaxError`. They exist so that a tree the parser produces is always one the serializer and the evaluator can walk — a query that parses and then fails downstream would be the worst of both. All are exported.
 
 | Constant                | Value    | What it bounds                                  |
 | ----------------------- | -------- | ----------------------------------------------- |
@@ -333,42 +289,31 @@ worst of both. All are exported.
 | `MAX_AST_DEPTH`         | `2200`   | depth of a hand-built or deserialized tree      |
 | `maxPatternLength`      | `1000`   | regex source length (an option, not a constant) |
 
-`MAX_AST_NODES` is the one that binds in practice, because what expands is the
-PRODUCT of clause count and segments per clause — per-clause caps alone cannot
-bound a tree. `parse()` checks it directly, so a query is refused where it can
-still be pointed at rather than accepted and then rejected by everything that
-consumes the AST.
+`MAX_AST_NODES` is the one that binds in practice, because what expands is the PRODUCT of clause count and segments per clause — per-clause caps alone cannot bound a tree. `parse()` checks it directly, so a query is refused where it can still be pointed at rather than accepted and then rejected by everything that consumes the AST.
 
-Tolerant mode does **not** relax these. It absorbs input that is incomplete or
-malformed; a structural limit is a resource guard, and a search box does not
-reach one by accident.
+Tolerant mode does **not** relax these. It absorbs input that is incomplete or malformed; a structural limit is a resource guard, and a search box does not reach one by accident.
 
 ### Errors: wrong query vs dirty data
 
 These are different failures and are handled differently.
 
-A **wrong query** throws, and that is not configurable — unless the caller
-opted into `tolerant: true`, which is exactly the opt-in that says a
-half-typed query should be repaired rather than refused:
+A **wrong query** throws, and that is not configurable — unless the caller opted into `tolerant: true`, which is exactly the opt-in that says a half-typed query should be repaired rather than refused:
 
 ```ts
 filter('name:>="m"', rows); // SiftQLOperandError — string has no ordering
 filter('created:>=2021-02-29', rows); // SiftQLOperandError — not a real date
 ```
 
-A **dirty field value** is a policy. The default skips the row; `'throw'` is for
-pipelines that must not proceed on bad data:
+A **dirty field value** is a policy. The default skips the row; `'throw'` is for pipelines that must not proceed on bad data:
 
 ```ts
 filter('when:>=2020-01-01', [{ when: 'n/a' }]); // []
 filter('when:>=2020-01-01', [{ when: 'n/a' }], { onValueError: 'throw' }); // throws
 ```
 
-A bare-keyword scan **never** errors, whatever the setting — one dirty column
-must not be able to destroy a free-text search.
+A bare-keyword scan **never** errors, whatever the setting — one dirty column must not be able to destroy a free-text search.
 
-All errors extend `SiftQLError` and carry a machine-readable `code`;
-`SiftQLSyntaxError` also carries a source span and prints a caret:
+All errors extend `SiftQLError` and carry a machine-readable `code`; `SiftQLSyntaxError` also carries a source span and prints a caret:
 
 ```
 Expected a value immediately after the operator; a space here ends the clause. Did you mean status:"in progress"? (at 7)
@@ -385,24 +330,15 @@ engine.filter('name:ada AND ', rows); // → the rows matching name:ada
 engine.filter('name:', rows); // → everything; nothing is constrained yet
 ```
 
-Incomplete clauses are pruned rather than treated as false, so the result list
-does not blank out mid-keystroke. Recovered nodes are flagged in the AST, so a UI
-can grey out the clause in flight. Set `onRecovered: 'throw'` where acting on a
-guess is unacceptable.
+Incomplete clauses are pruned rather than treated as false, so the result list does not blank out mid-keystroke. Recovered nodes are flagged in the AST, so a UI can grey out the clause in flight. Set `onRecovered: 'throw'` where acting on a guess is unacceptable.
 
-A tolerant engine also never throws for a query that is merely incomplete or
-malformed. A half-typed clause is often well-formed but meaningless — `d:>=2020-`
-compares against the string `"2020-"`, which has no ordering — so a clause whose
-operands cannot be resolved is dropped along with the incomplete ones:
+A tolerant engine also never throws for a query that is merely incomplete or malformed. A half-typed clause is often well-formed but meaningless — `d:>=2020-` compares against the string `"2020-"`, which has no ordering — so a clause whose operands cannot be resolved is dropped along with the incomplete ones:
 
 ```ts
 engine.filter('name:ada AND d:>=2020-', rows); // → the rows matching name:ada
 ```
 
-This is the trade `tolerant: true` exists to make, and it is confined to it. A
-default engine still refuses the same query, because a caller who did not ask
-for leniency should hear about a broken query rather than quietly receive more
-rows than they asked for:
+This is the trade `tolerant: true` exists to make, and it is confined to it. A default engine still refuses the same query, because a caller who did not ask for leniency should hear about a broken query rather than quietly receive more rows than they asked for:
 
 ```ts
 filter('d:>=2020-', rows); // throws SiftQLOperandError
@@ -415,24 +351,11 @@ highlight('status:active OR status:done', row);
 // [{ path: 'status', segments: ['status'], ranges: [{ start: 0, end: 6 }] }]
 ```
 
-Only clauses that actually contributed are reported: the losing branch of an
-`OR`, and everything under a satisfied `NOT`, contribute nothing.
+Only clauses that actually contributed are reported: the losing branch of an `OR`, and everything under a satisfied `NOT`, contribute nothing.
 
-`ranges` is absent whenever there is no substring to point at: a range, a
-comparison, a boolean, a number or date equality, `null` (including the absent
-key it matches), a `matchKeys` hit on the key itself, and any value whose case
-fold changes length — `name:*i*` against `İstanbul` matches, and no offset into
-the original value would be meaningful. Write `hit.ranges ?? []` and all of them
-fall out.
+`ranges` is absent whenever there is no substring to point at: a range, a comparison, a boolean, a number or date equality, `null` (including the absent key it matches), a `matchKeys` hit on the key itself, and any value whose case fold changes length — `name:*i*` against `İstanbul` matches, and no offset into the original value would be meaningful. Write `hit.ranges ?? []` and all of them fall out.
 
-**Positions, not patterns.** `ranges` are half-open offsets into the value, and
-they are what the built-in types report. That is not only about handing back a
-`RegExp` a caller then has to run; it is about being able to state the answer at
-all. Matching folds case with `toLowerCase`, and a `RegExp` applied by the caller
-folds under its own rules, which disagree in both directions — `/s/iu` matches
-`ſ`, which siftql does not, and `toLowerCase` maps the Kelvin sign `K` to `k`,
-which `/k/i` refuses. Spans are computed against exactly the string the matcher
-compared, so a span is reported if and only if the value really matched there.
+**Positions, not patterns.** `ranges` are half-open offsets into the value, and they are what the built-in types report. That is not only about handing back a `RegExp` a caller then has to run; it is about being able to state the answer at all. Matching folds case with `toLowerCase`, and a `RegExp` applied by the caller folds under its own rules, which disagree in both directions — `/s/iu` matches `ſ`, which siftql does not, and `toLowerCase` maps the Kelvin sign `K` to `k`, which `/k/i` refuses. Spans are computed against exactly the string the matcher compared, so a span is reported if and only if the value really matched there.
 
 Rendering them takes no library:
 
@@ -448,68 +371,42 @@ for (const { start, end } of hit.ranges ?? []) {
 parts.push(value.slice(at));
 ```
 
-A custom value type may still report a `query` instead, and `Highlight.query` is
-kept for that. A hit never carries both: the evaluator emits `ranges` and stops,
-so a type defining `highlight` and `highlightSpans` reports only its spans.
+A custom value type may still report a `query` instead, and `Highlight.query` is kept for that. A hit never carries both: the evaluator emits `ranges` and stops, so a type defining `highlight` and `highlightSpans` reports only its spans.
 
 ## On regular expressions
 
-User-supplied regexes are matched by a **linear-time automaton**, not by
-JavaScript's `RegExp`. Cost is `O(pattern × input)` for every pattern that
-exists — no pattern makes it exponential, and there is no catastrophic
-backtracking to trigger.
+User-supplied regexes are matched by a **linear-time automaton**, not by JavaScript's `RegExp`. Cost is `O(pattern × input)` for every pattern that exists — no pattern makes it exponential, and there is no catastrophic backtracking to trigger.
 
-**That bounds the shape of the cost, not its size.** Both factors are still
-controlled by whoever types the query, and linear is not free:
+**That bounds the shape of the cost, not its size.** Both factors are still controlled by whoever types the query, and linear is not free:
 
 ```
 pattern of 963 chars (under the 1000 default), value of 4,000 chars:    93 ms per row
 the same pattern against a 20,000-char value:                         480 ms per row
 ```
 
-So a hostile query is a slow query rather than a hung process: predictable,
-proportional, and tunable through `maxPatternLength` and the instruction budget —
-where before it was 2ⁿ and unbounded. If your search box is open to people you do
-not trust, lower `maxPatternLength`, cap the size of the fields you search, or
-put the filter behind a worker you can abort. An earlier version of this section
-said "there is no such thing as a query that hangs the process", which is the
-kind of absolute that stops a reader from doing any of that.
+So a hostile query is a slow query rather than a hung process: predictable, proportional, and tunable through `maxPatternLength` and the instruction budget — where before it was 2ⁿ and unbounded. If your search box is open to people you do not trust, lower `maxPatternLength`, cap the size of the fields you search, or put the filter behind a worker you can abort. An earlier version of this section said "there is no such thing as a query that hangs the process", which is the kind of absolute that stops a reader from doing any of that.
 
-That matters because `RegExp` backtracks, and backtracking is exponential.
-`/^(a|a)*$/` against 27 characters blocks for seconds — the measured figure
-swings by 6x between processes on one machine, so the fact to hold onto is that
-it DOUBLES per added character, not any single number — and a few more characters
-make it minutes. Nothing can interrupt a running regex in JavaScript. That is a
-denial of service with a twelve-character payload; the automaton raises the
-payload to roughly a thousand characters and makes the cost proportional.
+That matters because `RegExp` backtracks, and backtracking is exponential. `/^(a|a)*$/` against 27 characters blocks for seconds — the measured figure swings by 6x between processes on one machine, so the fact to hold onto is that it DOUBLES per added character, not any single number — and a few more characters make it minutes. Nothing can interrupt a running regex in JavaScript. That is a denial of service with a twelve-character payload; the automaton raises the payload to roughly a thousand characters and makes the cost proportional.
 
 ```rb
 name:/^(a|a)*$/     # 40,000-character value: 8 ms
 name:/(a+)+/        # linear, like everything else
 ```
 
-This is Thompson's construction with a Pike VM — the same approach `grep`, RE2,
-Rust's `regex` and Go's `regexp` take. It walks the input once, holding every
-state the pattern could be in at the same time, so it never enumerates the
-exponentially many ways a pattern might match.
+This is Thompson's construction with a Pike VM — the same approach `grep`, RE2, Rust's `regex` and Go's `regexp` take. It walks the input once, holding every state the pattern could be in at the same time, so it never enumerates the exponentially many ways a pattern might match.
 
-`highlight()` reports a user regex as **ranges** rather than a `RegExp`, so
-nothing a consumer runs can backtrack either — see the highlight section.
+`highlight()` reports a user regex as **ranges** rather than a `RegExp`, so nothing a consumer runs can backtrack either — see the highlight section.
 
-**Two features are refused**, because no engine can match them in guaranteed
-linear time:
+**Two features are refused**, because no engine can match them in guaranteed linear time:
 
 ```rb
 name:/(a+)\1/       # backreference    -> SiftQLOperandError, code UNSAFE_PATTERN
 name:/(?=x)y/       # lookahead        -> same
 ```
 
-`regexGuard: false` runs those on `RegExp` instead, for callers who need them
-and trust whoever writes the queries. The default is safe; the escape hatch is
-explicit.
+`regexGuard: false` runs those on `RegExp` instead, for callers who need them and trust whoever writes the queries. The default is safe; the escape hatch is explicit.
 
-**A third is refused, and this one is a limitation rather than an
-impossibility**: a quantifier whose body can match the empty string.
+**A third is refused, and this one is a limitation rather than an impossibility**: a quantifier whose body can match the empty string.
 
 ```rb
 name:/(a*)*/        # -> refused
@@ -517,41 +414,17 @@ name:/(?:a?)+/      # -> refused
 name:/(x|)*/        # -> refused
 ```
 
-JavaScript fails a loop iteration that consumes nothing once the minimum is
-satisfied. This matcher holds no per-thread state, so it cannot detect that, and
-match POSITIONS came out short — `(?:.*?)?\w+` over `a,b,,c` reported three
-matches where `RegExp` reports two. Implementing the rule was tried and reverted:
-it needs state carried per path, which made a 992-character pattern cost two
-seconds per kilobyte of value — reintroducing, through the fix, the exact hang
-the matcher exists to remove.
+JavaScript fails a loop iteration that consumes nothing once the minimum is satisfied. This matcher holds no per-thread state, so it cannot detect that, and match POSITIONS came out short — `(?:.*?)?\w+` over `a,b,,c` reported three matches where `RegExp` reports two. Implementing the rule was tried and reverted: it needs state carried per path, which made a 992-character pattern cost two seconds per kilobyte of value — reintroducing, through the fix, the exact hang the matcher exists to remove.
 
-Refusing is the honest answer while that is true. Only a body that can match
-_nothing_ is affected: `a*`, `(?:ab)*`, `(\s*,\s*)+` and `(\w+\s?)*` are all
-fine, as are the catastrophic shapes this section opens with.
+Refusing is the honest answer while that is true. Only a body that can match _nothing_ is affected: `a*`, `(?:ab)*`, `(\s*,\s*)+` and `(\w+\s?)*` are all fine, as are the catastrophic shapes this section opens with.
 
-Everything else works: literals, character classes, `.`, `\d \w \s \b`, `\cX`,
-`* + ? {n,m}` and their lazy forms, alternation, groups (including named and
-non-capturing), anchors, and the `i`, `m` and `s` flags. The `u` and `v` flags
-are **refused**: this matcher works on UTF-16 code units, and accepting them
-while ignoring their code-point semantics would give silently different
-answers. `maxPatternLength` still caps pattern size, and a pattern whose counted
-repetitions expand past the instruction budget is refused rather than run.
+Everything else works: literals, character classes, `.`, `\d \w \s \b`, `\cX`, `* + ? {n,m}` and their lazy forms, alternation, groups (including named and non-capturing), anchors, and the `i`, `m` and `s` flags. The `u` and `v` flags are **refused**: this matcher works on UTF-16 code units, and accepting them while ignoring their code-point semantics would give silently different answers. `maxPatternLength` still caps pattern size, and a pattern whose counted repetitions expand past the instruction budget is refused rather than run.
 
-Patterns that `RegExp` itself rejects are rejected here too — `a{2}{3}`, `^*`,
-`{2}`, `(?<>x)` — so a query cannot mean one thing under `regexGuard: true` and
-another under `false`.
+Patterns that `RegExp` itself rejects are rejected here too — `a{2}{3}`, `^*`, `{2}`, `(?<>x)` — so a query cannot mean one thing under `regexGuard: true` and another under `false`.
 
-One cost is worth stating plainly. `highlight()` on a regex walks the value once
-per match, and a pattern that matches at _every_ position while keeping a match
-alive to the right — `(?:.*;)?` — costs O(value²) to locate. `RegExp` is
-quadratic on the same patterns; this matcher's constant is larger. Rather than
-run away, the walk is bounded and reports **no ranges** for such a pattern: the
-field still matches, and the highlight degrades to "matched, but not where",
-exactly as it does for a range or a boolean.
+One cost is worth stating plainly. `highlight()` on a regex walks the value once per match, and a pattern that matches at _every_ position while keeping a match alive to the right — `(?:.*;)?` — costs O(value²) to locate. `RegExp` is quadratic on the same patterns; this matcher's constant is larger. Rather than run away, the walk is bounded and reports **no ranges** for such a pattern: the field still matches, and the highlight degrades to "matched, but not where", exactly as it does for a range or a boolean.
 
-**Wildcards are not regexes and never were an exposure.** `name:*a*a*a*b` is
-matched by a two-pointer glob: 200 stars against a 5,000-character value takes
-under a millisecond.
+**Wildcards are not regexes and never were an exposure.** `name:*a*a*a*b` is matched by a two-pointer glob: 200 stars against a 5,000-character value takes under a millisecond.
 
 ## Development
 
@@ -568,28 +441,17 @@ npm version <patch|minor|major>
 npm publish          # prepublishOnly rebuilds, so dist can never be stale
 ```
 
-Verify what ships first with `npm pack --dry-run` — it should be `dist/`,
-`README.md`, `LICENSE` and `package.json`, nothing else.
+Verify what ships first with `npm pack --dry-run` — it should be `dist/`, `README.md`, `LICENSE` and `package.json`, nothing else.
 
 ## Contributing
 
-Bug reports are welcome — a reproducible wrong answer is the most useful thing
-anyone can send. Please open an issue before writing a pull request: the
-package has constraints that are not visible in a diff, including zero runtime
-dependencies and four invariants governing the AST as a public contract.
-[CONTRIBUTING.md](CONTRIBUTING.md) has the details.
+Bug reports are welcome — a reproducible wrong answer is the most useful thing anyone can send. Please open an issue before writing a pull request: the package has constraints that are not visible in a diff, including zero runtime dependencies and four invariants governing the AST as a public contract. [CONTRIBUTING.md](CONTRIBUTING.md) has the details.
 
-Found something with security impact? Do not open a public issue — see
-[SECURITY.md](SECURITY.md).
+Found something with security impact? Do not open a public issue — see [SECURITY.md](SECURITY.md).
 
 ## Acknowledgements
 
-The query syntax is compatible with [liqe](https://github.com/gajus/liqe) by
-Gajus Kuizinas, which inspired this project. siftql is an independent
-implementation written from a specification rather than derived from liqe's
-source, with a different architecture: a hand-written tokenizer and parser with
-no parser generator, an extensible value-type registry, and a chronological
-temporal engine.
+The query syntax is compatible with [liqe](https://github.com/gajus/liqe) by Gajus Kuizinas, which inspired this project. siftql is an independent implementation written from a specification rather than derived from liqe's source, with a different architecture: a hand-written tokenizer and parser with no parser generator, an extensible value-type registry, and a chronological temporal engine.
 
 ## License
 

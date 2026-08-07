@@ -207,6 +207,42 @@ const MUTATIONS: readonly Mutation[] = [
     label: 'limits: the field-path cap moves while the message still says 32',
     replace: 'if (token.segments.length > 16) {',
   },
+  /*
+   * Below: what a round-thirteen auditor still found uncovered after the
+   * registry gap was closed. Each was verified observable through the public
+   * API before being added here — a mutation nothing can reach is a corpus
+   * problem, but a mutation nothing SHOULD reach is a bad mutation.
+   */
+  {
+    file: 'src/temporal/format.ts',
+    find: "['MM', 'month', String.raw`\\d{2}`]",
+    label: 'temporal: a declared layout accepts a one-digit month',
+    replace: "['MM', 'month', String.raw`\\d{1,2}`]",
+  },
+  {
+    file: 'src/engine/access.ts',
+    find: 'if (!/^(?:0|[1-9]\\d*)$/u.test(key)) {',
+    label: 'access: a leading-zero array index is treated as an index',
+    replace: 'if (!/^\\d+$/u.test(key)) {',
+  },
+  {
+    file: 'src/engine/access.ts',
+    find: '    return Object.prototype.hasOwnProperty.call(holder, key);',
+    label: 'access: inherited keys are read as if they were own properties',
+    replace: '    return key in (holder as Record<PropertyKey, unknown>);',
+  },
+  {
+    file: 'src/serialize.ts',
+    find: "      character === '*' ||",
+    label: 'serialize: a quoted literal asterisk comes back a wildcard',
+    replace: '      false ||',
+  },
+  {
+    file: 'src/engine/prune.ts',
+    find: '  return boundary.bounded && boundary.value.recovered',
+    label: 'prune: a recovered range boundary stops being recovered',
+    replace: '  return false && boundary.value.recovered',
+  },
 ];
 
 const git = (cwd: string, ...args: readonly string[]): string =>
@@ -237,6 +273,7 @@ const main = (): void => {
 
   const missed: string[] = [];
   const invalid: string[] = [];
+  const crashed: string[] = [];
 
   let detected = 0;
 
@@ -284,18 +321,30 @@ const main = (): void => {
       };
 
       let caught = false;
+      let crash: string | undefined;
 
       try {
         caught = run(FIRST_PASS) || run(RETRY);
-      } catch {
-        // A mutation that makes the harness itself crash still counts as a
-        // detected change — silence is the only failure mode that matters.
-        caught = true;
+      } catch (error) {
+        /*
+         * A CRASH IS ITS OWN CATEGORY, not a catch.
+         *
+         * Scoring it as detected let a mutation that produces invalid
+         * TypeScript count towards the rate without the diff ever comparing
+         * anything — so a 100% could be reached without the corpus reaching
+         * the surface at all. The mutant still failed loudly, which is not
+         * silence, but it is not evidence the diff can SEE the change either,
+         * and the whole point of this number is what the diff can see.
+         */
+        crash = (error as Error).message.split('\n')[0];
       }
 
       writeFileSync(path, before);
 
-      if (caught) {
+      if (crash !== undefined) {
+        crashed.push(`${mutation.label} — ${crash}`);
+        console.log(`  CRASHED  ${mutation.label}`);
+      } else if (caught) {
         detected += 1;
         console.log(`  caught   ${mutation.label}`);
       } else {
@@ -324,6 +373,18 @@ const main = (): void => {
   console.log(
     `\n${String(detected)} of ${String(total)} mutations detected${total === 0 ? '' : ` (${((detected / total) * 100).toFixed(0)}%)`}`,
   );
+
+  if (crashed.length > 0) {
+    console.log(
+      `\n${String(crashed.length)} mutation(s) CRASHED rather than being compared. The mutant failed\nloudly, which is not silence — but it is not evidence the diff can see the\nchange either, so they are excluded from the rate above:`,
+    );
+
+    for (const entry of crashed) {
+      console.log(`  ${entry}`);
+    }
+
+    process.exitCode = 1;
+  }
 
   if (invalid.length > 0) {
     console.log(

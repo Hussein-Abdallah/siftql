@@ -19,9 +19,21 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # A named environment gives the publish an approval gate and somewhere to
-    # scope the npm token, so a compromised workflow on another branch cannot
-    # reach it.
+    # A REF ALLOWLIST, not an approval gate. The environment is configured to
+    # accept only tag `v*` and branch `main` — the two refs this workflow can
+    # legitimately run on, a release and a manual re-run — so a job on any other
+    # ref cannot reach the publish step even if the workflow is edited to try.
+    #
+    # There is deliberately NO required reviewer. With a single maintainer that
+    # is a confirmation click rather than a second pair of eyes, and it adds a
+    # failure mode that did not exist: a release left pending approval never
+    # reaches npm, and looks like a broken pipeline.
+    #
+    # Nor is there a token to scope. Authentication is the OIDC exchange below;
+    # what the environment scopes is which refs may attempt it. If npm's
+    # trusted-publisher connection names an environment, it must be this one —
+    # renaming it here without renaming it there breaks the exchange, and the
+    # registry reports that as a 404.
     environment: npm
 
     steps:

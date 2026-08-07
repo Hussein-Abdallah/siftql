@@ -16,6 +16,8 @@ import { filter } from '@siftql/core';
 filter('status:active AND created:>=2020-06-01', tasks);
 ```
 
+**▶ [Try it in the playground](https://hussein-abdallah.github.io/siftql/)** — type a query and watch it filter, with worked examples for every value type, date layout and engine option. No install, and it runs the published package.
+
 ---
 
 ## What it is

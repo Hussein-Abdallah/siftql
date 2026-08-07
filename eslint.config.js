@@ -60,6 +60,25 @@ export default tseslint.config(
     },
   },
   {
+    // The playground in docs/. Linted rather than ignored — it is the page
+    // people meet the package through, and a typo there is more visible than
+    // one in src/. It runs in a browser, so it gets browser globals; it ships
+    // nowhere (package.json `files` is ["dist"]).
+    files: ['docs/**/*.js'],
+    languageOptions: {
+      globals: {
+        URLSearchParams: 'readonly',
+        Worker: 'readonly',
+        clearTimeout: 'readonly',
+        document: 'readonly',
+        location: 'readonly',
+        performance: 'readonly',
+        self: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
+  },
+  {
     files: ['test/**/*.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',

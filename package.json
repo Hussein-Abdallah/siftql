@@ -17,7 +17,7 @@
     "date",
     "datetime"
   ],
-  "homepage": "https://github.com/Hussein-Abdallah/siftql#readme",
+  "homepage": "https://hussein-abdallah.github.io/siftql/",
   "bugs": {
     "url": "https://github.com/Hussein-Abdallah/siftql/issues"
   },
@@ -64,7 +64,8 @@
     "verify": "npm run lint && npm run format:check && npm run typecheck && npm run test:coverage && npm run build",
     "playground": "tsx playground.ts",
     "diff": "tsx scripts/regression-diff.ts",
-    "mutants": "tsx scripts/mutation-check.ts"
+    "mutants": "tsx scripts/mutation-check.ts",
+    "demo": "node -e \"const h=require('http'),f=require('fs'),P=require('path'),t={'.html':'text/html','.js':'text/javascript','.css':'text/css'};h.createServer((q,r)=>{const x=P.join('docs',q.url.split('?')[0]==='/'?'index.html':q.url.split('?')[0]);f.readFile(x,(e,d)=>e?(r.writeHead(404),r.end()):(r.writeHead(200,{'Content-Type':t[P.extname(x)]||'text/plain'}),r.end(d)))}).listen(8099,()=>console.log('playground: http://localhost:8099'))\""
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

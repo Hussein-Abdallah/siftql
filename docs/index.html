@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@siftql/core — playground</title>
+    <meta
+      name="description"
+      content="Type a Lucene-style query and watch it filter plain JavaScript objects. Real chronological dates, linear-time regex, zero dependencies."
+    />
+    <link rel="stylesheet" href="./style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='14'%3E%F0%9F%94%8D%3C/text%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-main">
+        <h1>@siftql/core</h1>
+        <p class="tagline">
+          A Lucene-style query language for plain JavaScript objects. Real
+          chronological dates, linear-time regular expressions, zero runtime
+          dependencies.
+        </p>
+        <p class="install"><code>npm install @siftql/core</code></p>
+      </div>
+      <nav class="hero-links">
+        <a href="https://github.com/Hussein-Abdallah/siftql">GitHub</a>
+        <a href="https://www.npmjs.com/package/@siftql/core">npm</a>
+        <span class="version" id="version">loading…</span>
+      </nav>
+    </header>
+
+    <main>
+      <div class="workspace">
+        <!-- LEFT: worked examples, one accordion per group -->
+        <aside class="panel examples" aria-labelledby="examples-heading">
+          <h2 id="examples-heading">Worked examples</h2>
+          <p class="muted">
+            Every result was produced by running the query against the data on
+            this page — the captions are checked, not written by hand.
+            <a href="?selftest">Re-run the check</a>.
+          </p>
+          <div id="groups"></div>
+        </aside>
+
+        <!-- RIGHT: query, what it did, and what came back — one card -->
+        <section class="panel workbench" aria-labelledby="workbench-heading">
+          <h2 id="workbench-heading" class="sr-only">Query and results</h2>
+
+          <label class="field-label" for="query">Query</label>
+          <input
+            id="query"
+            class="query-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            autocapitalize="off"
+            value="created:>=2021-01-01"
+            aria-describedby="stats"
+          />
+
+          <!-- The engine that answers the query above, in the same card as the
+               query and the results, so the connection is not something the
+               reader has to take on faith. Two explicit rows: a label and its
+               control must never be split across a wrap. -->
+          <div class="engine-strip">
+            <div class="engine-row">
+              <span class="opt">
+                <label for="dataset">data</label>
+                <select id="dataset">
+                  <option value="SEED">SEED — 14 issues</option>
+                  <option value="AMBIGUOUS_DATES">AMBIGUOUS_DATES</option>
+                  <option value="DIRTY_DATES">DIRTY_DATES</option>
+                </select>
+              </span>
+
+              <!-- Typeable, not a fixed list. Tokens are YYYY MM DD HH mm ss SSS
+                   and every other character is literal, so the space of valid
+                   layouts is open — a dropdown can only ever be a guess at which
+                   ones someone needs. The suggestions are a shortcut. -->
+              <span class="opt">
+                <label for="dateFormat">dateFormat</label>
+                <input
+                  id="dateFormat"
+                  list="dateFormats"
+                  type="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  placeholder="none — ISO only"
+                  size="16"
+                />
+              </span>
+              <datalist id="dateFormats">
+                <option value="DD-MM-YYYY"></option>
+                <option value="MM-DD-YYYY"></option>
+                <option value="YYYY.MM.DD"></option>
+                <option value="DD.MM.YYYY"></option>
+                <option value="YYYYMMDD"></option>
+                <option value="DD/MM/YYYY"></option>
+                <option value="YYYY-MM-DD HH:mm:ss"></option>
+                <option value="HH:mm"></option>
+              </datalist>
+            </div>
+
+            <div class="engine-row">
+              <span class="opt">
+                <label for="onValueError">onValueError</label>
+                <select id="onValueError">
+                  <option value="skip">skip</option>
+                  <option value="throw">throw</option>
+                </select>
+              </span>
+
+              <label class="toggle"
+                ><input type="checkbox" id="tolerant" /> tolerant</label
+              >
+              <label class="toggle"
+                ><input type="checkbox" id="matchKeys" /> matchKeys</label
+              >
+              <label class="toggle">
+                <input type="checkbox" id="regexGuard" checked /> regexGuard
+              </label>
+
+              <label for="maxPatternLength" class="sr-only"
+                >maxPatternLength</label
+              >
+              <input
+                type="number"
+                id="maxPatternLength"
+                value="1000"
+                min="1"
+                step="1"
+                hidden
+              />
+
+              <button type="button" id="resetOptions" class="ghost">
+                Reset
+              </button>
+            </div>
+          </div>
+
+          <p class="stats" id="stats" role="status" aria-live="polite"></p>
+          <pre class="error" id="error" hidden></pre>
+          <p class="caption" id="caption" hidden></p>
+
+          <div class="results-head">
+            <span class="field-label results-label">Results</span>
+            <span class="dataset-badge" id="datasetBadge"></span>
+            <span class="option-badges" id="optionBadges"></span>
+          </div>
+          <div class="table-scroll results-scroll">
+            <table id="results">
+              <caption class="sr-only">
+                Rows matching the current query
+              </caption>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <details class="panel" id="options-panel">
+        <summary><h2>What those options do</h2></summary>
+        <p class="muted">
+          The controls live in the card above, beside the query they affect.
+          This is the explanation, and the resolved shape the engine is actually
+          running with.
+        </p>
+        <dl class="options-doc">
+          <dt><code>dateFormat</code></dt>
+          <dd>
+            A non-ISO layout, declared rather than guessed.
+            <code>01-06-2020</code> is 1 June under <code>DD-MM-YYYY</code> and
+            6 January under <code>MM-DD-YYYY</code>; siftql will never pick for
+            you. Tokens are <code>YYYY MM DD HH mm ss SSS</code> and everything
+            else in the layout is matched literally. Engine-level only.
+          </dd>
+
+          <dt><code>tolerant</code></dt>
+          <dd>
+            For search-as-you-type, where the query is malformed on almost every
+            keystroke. Holes are repaired and marked instead of thrown.
+            Structural limits still throw — this forgives half-typed syntax, not
+            unbounded input. Engine-level only: passing it per call does nothing
+            at all.
+          </dd>
+
+          <dt><code>matchKeys</code></dt>
+          <dd>
+            A bare term may match a field NAME as well as its contents. Off by
+            default.
+          </dd>
+
+          <dt><code>regexGuard</code></dt>
+          <dd>
+            On, a pattern that cannot be matched in guaranteed linear time is
+            refused — backreferences, lookaround, a quantifier whose body can
+            match empty, the <code>u</code>/<code>v</code> flags. Off, those run
+            on <code>RegExp</code> instead, and you get three things: the
+            pattern works, you lose highlight positions for it, and unbounded
+            backtracking is back.
+          </dd>
+
+          <dt><code>onValueError</code></dt>
+          <dd>
+            What a bad VALUE in the data does — not a bad query, which always
+            throws.
+            <code>skip</code> drops the row; <code>throw</code> raises a
+            <code>SiftQLValueError</code> naming the path and the value.
+          </dd>
+
+          <dt><code>maxPatternLength</code></dt>
+          <dd>Longest accepted regex source, default 1000.</dd>
+        </dl>
+        <p class="field-label">Resolved options</p>
+        <pre class="code-block" id="resolved"></pre>
+        <p class="muted">
+          Note <code>temporal.dateFormat</code>: it is flat going in and nested
+          coming out, which is the kind of thing a demo gets wrong quietly.
+        </p>
+      </details>
+
+      <details class="panel" id="inspector-panel" open>
+        <summary><h2>Date inspector</h2></summary>
+        <p class="muted">
+          Two public functions, run live. <code>detectTemporalFormat</code> asks
+          <em>does this match one of the built-in ISO shapes</em>;
+          <code>resolveTemporal</code> asks
+          <em>does it resolve to a real instant</em> — and it also applies any
+          <code>dateFormat</code> you declare, which <code>detect</code> never
+          sees. So the two disagree in both directions, and each disagreement
+          means something different:
+        </p>
+        <ul class="muted verdict-key">
+          <li><strong>ISO-shaped, resolves</strong> — an ordinary date.</li>
+          <li>
+            <strong>ISO-shaped, does not resolve</strong> —
+            <code>2021-02-29</code>. This is the gap the whole design rests on:
+            siftql refuses the query rather than falling back to comparing it as
+            text, where <code>new Date()</code> would hand you 1 March.
+          </li>
+          <li>
+            <strong>Not ISO-shaped, resolves</strong> —
+            <code>01-06-2020</code> once you pick a layout below. Declared
+            layouts live inside <code>resolveTemporal</code>, so
+            <code>detect</code> returns <code>null</code> for them. Change the
+            layout and watch that row's answer move between June and January.
+          </li>
+          <li>
+            <strong>Neither</strong> — not a date under any rule currently in
+            force.
+          </li>
+        </ul>
+        <label class="field-label" for="inspect">Try a value</label>
+        <input
+          id="inspect"
+          class="query-input"
+          type="text"
+          spellcheck="false"
+          value="2021-02-29"
+        />
+        <div class="table-scroll">
+          <table id="inspector"></table>
+        </div>
+      </details>
+
+      <details class="panel" id="ast-panel">
+        <summary><h2>AST</h2></summary>
+        <p class="muted">
+          The AST is a documented public contract and pure JSON — no RegExp, no
+          Date, no functions — so it survives <code>structuredClone</code>, a
+          cache key, or a worker boundary.
+        </p>
+        <p class="field-label">serialize(parse(query))</p>
+        <pre class="code-block" id="serialized"></pre>
+        <p class="field-label">JSON round trip</p>
+        <pre class="code-block" id="roundtrip"></pre>
+        <p class="field-label">Tree (locations stripped)</p>
+        <pre class="code-block" id="ast"></pre>
+      </details>
+
+      <details class="panel" id="race-panel">
+        <summary><h2>Regex race</h2></summary>
+        <p class="muted">
+          <code>^(a+)+$</code> against <code>"a".repeat(n) + "!"</code> — the
+          classic catastrophic pattern. siftql matches it on a linear-time
+          automaton. The native <code>RegExp</code> runs in a Web Worker with a
+          hard timeout, because otherwise it would freeze this tab and you would
+          never see the result.
+        </p>
+        <div class="race-controls">
+          <label for="raceN">n = <output id="raceNOut">26</output></label>
+          <input
+            type="range"
+            id="raceN"
+            min="16"
+            max="40"
+            value="26"
+            step="1"
+          />
+          <button type="button" id="raceRun">Run</button>
+        </div>
+        <div class="table-scroll">
+          <table id="race"></table>
+        </div>
+        <p class="muted" id="raceNote"></p>
+      </details>
+
+      <details class="panel" id="data-panel">
+        <summary><h2>Data</h2></summary>
+        <p class="muted">
+          Editable. One caveat worth stating plainly: the seed is built in
+          JavaScript so that
+          <code>created</code> can hold an ISO string, epoch milliseconds and a
+          real <code>Date</code> across different rows. JSON cannot express the
+          third, so anything you paste here loses <code>Date</code> objects —
+          the ISO strings and epoch numbers still behave identically.
+        </p>
+        <textarea id="data" spellcheck="false" rows="16"></textarea>
+        <div class="row-actions">
+          <button type="button" id="applyData">Apply</button>
+          <button type="button" id="resetData">Reset</button>
+          <span id="dataError" class="inline-error"></span>
+        </div>
+      </details>
+
+      <section class="panel" id="selftest-panel" hidden>
+        <h2>Self-test</h2>
+        <p class="muted">
+          Every worked example re-run against the data currently loaded, and
+          compared with the result recorded in <code>presets.js</code>. This is
+          what stops a caption from quietly becoming untrue after the dataset is
+          edited.
+        </p>
+        <pre class="code-block" id="selftest"></pre>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        MIT · built with the published package, loaded from
+        <a href="https://esm.sh/@siftql/core">esm.sh</a> — no bundler, no build
+        step.
+      </p>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

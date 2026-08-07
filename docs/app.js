@@ -7,18 +7,20 @@
 // `parse` is deliberately absent: the AST panel uses `engine.parse` so the
 // tree it shows reflects the options in the panel above it, tolerant mode
 // included. Importing the free function would quietly ignore them.
+// `VERSION` is imported rather than written down again: the badge below has to
+// name the build that actually loaded, and a second literal here is free to
+// drift from the pin above it — silently, since nothing on this page checks.
 import {
   createEngine,
   serialize,
   detectTemporalFormat,
   resolveTemporal,
   isSiftQLError,
-} from 'https://esm.sh/@siftql/core@0.1.1';
+  VERSION,
+} from 'https://esm.sh/@siftql/core@0.1.2';
 
 import { SEED, AMBIGUOUS_DATES, DIRTY_DATES } from './data.js';
 import { GROUPS, ALL_PRESETS, INSPECTOR_SAMPLES } from './presets.js';
-
-const VERSION = '0.1.1';
 
 const $ = (id) => document.getElementById(id);
 

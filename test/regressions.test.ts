@@ -864,3 +864,82 @@ describe('extend() does not blank a parent option with an explicit undefined', (
     ).toBe('throw');
   });
 });
+
+describe('a published Highlight.query terminates an exec loop', () => {
+  /*
+   * The contract says a consumer may write `while ((m = q.exec(text)))`, which
+   * spins forever on a non-global RegExp because `lastIndex` never advances.
+   * The engine therefore republishes every type's pattern with `g`.
+   *
+   * This had no test. The property covering it looped over `hit.query` behind
+   * `if (!hit.query) continue;`, and no BUILT-IN publishes a query — a sibling
+   * property asserts none ever will — so the loop body ran zero times at every
+   * sample count while the test stayed green. Reaching it needs a custom type
+   * that publishes one, which is what this builds.
+   */
+  const engine = createEngine({
+    types: [
+      defineValueType({
+        coerceValue: (value: unknown) =>
+          typeof value === 'string' ? resolved(value) : MISS,
+        equals: (value: string, operand: { needle: string }) =>
+          value === operand.needle,
+        // DELIBERATELY not global, which is the case the engine must fix.
+        highlight: (_value: string, operand: { needle: string }) =>
+          new RegExp(operand.needle),
+        matches: (value: string, operand: { needle: string }) =>
+          value.includes(operand.needle),
+        name: 'needle',
+        parseOperand: (token: { kind: string; text?: string }) =>
+          token.kind === 'text' && token.text !== undefined
+            ? claimed({ needle: token.text })
+            : DECLINED,
+      }),
+    ],
+  });
+
+  it('republishes a non-global pattern as global', () => {
+    const [hit] = engine.highlight('ada', { name: 'ada and ada' }) as {
+      query?: RegExp;
+    }[];
+
+    expect(hit?.query).toBeInstanceOf(RegExp);
+    expect(hit?.query?.global).toBe(true);
+  });
+
+  it('terminates the exec loop the contract tells consumers to write', () => {
+    const value = 'ada and ada and ada';
+    const [hit] = engine.highlight('ada', { name: value }) as {
+      query?: RegExp;
+    }[];
+    const query = hit?.query;
+
+    expect(query).toBeDefined();
+
+    let found = 0;
+
+    // The literal loop from the docs. Bounded so a regression fails the test
+    // rather than hanging the suite.
+    while (query?.exec(value) !== null && query !== undefined) {
+      found += 1;
+
+      if (found > 50) {
+        break;
+      }
+    }
+
+    expect(found).toBe(3);
+  });
+
+  it('hands each hit its own instance, so iterating is safe', () => {
+    // A shared instance carries lastIndex between hits, so a caller looping
+    // over the returned array would get alternating answers.
+    const hits = engine.highlight('ada', {
+      a: 'ada',
+      b: 'ada',
+    }) as { query?: RegExp }[];
+
+    expect(hits.length).toBeGreaterThan(1);
+    expect(hits[0]?.query).not.toBe(hits[1]?.query);
+  });
+});

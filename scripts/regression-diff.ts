@@ -95,6 +95,13 @@ const ATOMS = [
   '/a{2}{3}/',
   'true',
   'null',
+  /*
+   * A QUOTED, ESCAPED wildcard. serialize() must keep the backslash or the
+   * literal asterisk comes back a WildcardExpression and matches `aXb`, which
+   * breaks the round-trip law — and nothing in the corpus could spell it.
+   */
+  String.raw`"a\*b"`,
+  String.raw`"a\?b"`,
   // Claimed by the custom `sku` type, so the registry's resolution ORDER
   // decides the answer rather than being a choice between identical arrays.
   'sku-42',
@@ -127,6 +134,10 @@ const FIELDS = [
   'sku:',
   'tags:',
   'tags.0:',
+  // `01` is NOT an array index — the rule accepts 0 and 1-9 followed by
+  // digits, and nothing here distinguished it from `tags.1:`.
+  'tags.01:',
+  'a\\.b:',
   // ALL FOUR ordering operators. With only `>=` and `<`, a boundary flip on
   // `>` or `<=` changed an answer and this reported nothing: half the operator
   // surface was untestable, and the half that was covered certified the whole.
@@ -223,6 +234,22 @@ const record = (next: () => number): unknown => {
     return self;
   }
 
+  /*
+   * A PROTOTYPE CHAIN carrying a matching key.
+   *
+   * Access reads own properties only, so `name` here must not be found. Every
+   * other record is an object literal, where own and inherited are the same
+   * set — so swapping `hasOwnProperty` for `in` changed nothing the corpus
+   * could see.
+   */
+  if (roll < 0.26) {
+    return Object.create({
+      name: 'ada',
+      secret: 'ada',
+      tags: ['red'],
+    }) as object;
+  }
+
   return {
     a: { b: pick(next, ['ada', 3, null]) },
     d: pick(next, [
@@ -234,6 +261,11 @@ const record = (next: () => number): unknown => {
       // ENGINES. Without a value they can read, both options are inert.
       'epoch',
       '01-06-2020',
+      // A ONE-DIGIT month. `MM` is `\d{2}`, so a layout must refuse this;
+      // widening the token to `\d{1,2}` silently accepts it, and no corpus
+      // value could tell the two apart.
+      '2020-6-01',
+      '2020-06-1',
     ]),
     n: pick(next, [3, -3, '007', 0]),
     name: pick(next, [
@@ -389,6 +421,31 @@ const outcome = (act: () => unknown): string => {
  * and JSON-deserialized ASTs as a supported transport, and nothing else here
  * covers that surface.
  */
+/**
+ * The recovered-boundary tree, or nothing if this tree cannot parse the seed.
+ *
+ * Returned as a 0-or-1 element list so the caller splices it in: a corpus
+ * entry that cannot be built is a lost check, not a reason to abandon the run.
+ */
+const seedRange = (
+  surface: Surface,
+): readonly (readonly [string, unknown])[] => {
+  try {
+    const tree = JSON.parse(JSON.stringify(surface.parse('n:[1 TO 9]'))) as {
+      expression: { upper: { value: { recovered?: unknown } } };
+    };
+
+    tree.expression.upper.value.recovered = {
+      reason: 'unclosed-range',
+      synthetic: false,
+    };
+
+    return [['range with a recovered boundary', tree]];
+  } catch {
+    return [];
+  }
+};
+
 const handBuilt = (
   surface: Surface,
 ): readonly (readonly [string, unknown])[] => {
@@ -404,6 +461,27 @@ const handBuilt = (
   };
 
   return [
+    /*
+     * A RANGE whose boundary VALUE is marked recovered.
+     *
+     * No query text produces this — a boundary recovery is invented by the
+     * tolerant tokenizer and does not survive back into a string — but the
+     * documented JSON-AST transport carries it, and that is the path where the
+     * recovery policy must still fail CLOSED.
+     *
+     * Derived from a real parse rather than written out, so it cannot drift
+     * from the node shape `assertNode` accepts: a hand-written one was
+     * rejected as malformed and never reached the policy at all, which would
+     * have tested validation while looking like it tested recovery.
+     *
+     * GUARDED, because this is the one entry here that parses. Every other
+     * uses `builders`, which cannot throw. Unguarded, a change that makes
+     * `n:[1 TO 9]` unparseable — halving a limit does it — killed this whole
+     * tool before it printed a single difference, turning the regression it
+     * was built to report into a stack trace. Skipping the entry loses one
+     * check; throwing loses all of them.
+     */
+    ...seedRange(surface),
     ['deep NOT chain, under the guard', deep(500)],
     ['deep NOT chain, over the guard', deep(2500)],
     [
@@ -765,12 +843,49 @@ const main = async (): Promise<void> => {
     for (const [label, tree] of handBuilt(head)) {
       const baseTree = handBuilt(base).find(([name]) => name === label)?.[1];
 
+      /*
+       * MORE THAN serialize AND test, and more than the default engine.
+       *
+       * A hand-built tree is the only way to reach shapes `parse()` never
+       * emits, and the recovery policy is the reason that matters: a marker
+       * invented by the tolerant tokenizer does not survive back into query
+       * text, but it does survive the documented JSON transport. Run only
+       * through `createEngine({})`, a mutation that made the policy fail OPEN
+       * on a range boundary changed nothing this could see.
+       */
+      const item = { a: { b: 'ada' }, n: 5 };
+
       for (const [kind, act] of [
         ['serialize', (s: Surface, t: unknown) => s.serialize(t)],
         [
           'test',
           (s: Surface, t: unknown) =>
-            (s.createEngine({}) as Surface).test(t, { a: { b: 'ada' } }),
+            (s.createEngine({}) as Surface).test(t, item),
+        ],
+        [
+          'test (onRecovered: throw)',
+          (s: Surface, t: unknown) =>
+            (
+              s.createEngine({
+                onRecovered: 'throw',
+                tolerant: true,
+              }) as Surface
+            ).test(t, item),
+        ],
+        [
+          'filter (onRecovered: prune)',
+          (s: Surface, t: unknown) =>
+            (
+              s.createEngine({
+                onRecovered: 'prune',
+                tolerant: true,
+              }) as Surface
+            ).filter(t, [item]),
+        ],
+        [
+          'highlight',
+          (s: Surface, t: unknown) =>
+            (s.createEngine({}) as Surface).highlight(t, item),
         ],
       ] as const) {
         const a = outcome(() => act(base, baseTree));

@@ -551,14 +551,38 @@ const main = async (): Promise<void> => {
       { dateFormat: ['DD-MM-YYYY', 'YYYY-MM-DD'] },
       { onRecovered: 'throw' },
       { maxPatternLength: 200 },
+      /*
+       * typeStrategy and parseDate reach code nothing else does: the registry's
+       * resolution ORDER, and the hook consulted before any built-in layout.
+       * Six registry mutations and four temporal ones were invisible without
+       * them.
+       */
+      { typeStrategy: 'append' },
+      { dateFormat: 'DD-MM-YYYY', typeStrategy: 'prepend' },
+      {
+        parseDate: (value: unknown) =>
+          value === 'epoch' ? new Date(0) : undefined,
+      },
     ];
 
-    /** Per-call overrides, which take a different route than engine options. */
+    /*
+     * Per-call overrides, which take a different route than engine options.
+     *
+     * All FIVE EvaluateOptions members, because three were missing and each
+     * one's `overrides.x ?? resolved.x` fallback could be replaced by
+     * `resolved.x` — dropping the caller's per-call choice — in silence.
+     *
+     * The length is coprime with ENGINES so the two cycles do not stay in
+     * phase: at 8 and 4 only 8 of the 32 pairings ever occurred.
+     */
     const OVERRIDES: readonly Record<string, unknown>[] = [
       {},
       { matchKeys: true },
       { onValueError: 'throw' },
-      {},
+      { regexGuard: false },
+      { maxPatternLength: 100 },
+      { onRecovered: 'throw' },
+      { matchKeys: false, onValueError: 'skip' },
     ];
 
     for (let run = 0; run < RUNS + SCALE.length; run += 1) {

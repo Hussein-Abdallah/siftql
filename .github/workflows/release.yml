@@ -33,7 +33,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          # Points npm at the public registry so NODE_AUTH_TOKEN is used.
+          # Sets up .npmrc against the public registry, which is where the
+          # trusted-publisher connection lives.
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
@@ -58,7 +59,12 @@ jobs:
           fi
           echo "both agree on $PKG"
 
+      # NO TOKEN. A trusted-publisher connection on npm names this repo, this
+      # workflow file and the `npm` environment, so GitHub mints a short-lived
+      # OIDC token and npm verifies it came from exactly here. Nothing
+      # long-lived exists to leak, rotate, or commit by accident.
+      #
+      # `--provenance` is implied by a trusted-publisher publish, but stated so
+      # the attestation is not silently lost if the connection is ever removed.
       - name: Publish
         run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

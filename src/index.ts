@@ -5,8 +5,14 @@
  * contract: changing an exported node shape is a breaking change.
  */
 
-/** Package version, kept in sync with package.json at release time. */
-export const VERSION = '0.1.0';
+/**
+ * Package version.
+ *
+ * `npm version` only rewrites package.json, so this has to be bumped with it.
+ * A test asserts the two agree rather than pinning a literal, because pinning
+ * one catches the drift a release late — after the wrong number has shipped.
+ */
+export const VERSION = '0.1.1';
 
 export { parse, type ParseOptions } from './parser/parser.js';
 export {

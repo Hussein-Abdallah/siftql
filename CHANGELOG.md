@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Note: the AST is a **documented public contract**. Any change to an exported node
 shape is a breaking change and requires a major version bump.
 
+## 0.1.1 — 2026-08-07
+
+No change to matching, parsing or serialization. The only behavioural
+difference is `VERSION`, which now reports the version package.json declares.
+
+### Changed
+
+- The README heading names the package, `@siftql/core`, rather than the library
+  it ships.
+- The license badge no longer reads the registry, which reported "package not
+  found" while npm's public replica lagged a publish.
+
+### Fixed
+
+- `VERSION` reported `0.1.0` after the bump. `npm version` rewrites package.json
+  and nothing else, and the test guarding it asserted a literal — which catches
+  the drift a release late, once the wrong number has already shipped. It now
+  asserts the two agree.
+
+### Added
+
+- Published from GitHub Actions with provenance, authenticated by OIDC rather
+  than a token, so the tarball carries an attestation naming the commit and
+  workflow that built it.
+
 ## 0.1.0 — 2026-08-06
 
 Initial release.

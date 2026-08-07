@@ -371,6 +371,16 @@ for (const { start, end } of hit.ranges ?? []) {
 parts.push(value.slice(at));
 ```
 
+That snippet is the whole idea, and it is enough while the spans are well-formed and the text is the one they were computed against. [`@siftql/react-highlighter`](https://github.com/Hussein-Abdallah/siftql-react-highlighter) is the same loop hardened: it sorts, merges overlapping and touching spans, clamps offsets that do not describe the string it was handed, and renders the absent-`ranges` case above as its own state rather than as no highlight at all.
+
+```sh
+npm install @siftql/react-highlighter
+```
+
+```tsx
+<SiftQLHighlight text={value} spans={hit.ranges ?? null} />
+```
+
 A custom value type may still report a `query` instead, and `Highlight.query` is kept for that. A hit never carries both: the evaluator emits `ranges` and stops, so a type defining `highlight` and `highlightSpans` reports only its spans.
 
 ## On regular expressions
@@ -425,6 +435,14 @@ Patterns that `RegExp` itself rejects are rejected here too — `a{2}{3}`, `^*`,
 One cost is worth stating plainly. `highlight()` on a regex walks the value once per match, and a pattern that matches at _every_ position while keeping a match alive to the right — `(?:.*;)?` — costs O(value²) to locate. `RegExp` is quadratic on the same patterns; this matcher's constant is larger. Rather than run away, the walk is bounded and reports **no ranges** for such a pattern: the field still matches, and the highlight degrades to "matched, but not where", exactly as it does for a range or a boolean.
 
 **Wildcards are not regexes and never were an exposure.** `name:*a*a*a*b` is matched by a two-pointer glob: 200 stars against a 5,000-character value takes under a millisecond.
+
+## Related packages
+
+**[`@siftql/react-highlighter`](https://github.com/Hussein-Abdallah/siftql-react-highlighter)** — paints the `ranges` above. A framework-free `toSegments(text, spans)` plus a thin React component over it, with an optional hook that runs `highlight()` for you.
+
+It exists because the alternative is a word-based highlighter, and a word-based highlighter matches a _second_ time, with its own rules — the case-folding disagreement described under [Highlighting](#highlighting) is unfixable from the outside. It also carries a state no word highlighter can express: matched, with nothing to underline, which is what an absent `ranges` means here.
+
+`@siftql/core` is an **optional** peer dependency of it. The component takes offsets and renders them, so it installs and works without this package; only the hook needs an engine.
 
 ## Development
 

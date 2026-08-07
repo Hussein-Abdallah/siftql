@@ -5,15 +5,15 @@
 > chronological date/time support. Zero runtime dependencies.
 
 [![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/siftql.svg)](https://www.npmjs.com/package/siftql)
-[![license](https://img.shields.io/npm/l/siftql.svg)](./LICENSE)
+[![npm](https://img.shields.io/npm/v/%40siftql%2Fcore.svg)](https://www.npmjs.com/package/@siftql/core)
+[![license](https://img.shields.io/npm/l/%40siftql%2Fcore.svg)](./LICENSE)
 
 ```sh
-npm install siftql
+npm install @siftql/core
 ```
 
 ```ts
-import { filter } from 'siftql';
+import { filter } from '@siftql/core';
 
 filter('status:active AND created:>=2020-06-01', tasks);
 ```
@@ -238,7 +238,7 @@ like any other. The same extension point is public, so a `semver`, `ipaddress`
 or `currency` type is a first-class citizen without forking.
 
 ```ts
-import { createEngine, defineValueType, claimed, DECLINED, MISS, resolved } from 'siftql';
+import { createEngine, defineValueType, claimed, DECLINED, MISS, resolved } from '@siftql/core';
 
 const semver = defineValueType({
   name: 'semver',

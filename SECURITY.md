@@ -54,11 +54,13 @@ input-driven failures are the interesting ones:
   with it — a 17-character pattern can take seconds. The default refuses those
   patterns; turning the guard off is an explicit acceptance of `RegExp`'s cost
   model, not a defect.
-- **Performance characteristics that are documented and bounded.** `spans()` is
-  quadratic in value length on a known pattern shape, and bounded so it cannot
-  run away — recorded under Known limitations in [CHANGELOG.md](CHANGELOG.md).
-  Bounded-but-slow is a limitation; unbounded is a vulnerability, and the line
-  between them is whether the work has a ceiling.
+- **`spans()` reporting no ranges on a pattern that matches everywhere.** A
+  step budget caps that walk, so its measured cost is linear; past the budget
+  it returns no positions and the highlight names the field without
+  underlining inside it. Recorded under Known limitations in
+  [CHANGELOG.md](CHANGELOG.md). Bounded-but-degraded is a limitation;
+  unbounded is a vulnerability, and the line between them is whether the work
+  has a ceiling.
 - **A crash from an AST you hand-built that `parse()` would never produce.**
   Malformed input to the AST-in path is a programming error and is refused
   loudly by design.

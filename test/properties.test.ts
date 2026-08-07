@@ -1118,6 +1118,7 @@ describe('P5: cost stays bounded', () => {
     const value = 'Lorem ipsum dolor sit amet xy';
     const slow: string[] = [];
     let checked = 0;
+    let spansChecked = 0;
 
     /*
      * THE ABSENCE OF A `query` IS THE ASSERTION, not a reason to skip.
@@ -1149,13 +1150,20 @@ describe('P5: cost stays bounded', () => {
       // Spans are data, so the only way they can hurt a caller is by being
       // wrong. Every one must address real text inside the value.
       for (const range of hit?.ranges ?? []) {
+        spansChecked += 1;
+
         if (range.start < 0 || range.end > value.length) {
           slow.push(`${query}: span ${JSON.stringify(range)} is out of bounds`);
         }
       }
     }
 
+    // `checked` increments once per fixture and floors at the fixture count, so
+    // it can only ever compare 5 >= 5: it catches an emptied loop and nothing
+    // else. If highlight() stopped returning hits, the span check below would
+    // run zero times and this would stay green — so the spans are counted too.
     didWork('hostile highlight patterns', checked, hostile.length);
+    didWork('hostile highlight spans checked', spansChecked, 5);
     expect(slow).toEqual([]);
   });
 

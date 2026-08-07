@@ -14,7 +14,7 @@
  * WHAT IS DELIBERATELY ABSENT:
  *
  *  - A SECOND PUBLISHED IR. There is no `QueryPlan` node family. `compile()`
- *    returns an opaque compiled query, so the semver-protected surface is
+ *    would return an opaque compiled query, so the semver-protected surface is
  *    one tree (the AST) plus one interface (ValueType). The v0.2 compilers reach
  *    what they need through {@link ValueType.portable} and
  *    {@link ValueType.compile}, both optional properties — additive by

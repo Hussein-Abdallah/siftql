@@ -40,8 +40,8 @@
  * cannot.
  *
  * Wildcards take the same approach for the same reason: a two-pointer glob
- * rather than a compiled regex, which is why `name:*a*a*a*b` is flat at 0.08 ms
- * against a 5,000-character value (0.03 ms at 1,000, 0.27 ms at 20,000).
+ * rather than a compiled regex, which is why `name:*a*a*a*b` stays LINEAR:
+ * 0.03 ms at 1,000 characters, 0.08 ms at 5,000, 0.27 ms at 20,000.
  */
 
 /* ------------------------------------------------------------------------- *

@@ -626,13 +626,25 @@ describe('a discarded stray is not reported as trailing input', () => {
     },
   );
 
-  it.each(['a AND b )', 'abc :', ':', 'a )'])(
-    'calls %s trailing, because nothing follows the discard',
-    (query) => {
-      expect(reasons(query)).toContain('trailing-input');
-      expect(reasons(query)).not.toContain('stray-input');
-    },
-  );
+  // The stray COUNT is a second dimension, and asserting only single-stray
+  // shapes hid a regression that mislabelled every query with two or more.
+  // A second stray is not `eof`, so "is there a next token" was the wrong test.
+  it.each([
+    'a AND b )',
+    'a AND b ))',
+    'a AND b )))',
+    'abc :',
+    ':',
+    '::',
+    'a )',
+    'a ))',
+    '(a:b))',
+    '(a:b)))',
+    'a:b } }',
+  ])('calls %s trailing, because nothing follows the discard', (query) => {
+    expect(reasons(query)).toContain('trailing-input');
+    expect(reasons(query)).not.toContain('stray-input');
+  });
 });
 
 describe('a discarded stray does not rewrite OR into AND', () => {
@@ -651,12 +663,30 @@ describe('a discarded stray does not rewrite OR into AND', () => {
     }
   });
 
-  it('agrees with the strict parser on which rows match', () => {
-    const rows = [{ v: 'a' }, { v: 'b' }, { v: 'c' }, { v: 'd' }];
+  // The operator's POSITION relative to the stray is the second dimension.
+  // Fixing only the right-hand side and testing only the right-hand side left
+  // `a OR b ) c` building `(a OR b) AND c` where the strict parser builds
+  // `a OR (b AND c)` — narrower again, and rows were still being lost.
+  it.each([
+    ['v:a ) v:b OR v:c', 'v:a v:b OR v:c'],
+    ['v:a OR v:b ) v:c', 'v:a OR v:b v:c'],
+    ['v:a OR v:b ) v:c AND v:d', 'v:a OR v:b v:c AND v:d'],
+    ['v:a OR v:b OR v:c ) v:d', 'v:a OR v:b OR v:c v:d'],
+    ['v:a AND v:b ) v:c OR v:d', 'v:a AND v:b v:c OR v:d'],
+    ['v:a )) v:b OR v:c', 'v:a v:b OR v:c'],
+  ])('%s matches the same rows as %s', (tolerantQuery, strictQuery) => {
+    const rows = [
+      { v: 'a' },
+      { v: 'b' },
+      { v: 'c' },
+      { v: 'a b c' },
+      { v: 'b c' },
+      { v: 'a b c d' },
+    ];
     const tolerant = createEngine({ onRecovered: 'prune', tolerant: true });
 
-    expect(tolerant.filter('v:a ) v:b OR v:c', rows)).toEqual(
-      filter('v:a v:b OR v:c', rows),
+    expect(tolerant.filter(tolerantQuery, rows)).toEqual(
+      filter(strictQuery, rows),
     );
   });
 });

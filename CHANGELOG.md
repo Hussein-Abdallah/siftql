@@ -8,9 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Note: the AST is a **documented public contract**. Any change to an exported node
 shape is a breaking change and requires a major version bump.
 
-## [Unreleased]
-
-## [0.1.0] - Unreleased
+## 0.1.0 — unreleased
 
 Initial release.
 
@@ -56,12 +54,14 @@ Initial release.
 
 ### Known limitations
 
-- `spans()` — and so `highlight()` on a regex clause — is quadratic in value
-  length for a pattern that matches at every position while keeping a match
-  alive to the right (`(?:.*;)?`). `RegExp` is quadratic on the same shapes;
-  this matcher's constant is larger. The walk is bounded rather than allowed to
-  run away, and reports no ranges past the budget, so the field still matches
-  with `ranges` absent.
+- `spans()` — and so `highlight()` on a regex clause — gives up on a pattern
+  that matches at every position while keeping a match alive to the right
+  (`(?:.*;)?`). The walk would be quadratic, so a step budget of `4n + 1000`
+  caps it; measured cost therefore stays linear (~2x per doubling of the value,
+  to 32,000 characters), but past the budget it reports NO ranges. The field
+  still matches and the highlight still names it — `ranges` is simply absent,
+  so a UI underlines nothing. That is the limitation: not the cost, the missing
+  positions.
 - A tolerant engine never throws for a query that is incomplete or malformed. It
   still throws past a structural limit above, which guards resources rather than
   describing something half-typed.

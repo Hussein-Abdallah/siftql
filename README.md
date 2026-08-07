@@ -7,11 +7,9 @@
 [![CI](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml/badge.svg)](https://github.com/Hussein-Abdallah/siftql/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Not yet published to npm. Until it is, install from the repository:
-
-```sh
-npm install github:Hussein-Abdallah/siftql
-```
+Not yet published to npm, and the repository is private, so there is no
+install command that works for a reader today. Both land together with the
+first release.
 
 ```ts
 import { filter } from 'siftql';

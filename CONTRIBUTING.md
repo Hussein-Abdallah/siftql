@@ -47,8 +47,11 @@ that file:
 
 **The failure boundary is split, and the split is deliberate.** A malformed
 _query_ throws — it is a programming error, and swallowing it hides a bug.
-The one exception is `tolerant: true`, where a malformed query is repaired and
-marked instead, because a search box must not blank out mid-keystroke. A dirty _value_ in the data follows the `onValueError` policy, because bad
+`tolerant: true` is the exception for SYNTAX: a malformed query is repaired
+and marked instead, because a search box must not blank out mid-keystroke. It
+is not a blanket promise — a structural limit (depth, clause count, field
+segments) still throws in tolerant mode, and `onRecovered: 'throw'` turns a
+repaired query back into an error. A dirty _value_ in the data follows the `onValueError` policy, because bad
 rows in real data are normal and should not take down a search box.
 
 ## Verifying a change

@@ -205,24 +205,21 @@ class Parser {
         break;
       }
 
-      midQuery = true;
-
       const right = this.parseAnd();
 
-      result = {
-        left: result,
-        location: span(result.location.start, right.location.end),
-        operator: {
-          // Zero-width at the start of the right operand, as every implicit
-          // operator is: the only text here was the stray, and it is gone.
-          location: span(right.location.start, right.location.start),
-          notation: 'implicit',
-          operator: 'AND',
-          type: 'BooleanOperator',
-        },
-        right,
-        type: 'LogicalExpression',
-      };
+      /*
+       * Only a real operand counts as "query follows".
+       *
+       * Testing `peek() !== 'eof'` counted a SECOND STRAY as query text, so a
+       * run of trailing junk — `a ))`, and `a AND b ))`, which is the example
+       * RECOVERY_REASONS gives for `trailing-input` — was labelled
+       * `stray-input` with nothing after it at all.
+       */
+      if (right.type !== 'MissingExpression') {
+        midQuery = true;
+      }
+
+      result = this.joinImplicitly(result, right);
     }
 
     // Only if nothing deeper already explained itself: a dropped `^2` is a more
@@ -382,6 +379,47 @@ class Parser {
     }
 
     return left;
+  }
+
+  /**
+   * Rejoin across a discarded stray with an implicit AND, AT AND PRECEDENCE.
+   *
+   * Wrapping the accumulated result inverted precedence whenever an `OR` sat to
+   * the LEFT of the stray: `a OR b ) c` became `(a OR b) AND c`, while the same
+   * query with the stray deleted is `a OR (b AND c)`. The first matches a
+   * strict subset of the second, so rows the user asked for were silently lost
+   * — the same wrongness as eating the operator, reached from the other side.
+   *
+   * An implicit AND binds tighter than OR, so it attaches to the rightmost
+   * AND-level operand rather than to the whole tree.
+   */
+  private joinImplicitly(left: Expression, right: Expression): Expression {
+    if (
+      left.type === 'LogicalExpression' &&
+      left.operator.operator === 'OR' &&
+      !left.recovered
+    ) {
+      return {
+        ...left,
+        location: span(left.location.start, right.location.end),
+        right: this.joinImplicitly(left.right, right),
+      };
+    }
+
+    return {
+      left,
+      location: span(left.location.start, right.location.end),
+      operator: {
+        // Zero-width at the start of the right operand, as every implicit
+        // operator is: the only text here was the stray, and it is gone.
+        location: span(right.location.start, right.location.start),
+        notation: 'implicit',
+        operator: 'AND',
+        type: 'BooleanOperator',
+      },
+      right,
+      type: 'LogicalExpression',
+    };
   }
 
   private parseAnd(): Expression {

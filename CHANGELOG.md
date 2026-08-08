@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Note: the AST is a **documented public contract**. Any change to an exported node
 shape is a breaking change and requires a major version bump.
 
+## 0.1.3 — 2026-08-07
+
+Documentation only. No change to parsing, matching or serialization, and the only difference in every built file is the `VERSION` string.
+
+### Added
+
+- A link to the **[highlighting demo](https://siftql-demo.vercel.app/)**, which shows what `highlight()` is for. The playground answers *which rows match*; it cannot answer *which characters did*, because a results table renders values as text. The demo is that second half, running the published packages.
+- The demo is where the absent-`ranges` case is easiest to understand, so the README now names the example rather than describing the idea: `title:*office*` matches `İstanbul office rollout` and `Istanbul office rollout`, and only the second reports offsets. `'İ'.toLowerCase()` is two code units, so every offset after it is shifted in the folded string, and siftql omits `ranges` rather than being wrong by a character for the rest of the value.
+
+### Changed
+
+- The playground now loads `@siftql/core@0.1.2` rather than `0.1.1`, and reads `VERSION` from the package instead of a second literal written beside the import. The badge could previously name a build that had not loaded — the same two-literals trap this project already guards against in `src/index.ts`, but with nothing asserting the two agreed.
+
 ## 0.1.2 — 2026-08-07
 
 Documentation only. Diffed against the 0.1.1 tarball downloaded from the registry: the single change in every built file is the `VERSION` string itself. Nothing about parsing, matching or serialization has moved.

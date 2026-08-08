@@ -440,7 +440,7 @@ One cost is worth stating plainly. `highlight()` on a regex walks the value once
 
 ## Related packages
 
-**[`@siftql/react-highlighter`](https://github.com/Hussein-Abdallah/siftql-react-highlighter)** — paints the `ranges` above. A framework-free `toSegments(text, spans)` plus a thin React component over it, with an optional hook that runs `highlight()` for you.
+**[`@siftql/react-highlighter`](https://github.com/Hussein-Abdallah/siftql-react-highlighter)** — paints the `ranges` above. A framework-free `toSegments(text, spans)` plus a thin React component over it, with an optional hook that runs `highlight()` for you. There is a [demo of the two together](https://siftql-demo.vercel.app/), which is where the absent-`ranges` case is easiest to understand: it shows `title:*office*` matching two rows that differ by one character, and only one of them able to say where.
 
 It exists because the alternative is a word-based highlighter, and a word-based highlighter matches a _second_ time, with its own rules — the case-folding disagreement described under [Highlighting](#highlighting) is unfixable from the outside. It also carries a state no word highlighter can express: matched, with nothing to underline, which is what an absent `ranges` means here.
 

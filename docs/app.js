@@ -17,7 +17,7 @@ import {
   resolveTemporal,
   isSiftQLError,
   VERSION,
-} from 'https://esm.sh/@siftql/core@0.1.2';
+} from 'https://esm.sh/@siftql/core@0.1.3';
 
 import { SEED, AMBIGUOUS_DATES, DIRTY_DATES } from './data.js';
 import { GROUPS, ALL_PRESETS, INSPECTOR_SAMPLES } from './presets.js';

@@ -125,6 +125,24 @@ status:(active OR pending)     # field group — the field distributes
 
 Precedence, loosest to tightest: `OR` < `AND` < `NOT`/`-`. All binary operators are left-associative. `AND` and implicit AND bind identically.
 
+#### Keywords in another language
+
+`parse()` takes a `keywords` option that adds spellings for `AND`, `OR`, `NOT` and `TO`. It is additive — the English keywords keep working — and it produces exactly the AST the English query would.
+
+```ts
+const keywords = {
+  and: ['ET'],
+  or: ['OU'],
+  not: ['NON', 'SAUF'],
+  to: ['À'],
+};
+
+parse('ville:Ottawa ET NON age:[18 À 25]', { keywords });
+// same AST as: ville:Ottawa AND NOT age:[18 TO 25]
+```
+
+Aliases are matched exactly as written, so they are as case-sensitive as `AND`. Quoted text, escaped text and values are never operators (`nom:"Dupont ET fils"`, `\ET`, `nom:ET`). `serialize()` always writes the English keywords; a term that equals an alias serializes bare, so re-parse that output without `keywords`. An alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, or one word under two operators throws `SiftQLConfigError`.
+
 ### Dates
 
 ```rb
@@ -274,6 +292,7 @@ Every AST node type is exported and documented. The AST is **pure JSON** — no 
 | `onValueError`     | `'skip'`    | `'skip'` \| `'throw'` for unreadable field values                                  |
 | `onRecovered`      | `'prune'`   | `'prune'` \| `'throw'` for tolerant-mode holes                                     |
 | `tolerant`         | `false`     | best-effort parsing for search-as-you-type                                         |
+| `keywords`         | —           | extra spellings for `AND`/`OR`/`NOT`/`TO` (`parse` / `engine.parse`)               |
 | `regexGuard`       | `true`      | refuse regexes the linear matcher cannot take, instead of running them on `RegExp` |
 | `maxPatternLength` | `1000`      | longest accepted regex source                                                      |
 

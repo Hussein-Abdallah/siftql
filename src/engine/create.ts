@@ -262,6 +262,7 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
       const checked = assertOptions(parseOptions, 'engine.parse');
 
       return parse(assertQuery(query, 'engine.parse'), {
+        keywords: checked.keywords,
         tolerant: checked.tolerant ?? resolved.tolerant,
       });
     },

@@ -40,6 +40,7 @@
 import type {
   BooleanLiteral,
   Field,
+  KeywordAliases,
   NonEmptyArray,
   NullLiteral,
   OrderingOperatorSymbol,
@@ -676,6 +677,11 @@ export interface ParseOptions {
    * see and complete the field the user is typing.
    */
   readonly tolerant?: boolean | undefined;
+  /**
+   * Extra spellings for `AND`, `OR`, `NOT` and `TO`, so a query can be typed in
+   * another language. Additive: the English keywords keep working.
+   */
+  readonly keywords?: KeywordAliases | undefined;
 }
 
 export type OnValueError = 'skip' | 'throw';

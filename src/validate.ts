@@ -559,6 +559,7 @@ const TYPE_STRATEGY: readonly TypeStrategy[] = ['prepend', 'append', 'replace'];
 const KNOWN_OPTIONS = [
   'dateFormat',
   'id',
+  'keywords',
   'matchKeys',
   'maxPatternLength',
   'onRecovered',
@@ -634,6 +635,106 @@ const checkDateFormat = (value: unknown): void => {
     // offending layout and why it could not be read.
     assertValidFormat(format as string);
   }
+};
+
+const KEYWORD_KINDS = ['and', 'or', 'not', 'to'] as const;
+
+const ENGLISH_KEYWORDS: ReadonlySet<string> = new Set([
+  'AND',
+  'OR',
+  'NOT',
+  'TO',
+]);
+
+const KEYWORD_LITERAL_WORDS: ReadonlySet<string> = new Set([
+  'true',
+  'false',
+  'null',
+]);
+
+const STRUCTURAL_IN_KEYWORD = /[\s():"'\\/[\]{}<>=^~*?]/u;
+
+/**
+ * Check `keywords` and return a frozen copy, so what the tokenizer reads is
+ * plain data and cannot change under it.
+ *
+ * An alias is refused when it would make the grammar ambiguous rather than
+ * quietly picking a winner: the same word under two operators, a word that is
+ * already an English keyword under a different operator, a typed literal
+ * (`true`), or anything containing a character the tokenizer would split on,
+ * which could never be matched as one word.
+ */
+const checkKeywords = (value: unknown): unknown => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'object' || value === null || safeIsArray(value)) {
+    badOption('keywords', 'an object such as { and: ["ET"] }', value);
+  }
+
+  const seen = new Map<string, string>();
+  const copy: Record<string, readonly string[]> = {};
+
+  for (const kind of KEYWORD_KINDS) {
+    const raw = peek(value as object, kind);
+
+    if (raw === undefined) {
+      continue;
+    }
+
+    if (!safeIsArray(raw)) {
+      badOption(`keywords.${kind}`, 'an array of strings', raw);
+    }
+
+    const words: string[] = [];
+
+    for (const word of [...(raw as unknown[])]) {
+      if (typeof word !== 'string' || word.length === 0) {
+        badOption(`keywords.${kind}`, 'an array of non-empty strings', word);
+      }
+
+      const text = word as string;
+
+      if (
+        STRUCTURAL_IN_KEYWORD.test(text) ||
+        text.startsWith('-') ||
+        text.startsWith('+') ||
+        KEYWORD_LITERAL_WORDS.has(text)
+      ) {
+        badOption(
+          `keywords.${kind}`,
+          'a single bare word with no whitespace or query syntax, and not true/false/null',
+          text,
+        );
+      }
+
+      if (ENGLISH_KEYWORDS.has(text) && text !== kind.toUpperCase()) {
+        badOption(
+          `keywords.${kind}`,
+          `a word that is not already another operator (${text} is built in)`,
+          text,
+        );
+      }
+
+      const previous = seen.get(text);
+
+      if (previous !== undefined && previous !== kind) {
+        badOption(
+          `keywords.${kind}`,
+          `unambiguous (${text} is already an alias for ${previous})`,
+          text,
+        );
+      }
+
+      seen.set(text, kind);
+      words.push(text);
+    }
+
+    copy[kind] = Object.freeze(words);
+  }
+
+  return Object.freeze(copy);
 };
 
 const checkTypes = (value: unknown): void => {
@@ -815,6 +916,12 @@ export const assertOptions = (value: unknown, fn: string): EngineOptions => {
   }
 
   checkTypes(once('types'));
+
+  const keywords = checkKeywords(once('keywords'));
+
+  if (keywords !== undefined) {
+    values.set('keywords', keywords);
+  }
 
   /*
    * A SNAPSHOT, not the caller's object.

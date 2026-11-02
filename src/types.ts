@@ -200,6 +200,21 @@ export const RESERVED_WORDS: ReadonlySet<string> = sealedSet([
 ]);
 
 /**
+ * Extra spellings for the grammar keywords, for a query typed in another
+ * language: `{ and: ['ET'], or: ['OU'], not: ['NON', 'SAUF'], to: ['À'] }`.
+ *
+ * ADDITIVE: `AND`, `OR`, `NOT` and `TO` keep working. Each alias is matched
+ * exactly as written, so it is as case-sensitive as the English keywords, and
+ * the AST it produces is the same one the English spelling produces.
+ */
+export interface KeywordAliases {
+  readonly and?: readonly string[] | undefined;
+  readonly or?: readonly string[] | undefined;
+  readonly not?: readonly string[] | undefined;
+  readonly to?: readonly string[] | undefined;
+}
+
+/**
  * Characters a bare term must escape with a backslash when serialized.
  *
  * `*` and `?` are here because unescaped they are wildcard metacharacters —

@@ -67,6 +67,10 @@ export interface ParseOptions extends TokenizerOptions {
   readonly tolerant?: boolean | undefined;
 }
 
+/*
+ * `keywords` is inherited from TokenizerOptions.
+ */
+
 const REGEX_FLAGS = new Set<string>(['d', 'g', 'i', 'm', 's', 'u', 'v', 'y']);
 
 /** Tokens that can begin a primary expression, hence an implicit conjunction. */
@@ -1305,8 +1309,12 @@ export const parse = (query: string, options: ParseOptions = {}): SiftQLAst => {
   const source = assertQuery(query, 'parse');
   // The SNAPSHOT, not `options`: reading the caller's object again after
   // validating it let a throwing accessor escape from here raw.
-  const tolerant = assertOptions(options, 'parse').tolerant ?? false;
-  const tokens = new Tokenizer(source, { tolerant }).tokenize();
+  const checked = assertOptions(options, 'parse');
+  const tolerant = checked.tolerant ?? false;
+  const tokens = new Tokenizer(source, {
+    keywords: checked.keywords,
+    tolerant,
+  }).tokenize();
   const ast = new Parser(source, tokens, tolerant).parse();
 
   /*

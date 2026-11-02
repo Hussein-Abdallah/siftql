@@ -291,7 +291,8 @@ class Parser {
       case 'and':
       case 'or':
       case 'not':
-        return `"${token.type.toUpperCase()}"`;
+      case 'to':
+        return `"${this.source.slice(token.start, token.end)}"`;
       case 'comparison':
         return `operator "${token.operator}"`;
       case 'eof':
@@ -312,8 +313,6 @@ class Parser {
         return 'a regular expression';
       case 'rparen':
         return '")"';
-      case 'to':
-        return '"TO"';
       default:
         return `"${this.source.slice(token.start, token.end)}"`;
     }

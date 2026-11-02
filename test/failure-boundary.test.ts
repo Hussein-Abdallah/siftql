@@ -673,8 +673,12 @@ describe('shared subtrees in an AST', () => {
 
     expect(() => serialize(shared(24))).toThrow(SiftQLArgumentError);
     expect(() => matches(shared(24), {})).toThrow(SiftQLArgumentError);
-    expect(Date.now() - started).toBeLessThan(2000);
-  });
+    // Refusing walks up to the 500,000-node budget, which coverage
+    // instrumentation slows to 5-8 s. The failure this guards against is the
+    // unbounded expansion above (32 s and a 6 MB string), so the bound sits
+    // between the two rather than at the uninstrumented time.
+    expect(Date.now() - started).toBeLessThan(15000);
+  }, 30000);
 
   it('says the expansion is the problem, not the depth', () => {
     expect(() => serialize(shared(24))).toThrowError(

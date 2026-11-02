@@ -23,7 +23,7 @@ export {
   MAX_FIELD_SEGMENTS,
   MAX_WILDCARD_SEGMENTS,
 } from './limits.js';
-export { serialize } from './serialize.js';
+export { serialize, type SerializeOptions } from './serialize.js';
 export { builders } from './builders.js';
 export {
   createEngine,

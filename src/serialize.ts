@@ -1,9 +1,10 @@
 import { SiftQLArgumentError } from './errors.js';
 import { MAX_AST_DEPTH } from './limits.js';
-import { assertNode } from './validate.js';
+import { assertNode, assertOptions } from './validate.js';
 import type {
   Expression,
   Field,
+  KeywordAliases,
   RangeBoundary,
   SiftQLAst,
   TextLiteral,
@@ -116,6 +117,16 @@ const LEADING_ONLY = {
   value: new Set(['/', '[', '{', ':', '=', '<', '>']),
 };
 
+/**
+ * Aliases the `serialize()` call in progress must not print bare, or `null`.
+ *
+ * Module state rather than a parameter because it is read at one place, many
+ * functions down a call chain that otherwise carries only the node. It is set
+ * and cleared inside `serialize()` around a synchronous walk, so it cannot leak
+ * into another call.
+ */
+let activeAliases: ReadonlySet<string> | null = null;
+
 const escapeBareTerm = (
   value: string,
   position: TermPosition = 'value',
@@ -125,7 +136,11 @@ const escapeBareTerm = (
   // the boolean rather than the four-character string. Escaping the first
   // character is enough to make the tokenizer read it as an ordinary word,
   // and it survives the round trip because the parser strips the backslash.
-  if (RESERVED_WORDS.has(value) || KEYWORD_LITERALS.has(value)) {
+  if (
+    RESERVED_WORDS.has(value) ||
+    KEYWORD_LITERALS.has(value) ||
+    activeAliases?.has(value.normalize('NFC')) === true
+  ) {
     return `\\${value}`;
   }
 
@@ -527,8 +542,29 @@ const wrap = (
  * guaranteed to be byte-identical to the text originally parsed — see the
  * normalisation list above.
  */
-export const serialize = (ast: SiftQLAst): string => {
+const KEYWORD_KINDS = ['and', 'or', 'not', 'to'] as const;
+
+/** Options for {@link serialize}. */
+export interface SerializeOptions {
+  /**
+   * The aliases the printed query will be parsed with. A bare term equal to
+   * one is written escaped (`\\ET`), so `parse(serialize(ast, o), o)` keeps it
+   * a term instead of reading it as an operator. Output is still English.
+   */
+  readonly keywords?: KeywordAliases | undefined;
+}
+
+export const serialize = (
+  ast: SiftQLAst,
+  options: SerializeOptions = {},
+): string => {
   const checked = assertNode(ast, 'serialize');
+  const { keywords } = assertOptions(options, 'serialize');
+
+  activeAliases =
+    keywords === undefined
+      ? null
+      : new Set(KEYWORD_KINDS.flatMap((kind) => keywords[kind] ?? []));
 
   try {
     return serializeNode(checked);
@@ -553,5 +589,7 @@ export const serialize = (ast: SiftQLAst): string => {
     }
 
     throw error;
+  } finally {
+    activeAliases = null;
   }
 };

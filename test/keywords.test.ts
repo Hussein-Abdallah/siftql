@@ -162,6 +162,62 @@ describe('localized keywords', () => {
   });
 });
 
+describe('serialize with keywords', () => {
+  const round = (query: string): void => {
+    const first = parse(query, { keywords });
+    const printed = serialize(first, { keywords });
+
+    expect(strip(parse(printed, { keywords }))).toEqual(strip(first));
+  };
+
+  it('escapes a bare term equal to an alias so it re-parses as a term', () => {
+    expect(serialize(parse('\\ET b', { keywords }), { keywords })).toBe(
+      '\\ET b',
+    );
+    round('\\ET b');
+    round('a \\NON');
+    round('a \\OU \\ET');
+  });
+
+  it('escapes an alias used as a range boundary', () => {
+    round('n:[\\À À 5]');
+    round('n:[1 À \\À]');
+  });
+
+  it('leaves quoted terms and non-aliases alone', () => {
+    expect(serialize(parse('"ET" b', { keywords }), { keywords })).toBe(
+      '"ET" b',
+    );
+    expect(serialize(parse('a ET b', { keywords }), { keywords })).toBe(
+      'a AND b',
+    );
+  });
+
+  it('does not leak aliases into a later call without them', () => {
+    serialize(parse('\\ET', { keywords }), { keywords });
+
+    expect(serialize(parse('\\ET', { keywords }))).toBe('ET');
+  });
+
+  it('clears its state when the walk throws', () => {
+    expect(() => serialize({} as never, { keywords })).toThrow();
+    expect(serialize(parse('\\ET', { keywords }))).toBe('ET');
+  });
+
+  it('validates the option like parse does', () => {
+    expect(() => serialize(parse('a'), { keywords: { and: ['A B'] } })).toThrow(
+      SiftQLConfigError,
+    );
+  });
+});
+
+describe('keyword error messages', () => {
+  it('quote what was typed, not the English operator', () => {
+    expect(() => parse('ET ET', { keywords })).toThrow(/found "ET"/u);
+    expect(() => parse('a AND AND', { keywords })).toThrow(/found "AND"/u);
+  });
+});
+
 describe('keywords validation', () => {
   const bad = (value: unknown): void => {
     expect(() => parse('a', { keywords: value } as never)).toThrow(

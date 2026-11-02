@@ -654,15 +654,24 @@ const KEYWORD_LITERAL_WORDS: ReadonlySet<string> = new Set([
 
 const STRUCTURAL_IN_KEYWORD = /[\s():"'\\/[\]{}<>=^~*?]/u;
 
+const MAX_ALIASES_PER_KEYWORD = 32;
+
+const MAX_ALIAS_LENGTH = 64;
+
 /**
  * Check `keywords` and return a frozen copy, so what the tokenizer reads is
  * plain data and cannot change under it.
+ *
+ * Every read goes through one guard that turns a throwing accessor, a Proxy
+ * trap or a hostile array into a `SiftQLConfigError`, never a raw error and
+ * never a silently dropped alias.
  *
  * An alias is refused when it would make the grammar ambiguous rather than
  * quietly picking a winner: the same word under two operators, a word that is
  * already an English keyword under a different operator, a typed literal
  * (`true`), or anything containing a character the tokenizer would split on,
- * which could never be matched as one word.
+ * which could never be matched as one word. Unknown keys are refused too, since
+ * `{ AND: [...] }` would otherwise do nothing and say nothing.
  */
 const checkKeywords = (value: unknown): unknown => {
   if (value === undefined) {
@@ -673,11 +682,37 @@ const checkKeywords = (value: unknown): unknown => {
     badOption('keywords', 'an object such as { and: ["ET"] }', value);
   }
 
+  const guarded = <T>(name: string, read: () => T): T => {
+    try {
+      return read();
+    } catch (error) {
+      throw new SiftQLConfigError(
+        `options.${name} could not be read: reading it threw. An option must be plain data, not an accessor or proxy that fails.`,
+        { cause: error },
+      );
+    }
+  };
+
+  const keys = guarded('keywords', () => Reflect.ownKeys(value as object));
+
+  for (const key of keys) {
+    if (!(KEYWORD_KINDS as readonly PropertyKey[]).includes(key)) {
+      badOption(
+        'keywords',
+        `an object with only the keys ${KEYWORD_KINDS.join(', ')} (unknown key ${String(key)})`,
+        value,
+      );
+    }
+  }
+
   const seen = new Map<string, string>();
   const copy: Record<string, readonly string[]> = {};
 
   for (const kind of KEYWORD_KINDS) {
-    const raw = peek(value as object, kind);
+    const raw = guarded(
+      `keywords.${kind}`,
+      () => (value as Record<string, unknown>)[kind],
+    );
 
     if (raw === undefined) {
       continue;
@@ -687,14 +722,41 @@ const checkKeywords = (value: unknown): unknown => {
       badOption(`keywords.${kind}`, 'an array of strings', raw);
     }
 
+    const list = guarded(`keywords.${kind}`, () => {
+      const length = (raw as unknown[]).length;
+      const items: unknown[] = [];
+
+      for (let index = 0; index < length; index += 1) {
+        items.push((raw as unknown[])[index]);
+      }
+
+      return items;
+    });
+
+    if (list.length > MAX_ALIASES_PER_KEYWORD) {
+      badOption(
+        `keywords.${kind}`,
+        `at most ${String(MAX_ALIASES_PER_KEYWORD)} aliases`,
+        raw,
+      );
+    }
+
     const words: string[] = [];
 
-    for (const word of [...(raw as unknown[])]) {
+    for (const word of list) {
       if (typeof word !== 'string' || word.length === 0) {
         badOption(`keywords.${kind}`, 'an array of non-empty strings', word);
       }
 
-      const text = word as string;
+      const text = (word as string).normalize('NFC');
+
+      if (text.length > MAX_ALIAS_LENGTH) {
+        badOption(
+          `keywords.${kind}`,
+          `an alias of at most ${String(MAX_ALIAS_LENGTH)} characters`,
+          text.slice(0, 20),
+        );
+      }
 
       if (
         STRUCTURAL_IN_KEYWORD.test(text) ||

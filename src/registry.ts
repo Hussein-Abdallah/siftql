@@ -347,6 +347,7 @@ export const withoutFailurePolicy = (
 ): TypeVisibleOptions =>
   Object.freeze({
     id: options.id,
+    keywords: options.keywords,
     matchKeys: options.matchKeys,
     maxPatternLength: options.maxPatternLength,
     regexGuard: options.regexGuard,
@@ -740,6 +741,7 @@ export type EngineOptions = ParseOptions &
 
 export interface ResolvedEngineOptions {
   readonly id: string;
+  readonly keywords: KeywordAliases | undefined;
   readonly tolerant: boolean;
   readonly matchKeys: boolean;
   readonly regexGuard: boolean;

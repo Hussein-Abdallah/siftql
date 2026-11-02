@@ -133,6 +133,26 @@ describe('localized keywords', () => {
     expect(() => parse('a:x ET ', { keywords, tolerant: true })).not.toThrow();
   });
 
+  it('is honoured by the string-query methods of an engine', () => {
+    const rows = [{ alert: true }, { alert: false }];
+    const engine = createEngine({ keywords: { not: ['SAUF'], or: ['OU'] } });
+
+    expect(engine.filter('SAUF alert:true', rows)).toEqual([{ alert: false }]);
+    expect(engine.test('SAUF alert:true', { alert: false })).toBe(true);
+    expect(
+      engine.highlight('alert:false OU alert:true', rows[0]!),
+    ).toHaveLength(1);
+  });
+
+  it('uses the engine-wide keywords, and lets extend() carry them', () => {
+    const engine = createEngine({ keywords: { and: ['ET'] } });
+    const child = engine.extend({ matchKeys: false });
+
+    expect(strip(engine.parse('a ET b'))).toEqual(strip(parse('a AND b')));
+    expect(strip(child.parse('a ET b'))).toEqual(strip(parse('a AND b')));
+    expect(engine.filter('a:1 ET b:2', [{ a: 1, b: 2 }])).toHaveLength(1);
+  });
+
   it('is honoured by engine.parse', () => {
     const engine = createEngine();
 
@@ -179,6 +199,59 @@ describe('keywords validation', () => {
     expect(() =>
       parse('a AND b', { keywords: { and: ['AND'] } }),
     ).not.toThrow();
+  });
+
+  it('rejects unknown keys, oversized lists and over-long aliases', () => {
+    bad({ AND: ['ET'] });
+    bad({ bogus: ['ET'] });
+    bad({ and: Array.from({ length: 33 }, (_, i) => `W${String(i)}`) });
+    bad({ and: ['A'.repeat(65)] });
+  });
+
+  it('turns a hostile accessor or proxy into a config error', () => {
+    bad({
+      get and(): string[] {
+        throw new Error('x');
+      },
+    });
+    bad({
+      and: new Proxy(['ET'], {
+        get: () => {
+          throw new Error('p');
+        },
+      }),
+    });
+    bad(
+      new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw new Error('k');
+          },
+        },
+      ),
+    );
+
+    const indexed = ['ET'];
+
+    Object.defineProperty(indexed, 0, {
+      get: () => {
+        throw new Error('i');
+      },
+    });
+    bad({ and: indexed });
+  });
+
+  it('matches an alias in either Unicode form', () => {
+    const nfc = '\u00C0';
+    const nfd = 'A\u0300';
+
+    expect(strip(parse(`n:[1 ${nfd} 5]`, { keywords: { to: [nfc] } }))).toEqual(
+      strip(parse('n:[1 TO 5]')),
+    );
+    expect(strip(parse(`n:[1 ${nfc} 5]`, { keywords: { to: [nfd] } }))).toEqual(
+      strip(parse('n:[1 TO 5]')),
+    );
   });
 
   it('rejects one word under two operators', () => {

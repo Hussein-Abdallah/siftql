@@ -14,6 +14,7 @@ import {
 
 const OPTIONS: ResolvedEngineOptions = {
   id: 'test',
+  keywords: undefined,
   matchKeys: false,
   maxPatternLength: 1000,
   onRecovered: 'prune',

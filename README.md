@@ -141,7 +141,7 @@ parse('ville:Ottawa ET NON age:[18 À 25]', { keywords });
 // same AST as: ville:Ottawa AND NOT age:[18 TO 25]
 ```
 
-Aliases are matched exactly as written, so they are as case-sensitive as `AND` (list `['ET', 'et']` if you want both). Accented aliases match in either Unicode form (NFC or NFD). Pass `keywords` to `createEngine()` to make it the default for every string query that engine runs (`filter`, `test`, `highlight`, `parse`), and `extend()` carries it; the top-level `filter()`/`test()`/`highlight()` take no `keywords`, so use an engine or parse first. Quoted text, escaped text and values are never operators (`nom:"Dupont ET fils"`, `\ET`, `nom:ET`). `serialize()` always writes the English keywords; a term that equals an alias serializes bare, so re-parse that output without `keywords`. An alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, one word under two operators, an unknown key, more than 32 aliases per operator or an alias over 64 characters throws `SiftQLConfigError`.
+Aliases are matched exactly as written, so they are as case-sensitive as `AND` (list `['ET', 'et']` if you want both). Accented aliases match in either Unicode form (NFC or NFD). Pass `keywords` to `createEngine()` to make it the default for every string query that engine runs (`filter`, `test`, `highlight`, `parse`), and `extend()` carries it; the top-level `filter()`/`test()`/`highlight()` take no `keywords`, so use an engine or parse first. Quoted text, escaped text and values are never operators (`nom:"Dupont ET fils"`, `\ET`, `nom:ET`). `serialize()` always writes the English keywords. To round-trip a query that has a bare term equal to an alias, pass the same option, `serialize(ast, { keywords })`, and that term is written escaped (`\\ET`) so it stays a term when re-parsed with the same `keywords`. An alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, one word under two operators, an unknown key, more than 32 aliases per operator or an alias over 64 characters throws `SiftQLConfigError`.
 
 ### Dates
 
@@ -271,7 +271,7 @@ regex → null → boolean → wildcard → datetime → number → string
 |                                    |                                              |
 | ---------------------------------- | -------------------------------------------- |
 | `parse(query, options?)`           | string → AST. Throws `SiftQLSyntaxError`.    |
-| `serialize(ast)`                   | AST → string.                                |
+| `serialize(ast, options?)`         | AST → string.                                |
 | `filter(query, items, options?)`   | the matching items, in input order.          |
 | `test(query, item, options?)`      | does one item match?                         |
 | `highlight(query, item, options?)` | which fields matched, and what to underline. |

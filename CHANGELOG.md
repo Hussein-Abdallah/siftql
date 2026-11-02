@@ -17,7 +17,9 @@ shape is a breaking change and requires a major version bump.
 - Set on `createEngine({ keywords })` it applies to every string query the engine runs and survives `extend()`; `engine.parse(q, { keywords })` overrides it per call.
 - Aliases are stored and matched in NFC, so `À` works however the keyboard composed it. At most 32 aliases per operator, 64 characters each; unknown keys are refused; a throwing accessor or proxy is a `SiftQLConfigError`.
 - `KeywordAliases` type export.
-- `serialize()` always writes the English keywords. A term equal to an alias (`"ET"`) serializes bare, so re-parse that output WITHOUT `keywords`, or quote the term yourself.
+- `serialize(ast, { keywords })` takes the same option: a bare term equal to an alias is written escaped, so `parse(serialize(ast, o), o)` round-trips. Without it `serialize()` writes English as before; a term equal to an alias then prints bare.
+- Syntax errors quote the operator as typed (`found "ET"`), not its English equivalent. Carets were already correct.
+- `SerializeOptions` type export. Also: the wall-clock bound in `failure-boundary` is widened (it failed under coverage on `main`).
 
 ## 0.1.3 — 2026-08-07
 

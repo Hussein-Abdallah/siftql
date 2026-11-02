@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Note: the AST is a **documented public contract**. Any change to an exported node
 shape is a breaking change and requires a major version bump.
 
+## Unreleased
+
+### Added
+
+- **`keywords` option on `parse()` and `engine.parse()`**: extra spellings for `AND`, `OR`, `NOT` and `TO`, so a query can be typed in another language — `parse(q, { keywords: { and: ['ET'], or: ['OU'], not: ['NON', 'SAUF'], to: ['À'] } })`. Additive (the English keywords keep working), matched exactly as written (so as case-sensitive as `AND`), and the AST is identical to the English spelling's. Locations still point at the text as typed, so error carets and highlights are unaffected. Off by default; no behaviour changes without it.
+- The option is validated and copied once: an alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, or one word under two operators throws `SiftQLConfigError`.
+- `KeywordAliases` type export.
+- `serialize()` always writes the English keywords. A term equal to an alias (`"ET"`) serializes bare, so re-parse that output WITHOUT `keywords`, or quote the term yourself.
+
 ## 0.1.3 — 2026-08-07
 
 Documentation only. No change to parsing, matching or serialization, and the only difference in every built file is the `VERSION` string.

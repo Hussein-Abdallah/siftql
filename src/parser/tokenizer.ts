@@ -1,5 +1,5 @@
 import { SiftQLSyntaxError } from '../errors.js';
-import { isSafeUnquotedExpression } from '../types.js';
+import { isSafeUnquotedExpression, type KeywordAliases } from '../types.js';
 import { decodeEscapes } from './pattern.js';
 import type {
   ComparisonOperator,
@@ -37,7 +37,37 @@ export interface TokenizerOptions {
    * unterminated quote or regex consumes to end of input instead of throwing.
    */
   readonly tolerant?: boolean | undefined;
+  /**
+   * Additional spellings for `AND`, `OR`, `NOT` and `TO`. Locations still point
+   * at the text as typed, so error carets and highlights are unaffected.
+   */
+  readonly keywords?: KeywordAliases | undefined;
 }
+
+type KeywordKind = 'and' | 'or' | 'not' | 'to';
+
+const buildKeywordMap = (
+  aliases: KeywordAliases | undefined,
+): ReadonlyMap<string, KeywordKind> => {
+  const map = new Map<string, KeywordKind>([
+    ['AND', 'and'],
+    ['OR', 'or'],
+    ['NOT', 'not'],
+    ['TO', 'to'],
+  ]);
+
+  if (aliases === undefined) {
+    return map;
+  }
+
+  for (const kind of ['and', 'or', 'not', 'to'] as const) {
+    for (const word of aliases[kind] ?? []) {
+      map.set(word, kind);
+    }
+  }
+
+  return map;
+};
 
 const WHITESPACE = new Set([' ', '\t', '\n', '\r', '\f', '\v']);
 
@@ -274,6 +304,8 @@ export class Tokenizer {
 
   private readonly tolerant: boolean;
 
+  private readonly keywords: ReadonlyMap<string, KeywordKind>;
+
   private index = 0;
 
   private mode: Mode = 'default';
@@ -303,6 +335,7 @@ export class Tokenizer {
   public constructor(source: string, options: TokenizerOptions = {}) {
     this.source = source;
     this.tolerant = options.tolerant ?? false;
+    this.keywords = buildKeywordMap(options.keywords);
   }
 
   /** Consume the whole input. The final token is always `eof`. */
@@ -345,7 +378,12 @@ export class Tokenizer {
     const rest = this.source.slice(start).trimStart();
     // Suggest quoting up to the next boolean keyword, which is where the
     // intended value almost certainly ends.
-    const clause = (rest.split(/\s+(?:AND|OR|NOT)\s+/u)[0] ?? '').trim();
+    const operators = [...this.keywords]
+      .filter(([, kind]) => kind !== 'to')
+      .map(([word]) => word.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
+    const clause = (
+      rest.split(new RegExp(`\\s+(?:${operators.join('|')})\\s+`, 'u'))[0] ?? ''
+    ).trim();
     // Only quote the suggestion if the value actually needs it, so a stray
     // space before a number suggests `height:>=100`, not `height:>="100"`.
     const suggested = isSafeUnquotedExpression(clause)
@@ -544,7 +582,7 @@ export class Tokenizer {
 
     // `TO` is only a keyword inside a range, and only when written bare and
     // uppercase, so a quoted value of "TO" remains a value.
-    if (literal.value === 'TO') {
+    if (this.keywords.get(literal.value) === 'to') {
       return { end: literal.end, start: literal.start, type: 'to' };
     }
 
@@ -687,12 +725,12 @@ export class Tokenizer {
       );
     }
 
-    switch (word) {
-      case 'AND':
+    switch (this.keywords.get(word)) {
+      case 'and':
         return { end: this.index, start, type: 'and' };
-      case 'OR':
+      case 'or':
         return { end: this.index, start, type: 'or' };
-      case 'NOT':
+      case 'not':
         return { end: this.index, start, type: 'not' };
       default:
         return {

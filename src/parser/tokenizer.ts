@@ -353,6 +353,15 @@ export class Tokenizer {
     }
   }
 
+  /**
+   * Which operator a bare word is, if any. Looked up as typed and then in NFC,
+   * because an accented alias such as `À` has two spellings that render
+   * identically (a keyboard may produce either), and aliases are stored in NFC.
+   */
+  private kindOf(word: string): KeywordKind | undefined {
+    return this.keywords.get(word) ?? this.keywords.get(word.normalize('NFC'));
+  }
+
   private peek(offset = 0): string {
     return this.source.charAt(this.index + offset);
   }
@@ -582,7 +591,7 @@ export class Tokenizer {
 
     // `TO` is only a keyword inside a range, and only when written bare and
     // uppercase, so a quoted value of "TO" remains a value.
-    if (this.keywords.get(literal.value) === 'to') {
+    if (this.kindOf(literal.value) === 'to') {
       return { end: literal.end, start: literal.start, type: 'to' };
     }
 
@@ -725,7 +734,7 @@ export class Tokenizer {
       );
     }
 
-    switch (this.keywords.get(word)) {
+    switch (this.kindOf(word)) {
       case 'and':
         return { end: this.index, start, type: 'and' };
       case 'or':

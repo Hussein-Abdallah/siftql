@@ -12,8 +12,10 @@ shape is a breaking change and requires a major version bump.
 
 ### Added
 
-- **`keywords` option on `parse()` and `engine.parse()`**: extra spellings for `AND`, `OR`, `NOT` and `TO`, so a query can be typed in another language — `parse(q, { keywords: { and: ['ET'], or: ['OU'], not: ['NON', 'SAUF'], to: ['À'] } })`. Additive (the English keywords keep working), matched exactly as written (so as case-sensitive as `AND`), and the AST is identical to the English spelling's. Locations still point at the text as typed, so error carets and highlights are unaffected. Off by default; no behaviour changes without it.
+- **`keywords` option on `parse()` and `createEngine()`**: extra spellings for `AND`, `OR`, `NOT` and `TO`, so a query can be typed in another language — `parse(q, { keywords: { and: ['ET'], or: ['OU'], not: ['NON', 'SAUF'], to: ['À'] } })`. Additive (the English keywords keep working), matched exactly as written (so as case-sensitive as `AND`), and the AST is identical to the English spelling's. Locations still point at the text as typed, so error carets and highlights are unaffected. Off by default; no behaviour changes without it.
 - The option is validated and copied once: an alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, or one word under two operators throws `SiftQLConfigError`.
+- Set on `createEngine({ keywords })` it applies to every string query the engine runs and survives `extend()`; `engine.parse(q, { keywords })` overrides it per call.
+- Aliases are stored and matched in NFC, so `À` works however the keyboard composed it. At most 32 aliases per operator, 64 characters each; unknown keys are refused; a throwing accessor or proxy is a `SiftQLConfigError`.
 - `KeywordAliases` type export.
 - `serialize()` always writes the English keywords. A term equal to an alias (`"ET"`) serializes bare, so re-parse that output WITHOUT `keywords`, or quote the term yourself.
 

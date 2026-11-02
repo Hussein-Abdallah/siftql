@@ -141,7 +141,7 @@ parse('ville:Ottawa ET NON age:[18 À 25]', { keywords });
 // same AST as: ville:Ottawa AND NOT age:[18 TO 25]
 ```
 
-Aliases are matched exactly as written, so they are as case-sensitive as `AND`. Quoted text, escaped text and values are never operators (`nom:"Dupont ET fils"`, `\ET`, `nom:ET`). `serialize()` always writes the English keywords; a term that equals an alias serializes bare, so re-parse that output without `keywords`. An alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, or one word under two operators throws `SiftQLConfigError`.
+Aliases are matched exactly as written, so they are as case-sensitive as `AND` (list `['ET', 'et']` if you want both). Accented aliases match in either Unicode form (NFC or NFD). Pass `keywords` to `createEngine()` to make it the default for every string query that engine runs (`filter`, `test`, `highlight`, `parse`), and `extend()` carries it; the top-level `filter()`/`test()`/`highlight()` take no `keywords`, so use an engine or parse first. Quoted text, escaped text and values are never operators (`nom:"Dupont ET fils"`, `\ET`, `nom:ET`). `serialize()` always writes the English keywords; a term that equals an alias serializes bare, so re-parse that output without `keywords`. An alias containing whitespace or query syntax, `true`/`false`/`null`, another operator's English keyword, one word under two operators, an unknown key, more than 32 aliases per operator or an alias over 64 characters throws `SiftQLConfigError`.
 
 ### Dates
 
@@ -292,7 +292,7 @@ Every AST node type is exported and documented. The AST is **pure JSON** — no 
 | `onValueError`     | `'skip'`    | `'skip'` \| `'throw'` for unreadable field values                                  |
 | `onRecovered`      | `'prune'`   | `'prune'` \| `'throw'` for tolerant-mode holes                                     |
 | `tolerant`         | `false`     | best-effort parsing for search-as-you-type                                         |
-| `keywords`         | —           | extra spellings for `AND`/`OR`/`NOT`/`TO` (`parse` / `engine.parse`)               |
+| `keywords`         | —           | extra spellings for `AND`/`OR`/`NOT`/`TO`                                          |
 | `regexGuard`       | `true`      | refuse regexes the linear matcher cannot take, instead of running them on `RegExp` |
 | `maxPatternLength` | `1000`      | longest accepted regex source                                                      |
 

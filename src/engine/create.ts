@@ -47,6 +47,7 @@ import {
 const resolveOptions = (options: EngineOptions): ResolvedEngineOptions =>
   Object.freeze({
     id: options.id ?? 'default',
+    keywords: options.keywords,
     matchKeys: options.matchKeys ?? false,
     maxPatternLength: options.maxPatternLength ?? 1000,
     onRecovered: options.onRecovered ?? 'prune',
@@ -184,7 +185,10 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
     // hand-built path left that gap open.
     const ast = assertNode(
       typeof query === 'string'
-        ? parse(query, { tolerant: resolved.tolerant })
+        ? parse(query, {
+            keywords: resolved.keywords,
+            tolerant: resolved.tolerant,
+          })
         : query,
       fn,
     );
@@ -262,7 +266,7 @@ export const createEngine = (raw: EngineOptions = {}): Engine => {
       const checked = assertOptions(parseOptions, 'engine.parse');
 
       return parse(assertQuery(query, 'engine.parse'), {
-        keywords: checked.keywords,
+        keywords: checked.keywords ?? resolved.keywords,
         tolerant: checked.tolerant ?? resolved.tolerant,
       });
     },
